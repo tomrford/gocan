@@ -142,6 +142,13 @@ segmented payloads, Flow Control, block size, separation time, bounded receive
 allocation, protocol timeouts, cancellation, and repeated exchange responses.
 Deferred ISO-TP features are recorded as code TODOs.
 
+### UDS
+
+[`uds`](uds) exchanges raw Unified Diagnostic Services requests and responses
+over an `*isotp.Link`. `Do` validates the response service, handles
+ResponsePending, and applies P2 and P2* timing. `Send` transmits requests that
+do not expect a response.
+
 ## Planned higher layers
 
 ### Network descriptions
@@ -150,16 +157,10 @@ DBC support currently uses exact message identifiers, including its initial
 J1939 support. J1939 PGN matching and AUTOSAR ARXML descriptions remain future
 work to define from real inputs.
 
-### UDS
-
-[`uds`](uds) exchanges raw requests and responses over an `*isotp.Link`. Its
-`Do` operation validates the response service, handles ResponsePending, and
-applies P2 and P2* timing. `Send` transmits requests that do not expect a
-response.
+### UDS services
 
 Typed standard services, session state, and OEM extension points will build on
-these raw values. Diagnostic descriptions will construct requests and decode
-response data at runtime.
+the raw `uds` request and response values.
 
 ### Diagnostic descriptions
 
