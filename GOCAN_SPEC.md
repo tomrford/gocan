@@ -155,14 +155,14 @@ by real files.
 
 ### UDS
 
-UDS will use the payload and exchange semantics already provided by ISO-TP.
-Response interpretation, response-pending handling, P2 and P2* timing, session
-state, standard services, and OEM extension points belong in `uds`.
+[`uds`](uds) exchanges raw requests and responses over an `*isotp.Link`. Its
+`Do` operation validates the response service, handles ResponsePending, and
+applies P2 and P2* timing. `Send` transmits requests that do not expect a
+response.
 
-The exact Go boundary between `uds` and `isotp` remains open until the UDS
-implementation is designed. No change to the current ISO-TP API is required:
-UDS can own a link directly or add a narrow private adapter if isolated scripted
-tests justify one.
+Typed standard services, session state, and OEM extension points will build on
+these raw values. Diagnostic descriptions will construct requests and decode
+response data at runtime.
 
 ### Diagnostic descriptions
 

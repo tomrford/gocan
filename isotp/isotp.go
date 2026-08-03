@@ -260,7 +260,7 @@ func (link *Link) Receive(ctx context.Context) ([]byte, error) {
 
 	operationContext, cancel := link.operationContext(ctx)
 	defer cancel()
-	payload, err := link.receive(operationContext)
+	payload, err := link.receive(operationContext, 0)
 	return payload, withCause(operationContext, err)
 }
 
@@ -301,8 +301,14 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 }
 
 // Next waits for and reassembles the next complete ISO-TP payload of this
-// exchange. Concurrent calls are serialised.
-func (exchange *Exchange) Next(ctx context.Context) ([]byte, error) {
+// exchange. firstFrameTimeout limits only the wait for its Single or First
+// Frame; zero applies no additional limit. The caller's context and the Link's
+// consecutive-frame timeout govern the remainder. Concurrent calls are
+// serialised.
+func (exchange *Exchange) Next(ctx context.Context, firstFrameTimeout time.Duration) ([]byte, error) {
+	if firstFrameTimeout < 0 {
+		return nil, errors.New("ISO-TP first-frame timeout must not be negative")
+	}
 	exchange.mu.Lock()
 	defer exchange.mu.Unlock()
 	if exchange.closed {
@@ -311,7 +317,7 @@ func (exchange *Exchange) Next(ctx context.Context) ([]byte, error) {
 
 	operationContext, cancel := exchange.operationContext(ctx)
 	defer cancel()
-	payload, err := exchange.link.receive(operationContext)
+	payload, err := exchange.link.receive(operationContext, firstFrameTimeout)
 	return payload, withCause(operationContext, err)
 }
 
