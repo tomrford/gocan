@@ -103,9 +103,6 @@ Other trace formats and live-writing policies will be added only when required.
 Updates replace the complete frame before a later send; the timing path does no
 signal encoding.
 
-Hardware scheduling remains deferred until the common recurring-message API
-has enough usage to define how hardware-produced occurrences enter Capture.
-
 ### DBC
 
 [`dbc`](dbc) parses runtime-loaded DBC files into a resolved semantic model.
