@@ -143,7 +143,7 @@ func (client *Client) Send(ctx context.Context, request Request) error {
 }
 
 func (request Request) payload() ([]byte, error) {
-	if request.Service > 0xbf {
+	if request.Service&0x40 != 0 {
 		return nil, fmt.Errorf("UDS request service %#02x cannot have a positive response service ID", request.Service)
 	}
 	payload := make([]byte, 1+len(request.Data))
@@ -174,9 +174,7 @@ func parseResponse(service ServiceID, payload []byte) (Response, *NegativeRespon
 }
 
 func nextWithTimeout(ctx context.Context, exchange *isotp.Exchange, timeout time.Duration, timeoutError error) ([]byte, error) {
-	waitContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	payload, err := exchange.Next(waitContext)
+	payload, err := exchange.Next(ctx, timeout)
 	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		return nil, timeoutError
 	}

@@ -5,12 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 )
 
 // receive reassembles one complete payload. Callers must hold the receiving
 // token, so one reassembly is never interleaved with another.
-func (link *Link) receive(ctx context.Context) ([]byte, error) {
-	frame, err := link.nextFrame(ctx)
+func (link *Link) receive(ctx context.Context, firstFrameTimeout time.Duration) ([]byte, error) {
+	firstFrameContext := ctx
+	cancel := func() {}
+	if firstFrameTimeout > 0 {
+		firstFrameContext, cancel = context.WithTimeout(ctx, firstFrameTimeout)
+	}
+	frame, err := link.nextFrame(firstFrameContext)
+	cancel()
 	if err != nil {
 		return nil, err
 	}

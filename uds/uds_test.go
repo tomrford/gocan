@@ -28,7 +28,13 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecuBus.Close() })
 
-	testerLink, err := isotp.New(testerBus, capture, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+	testerLink, err := isotp.New(testerBus, capture, isotp.Config{
+		TransmitID: 0x7e0,
+		ReceiveID:  0x7e8,
+		// Keep the segmented response in progress beyond P2* after its First
+		// Frame arrives.
+		AdvertisedSeparationTime: 30 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatalf("New tester link: %v", err)
 	}

@@ -107,7 +107,7 @@ func TestExchangeRoundTrip(t *testing.T) {
 			}
 			defer exchange.Close()
 
-			pending, err := exchange.Next(ctx)
+			pending, err := exchange.Next(ctx, 0)
 			if err != nil {
 				t.Fatalf("Next pending response: %v", err)
 			}
@@ -115,7 +115,7 @@ func TestExchangeRoundTrip(t *testing.T) {
 				t.Fatalf("pending response = %x, want %x", pending, want)
 			}
 
-			response, err := exchange.Next(ctx)
+			response, err := exchange.Next(ctx, 0)
 			if err != nil {
 				t.Fatalf("Next final response: %v", err)
 			}
@@ -177,7 +177,7 @@ func TestFailuresReleaseLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin after timeout: %v", err)
 	}
-	response, err := exchange.Next(ctx)
+	response, err := exchange.Next(ctx, 0)
 	if err != nil {
 		t.Fatalf("Next response: %v", err)
 	}
@@ -242,13 +242,13 @@ func TestInvalidResponsesDoNotEscapeConfiguredBounds(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	defer exchange.Close()
-	if _, err := exchange.Next(ctx); !errors.Is(err, isotp.ErrPayloadTooLarge) {
+	if _, err := exchange.Next(ctx, 0); !errors.Is(err, isotp.ErrPayloadTooLarge) {
 		t.Fatalf("oversized Single Frame = %v, want ErrPayloadTooLarge", err)
 	}
-	if _, err := exchange.Next(ctx); !errors.Is(err, isotp.ErrProtocol) {
+	if _, err := exchange.Next(ctx, 0); !errors.Is(err, isotp.ErrProtocol) {
 		t.Fatalf("short First Frame = %v, want ErrProtocol", err)
 	}
-	response, err := exchange.Next(ctx)
+	response, err := exchange.Next(ctx, 0)
 	if err != nil {
 		t.Fatalf("Next valid response: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestExchangeStopsWithBus(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := exchange.Next(context.Background())
+		_, err := exchange.Next(context.Background(), 0)
 		result <- err
 	}()
 	if err := tester.Close(); err != nil {
@@ -397,7 +397,7 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 
 	pending := make(chan error, 1)
 	go func() {
-		_, err := exchange.Next(context.Background())
+		_, err := exchange.Next(context.Background(), 0)
 		pending <- err
 	}()
 
@@ -431,7 +431,7 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	if err := <-pending; !errors.Is(err, isotp.ErrExchangeClosed) {
 		t.Fatalf("pending Next = %v, want ErrExchangeClosed", err)
 	}
-	if _, err := exchange.Next(context.Background()); !errors.Is(err, isotp.ErrExchangeClosed) {
+	if _, err := exchange.Next(context.Background(), 0); !errors.Is(err, isotp.ErrExchangeClosed) {
 		t.Fatalf("Next after Close = %v, want ErrExchangeClosed", err)
 	}
 
