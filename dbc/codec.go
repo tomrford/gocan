@@ -387,8 +387,12 @@ func (message *Message) validateFrame(frame gocan.Frame) error {
 	if frame.Flags.Has(gocan.FrameFD) != flags.Has(gocan.FrameFD) {
 		return fmt.Errorf("frame format does not match DBC message %q", message.Name)
 	}
-	if frame.DLC != dlc {
-		return fmt.Errorf("frame DLC %d does not match DBC message %q DLC %d", frame.DLC, message.Name, dlc)
+	expectedLength, err := gocan.DLCToLength(dlc, flags.Has(gocan.FrameFD))
+	if err != nil {
+		return err
+	}
+	if frame.DataLength() != expectedLength {
+		return fmt.Errorf("frame payload length %d does not match DBC message %q length %d", frame.DataLength(), message.Name, expectedLength)
 	}
 	return nil
 }

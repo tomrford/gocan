@@ -36,6 +36,8 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	assertDecoded(t, command, frame, "BigEndian", uint64(0xabcd))
 	assertDecoded(t, command, frame, "SignedCounter", int64(-2))
 
+	// Classical DLC values 9 through 15 still describe eight data bytes.
+	frame.DLC = 15
 	if err := command.Patch(&frame, Values{"Temperature": 50.0}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
