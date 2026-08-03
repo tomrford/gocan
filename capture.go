@@ -2,6 +2,7 @@ package gocan
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -264,15 +265,25 @@ type captureView struct {
 // RecordWriter consumes frames and events in Capture append order. Format
 // packages implement this interface and decide how much detail their file
 // format can preserve.
-//
-// TODO: Before adding a recorder, make partial failure explicit. Return the
-// cursor after the last successful record and wrap the writer error in a typed
-// error that carries the failed record's cursor. A caller can then retry the
-// failed record or explicitly skip it by continuing from that cursor; Capture
-// must never skip a record implicitly.
 type RecordWriter interface {
 	WriteFrame(FrameEvent) error
 	WriteEvent(Event) error
+}
+
+// RecordWriteError reports a RecordWriter failure. Cursor identifies the
+// record whose writer call failed. The cursor returned separately by
+// WriteRecordsSince identifies the last record whose writer call succeeded.
+type RecordWriteError struct {
+	Cursor Cursor
+	Err    error
+}
+
+func (err *RecordWriteError) Error() string {
+	return fmt.Sprintf("write capture record: %v", err.Err)
+}
+
+func (err *RecordWriteError) Unwrap() error {
+	return err.Err
 }
 
 func (chunk *captureChunk) view() captureView {
@@ -696,9 +707,15 @@ func (capture *Capture) Frames() []FrameEvent {
 }
 
 // WriteRecordsSince sends every frame and event appended after cursor to
-// writer in Capture append order. It returns the cursor of the newest record
-// observed. The caller should advance its saved cursor only when the write
-// succeeds. Pass the zero Cursor to write the full retained Capture.
+// writer in Capture append order. On success it returns the cursor of the
+// newest record observed. On failure it returns the cursor of the last record
+// whose writer call succeeded and a *RecordWriteError whose Cursor identifies
+// the failed record. Retry from the returned cursor, or deliberately skip the
+// failed record by continuing from the error's Cursor.
+//
+// A writer may commit partial output before returning an error. Capture tracks
+// completed writer calls, not the transactional state of the underlying
+// output. Pass the zero Cursor to write the full retained Capture.
 //
 // TODO: Add a periodic recorder only when its flush and shutdown lifecycle is
 // defined. It should drain WriteRecordsSince from its own goroutine and must
@@ -706,6 +723,11 @@ func (capture *Capture) Frames() []FrameEvent {
 // unless measured polling overhead makes that necessary.
 func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
 	views, skip, next := capture.viewsSince(cursor)
+	lastWritten := cursor
+	startChunk := uint32(0)
+	if cursor.generation == next.generation {
+		startChunk = cursor.chunk
+	}
 	for i := range views {
 		from := 0
 		if i == 0 {
@@ -721,9 +743,15 @@ func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (C
 			default:
 				panic("gocan: capture record has an unknown kind")
 			}
-			if err != nil {
-				return next, err
+			recordCursor := Cursor{
+				generation: next.generation,
+				chunk:      startChunk + uint32(i),
+				record:     uint32(record),
 			}
+			if err != nil {
+				return lastWritten, &RecordWriteError{Cursor: recordCursor, Err: err}
+			}
+			lastWritten = recordCursor
 		}
 	}
 	return next, nil

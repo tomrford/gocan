@@ -67,6 +67,39 @@ func requireBusEvents(t *testing.T, label string, got, want []Event) {
 	}
 }
 
+type captureWriterProbe struct {
+	failAt  int
+	failure error
+	calls   int
+	frames  []uint32
+	events  []EventKind
+}
+
+func (writer *captureWriterProbe) WriteFrame(event FrameEvent) error {
+	if err := writer.next(); err != nil {
+		return err
+	}
+	writer.frames = append(writer.frames, event.Frame.ID)
+	return nil
+}
+
+func (writer *captureWriterProbe) WriteEvent(event Event) error {
+	if err := writer.next(); err != nil {
+		return err
+	}
+	writer.events = append(writer.events, event.Kind)
+	return nil
+}
+
+func (writer *captureWriterProbe) next() error {
+	call := writer.calls
+	writer.calls++
+	if call == writer.failAt {
+		return writer.failure
+	}
+	return nil
+}
+
 // newTestCapture builds a capture whose first chunk is small enough for tests
 // to seal, without the prepared successor so rotation exercises the
 // synchronous fallback path.
@@ -293,6 +326,76 @@ func TestCaptureMixedRecords(t *testing.T) {
 	}
 	if got := capture.Len(); got != 7 {
 		t.Fatalf("Len() after rejected event = %d, want 7", got)
+	}
+}
+
+func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
+	capture := newTestCapture(2, 8)
+	frame0 := testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 0, DirectionReceive)
+	state, err := NewControllerStateEvent(
+		testBus0,
+		captureTestBase.Add(time.Millisecond),
+		ControllerWarning,
+		1,
+		2,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("NewControllerStateEvent: %v", err)
+	}
+	frame1 := testDataEvent(t, testBus0, 0x200, 0, []byte{2}, 2, DirectionReceive)
+	errorEvent, err := NewErrorFrameEvent(testBus0, captureTestBase.Add(3*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewErrorFrameEvent: %v", err)
+	}
+	for _, appendRecord := range []func() error{
+		func() error { return capture.Append(frame0) },
+		func() error { return capture.AppendEvent(state) },
+		func() error { return capture.Append(frame1) },
+		func() error { return capture.AppendEvent(errorEvent) },
+	} {
+		if err := appendRecord(); err != nil {
+			t.Fatalf("append record: %v", err)
+		}
+	}
+
+	writeFailure := errors.New("writer failed")
+	first := &captureWriterProbe{failAt: 2, failure: writeFailure}
+	written, err := capture.WriteRecordsSince(Cursor{}, first)
+	var recordError *RecordWriteError
+	if !errors.As(err, &recordError) {
+		t.Fatalf("WriteRecordsSince error = %v, want *RecordWriteError", err)
+	}
+	if !errors.Is(err, writeFailure) {
+		t.Fatalf("WriteRecordsSince error = %v, want wrapped writer failure", err)
+	}
+	if len(first.frames) != 1 || first.frames[0] != frame0.Frame.ID ||
+		len(first.events) != 1 || first.events[0] != state.Kind {
+		t.Fatalf("records before failure = frames %v events %v", first.frames, first.events)
+	}
+	if written == capture.End() || written == recordError.Cursor {
+		t.Fatal("failure did not distinguish the last written and failed record cursors")
+	}
+
+	retry := &captureWriterProbe{failAt: -1}
+	next, err := capture.WriteRecordsSince(written, retry)
+	if err != nil {
+		t.Fatalf("retry WriteRecordsSince: %v", err)
+	}
+	if len(retry.frames) != 1 || retry.frames[0] != frame1.Frame.ID ||
+		len(retry.events) != 1 || retry.events[0] != errorEvent.Kind {
+		t.Fatalf("retried records = frames %v events %v", retry.frames, retry.events)
+	}
+	if next != capture.End() {
+		t.Fatal("successful retry did not advance to the capture end")
+	}
+
+	skip := &captureWriterProbe{failAt: -1}
+	if _, err := capture.WriteRecordsSince(recordError.Cursor, skip); err != nil {
+		t.Fatalf("skip failed record: %v", err)
+	}
+	if len(skip.frames) != 0 || len(skip.events) != 1 || skip.events[0] != errorEvent.Kind {
+		t.Fatalf("records after skipped failure = frames %v events %v", skip.frames, skip.events)
 	}
 }
 

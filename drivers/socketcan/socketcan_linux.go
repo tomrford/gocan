@@ -2,9 +2,6 @@
 
 // Package socketcan provides CAN access through Linux SocketCAN interfaces.
 //
-// TODO: Implement CAN_BCM-backed recurring transmission. BCM-generated
-// transmissions must still be stored in Capture.
-//
 // TODO: Preserve kernel-specific error classes and data bytes for diagnostics,
 // then compare them with PCAN, Vector, and NI-XNET before making more detail
 // portable API.
