@@ -569,9 +569,9 @@ func parseMuxMarker(marker string) (isMultiplexer bool, value uint64, hasValue b
 }
 
 func validateSignalLayout(messageLength uint32, signal Signal) error {
-	// TODO: Add multiplex-aware overlap validation with the decoder. Layout
-	// bounds are safe to validate here, but overlap is conditional for muxed
-	// signals and accepting it now keeps this model honest about that gap.
+	// Only layout bounds are validated here. Overlap between signals is
+	// conditional on multiplexing, so the message codec rejects it on the
+	// write path while parsing stays permissive for read-only databases.
 	if signal.BitLength == 0 {
 		return fmt.Errorf("bit length is zero")
 	}
