@@ -28,9 +28,6 @@ func (err *Error) Error() string {
 }
 
 // Parse parses source into a resolved DBC model. Source must be UTF-8 text.
-// Byte encoding detection belongs in the later file-loading layer.
-// TODO: Add a file loader that detects common legacy encodings such as
-// Windows-1252 without complicating the parser's text contract.
 func Parse(name, source string) (*Database, error) {
 	tokens, err := lex(name, source)
 	if err != nil {

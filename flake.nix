@@ -17,7 +17,8 @@
           pname = "gocan-check";
           version = "0.0.0";
           src = self;
-          vendorHash = "sha256-kPBpf41hpkA0d6Zp6ZGnXfHg6ndlsP2qHxdur8Fp5MI=";
+          vendorHash = "sha256-tzErSmbzRPonoPZL9N5Jrg60Z02fx357kxuod1yBQvE=";
+          proxyVendor = true;
 
           env.CGO_ENABLED = 1;
           excludedPackages =
