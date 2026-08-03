@@ -81,6 +81,14 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatalf("encoded CAN FD frame = %#v", fd)
 	}
 	assertDecoded(t, fast, fd, "Payload", payload)
+
+	wide, ok := db.MessageByName("WideData")
+	if !ok {
+		t.Fatal("WideData message was not resolved")
+	}
+	if _, err := wide.Encode(Values{"Payload": uint64(0)}); err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
+		t.Fatalf("wide signal Encode error = %v", err)
+	}
 }
 
 func TestMultiplexedPatchAndJ1939(t *testing.T) {

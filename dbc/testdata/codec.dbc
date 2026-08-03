@@ -24,6 +24,9 @@ BO_ 2149235934 FastStatus: 9 ECU
  SG_ Payload : 0|64@1+ (1,0) [0|0] "" ECU
  SG_ Tail : 64|8@1+ (1,0) [0|255] "" ECU
 
+BO_ 2149235935 WideData: 16 ECU
+ SG_ Payload : 0|128@1+ (1,0) [0|0] "" ECU
+
 VAL_ 291 Mode 0 "Off" 1 "Torque";
 SIG_VALTYPE_ 292 Ratio : 1;
 
@@ -31,3 +34,4 @@ BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG"
 BA_DEF_ BO_ "CANFD_BRS" ENUM "0","1";
 BA_ "VFrameFormat" BO_ 2149235934 15;
 BA_ "CANFD_BRS" BO_ 2149235934 1;
+BA_ "VFrameFormat" BO_ 2149235935 15;
