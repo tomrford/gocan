@@ -26,10 +26,6 @@ var errStopRequested = errors.New("cyclic task stop requested")
 // Any send error stops the Task. Stop is idempotent and waits until no further
 // sends can start. Err reports the terminal error, or nil after Stop.
 //
-// TODO: Evaluate provider-native cyclic transmission only if measurements show
-// that software scheduling has insufficient timing stability. Any native path
-// must preserve identical Capture records and Task lifecycle semantics.
-//
 // TODO: Revisit transmit-queue-full retry policy only when driver measurements
 // establish useful and portable behaviour.
 type Task struct {
