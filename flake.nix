@@ -13,6 +13,20 @@
       system: let
         pkgs = import nixpkgs {inherit system;};
       in {
+        checks.default = pkgs.buildGoModule {
+          pname = "gocan-check";
+          version = "0.0.0";
+          src = self;
+          vendorHash = "sha256-kPBpf41hpkA0d6Zp6ZGnXfHg6ndlsP2qHxdur8Fp5MI=";
+
+          env.CGO_ENABLED = 1;
+          excludedPackages =
+            ["internal/devicechange"]
+            ++ pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isLinux) ["drivers/socketcan"];
+          checkFlags = ["-race"];
+          postCheck = "go vet ./...";
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [
             pkgs.go
