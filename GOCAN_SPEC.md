@@ -1,6 +1,6 @@
 # `tomrford/gocan`
 
-## Project specification
+## Working specification
 
 **Status:** Foundation implementation
 
@@ -10,7 +10,14 @@
 
 **Language:** Go
 
-**Platforms:** Windows, with Linux support through SocketCAN
+**Platforms:** Portable development support, Windows hardware drivers, and
+Linux hardware support through SocketCAN
+
+This is a temporary working plan for the foundation stage. It records intended
+scope and design direction while the public API settles. It is not the contract
+for current behaviour and should be deleted after the first stable release.
+Source and package documentation define implemented behaviour. GitHub issues
+track work that does not need to remain beside the affected code.
 
 ## Purpose
 
@@ -82,8 +89,9 @@ Implemented driver packages are:
 Every driver contributes to the same capture and follows the shared lifecycle
 contract. Driver opening accepts a context without making that context own the
 returned bus. The reusable behavioural checks live in
-[`drivers/conformance`](drivers/conformance). Remaining hardware checks are
-recorded as precise code TODOs beside the affected drivers.
+[`drivers/conformance`](drivers/conformance). Remaining release-required
+hardware checks stay as precise code TODOs beside the affected drivers.
+Conditional or later work belongs in GitHub issues.
 
 NI-XNET is the next intended provider. Its implementation may refine the common
 contract if its session model provides evidence that the existing shape is not
@@ -137,7 +145,6 @@ and one role at a time.
 The current implementation supports classical CAN and CAN FD, single and
 segmented payloads, Flow Control, block size, separation time, bounded receive
 allocation, protocol timeouts, cancellation, and repeated exchange responses.
-Deferred ISO-TP features are recorded as code TODOs.
 
 ### UDS
 
@@ -178,10 +185,10 @@ or observed requirements. Important sources, in order, are:
 5. implementation source used as a cautious reference.
 
 Existing Python CAN, ISO-TP, UDS, and description libraries are behavioural
-oracles rather than API templates. Keep portable hardware conclusions and
-unresolved mechanics in precise code TODOs. Keep station-specific selectors,
-topology, versions, and raw qualification evidence outside the public
-repository.
+oracles rather than API templates. Use code TODOs only for known work required
+before the first stable release. Track conditional and later work in GitHub
+issues. Keep station-specific selectors, topology, versions, and raw
+qualification evidence outside the public repository.
 
 Tests should be curated and lifecycle-focused. Use the shared driver
 conformance suite, cross-provider loopback, fault injection, race detection,

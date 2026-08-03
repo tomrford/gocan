@@ -6,8 +6,7 @@
 // then compare them with PCAN, Vector, and NI-XNET before making more detail
 // portable API.
 //
-// Received frames use host timestamps; kernel timestamps are not read. See
-// GOCAN_SPEC.md section 6.2.
+// Received frames use host timestamps; kernel timestamps are not read.
 package socketcan
 
 import (
@@ -278,12 +277,6 @@ func (bus *Bus) Close() error {
 }
 
 // receiveLoop reads one frame per kernel round trip and appends it.
-//
-// TODO: Vector XL delivers frame batches and Linux offers recvmmsg, so this
-// one-frame shape may look wasteful beside a third driver. Appends cost tens
-// of nanoseconds against a syscall's microseconds; batch reads (or a batch
-// append on Capture) only if a profile of a flooded bus shows syscall or
-// mutex churn.
 func (bus *Bus) receiveLoop() {
 	defer bus.lifecycle.MarkDone()
 	for {

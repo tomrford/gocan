@@ -12,8 +12,6 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-// TODO: Export this sentinel (compare net.ErrClosed) when a caller needs to
-// detect writes after Close with errors.Is.
 var errWriterClosed = errors.New("ASC writer is closed")
 
 // Writer writes frames and events to an ASC stream.
@@ -107,8 +105,6 @@ func (writer *Writer) WriteEvent(event gocan.Event) error {
 	case gocan.EventErrorFrame:
 		body = fmt.Sprintf("%d ErrorFrame", event.Bus)
 	case gocan.EventReceiveOverrun:
-		// TODO: Replace this readable internal status only if hardware tools
-		// establish a better interoperable ASC form for receive loss.
 		body = fmt.Sprintf("CAN %d Status:receive queue overrun", event.Bus)
 	default:
 		return fmt.Errorf("unsupported gocan event kind %d", event.Kind)

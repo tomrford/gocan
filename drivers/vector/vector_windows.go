@@ -29,9 +29,6 @@ const (
 
 var processXLDriver xlDriverProcess
 
-// TODO: Compare this explicit open/close ownership with the XL library's
-// native reference count only if NI-XNET or another multi-session driver
-// proves a simpler lifecycle; the two-Vector close-order matrix passed as is.
 type xlDriverProcess struct {
 	mu          sync.Mutex
 	users       int
@@ -378,6 +375,9 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if frame.Flags.Has(gocan.FrameFD) && !bus.fd {
 		return errors.New("Vector classic bus cannot send a CAN FD frame")
 	}
+	// TODO: Preserve classical DLC values 9..15 only after real hardware
+	// confirms how the XL Driver Library reports them on receive across classic
+	// and FD channel activation.
 	if !frame.Flags.Has(gocan.FrameFD) && frame.DLC > 8 {
 		return fmt.Errorf("Vector does not yet support classic DLC %d", frame.DLC)
 	}

@@ -235,11 +235,6 @@ func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
 // Capture and never moves backwards. Cursors hold no references, so retaining
 // one costs nothing. A cursor whose position was discarded, whether by Clear
 // or by being passed to a different Capture, behaves like the zero Cursor.
-//
-// TODO: Add explicit cursor windows and reverse traversal when a consumer
-// needs bounded historical reads. Current Since methods cover the interval
-// after one cursor through the captured end; future reads may need an explicit
-// start and end cursor or newest-to-oldest traversal.
 type Cursor struct {
 	generation uint64
 	chunk      uint32
