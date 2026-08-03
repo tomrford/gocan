@@ -1,5 +1,6 @@
-// Package dbc parses CAN database files into a resolved, read-only semantic
-// model. It does not preserve source formatting or provide DBC editing.
+// Package dbc parses CAN database files into a resolved semantic model and
+// encodes or lazily decodes raw CAN frames. It does not preserve source
+// formatting or provide DBC editing.
 package dbc
 
 // Database is one resolved DBC file.
@@ -18,6 +19,8 @@ type Database struct {
 	// runtime layer exists.
 	Comment     string
 	Diagnostics []Diagnostic
+
+	messagesByName map[string]int
 }
 
 // Node is one CAN network participant declared by BU_.
@@ -39,7 +42,14 @@ type Message struct {
 	Format       FrameFormat
 	Attributes   map[string]AttributeValue
 	Comment      string
+
+	bitRateSwitch bool
+	codec         *messageCodec
 }
+
+// Values maps runtime-loaded signal names to their values. Encoding accepts
+// Go numeric values, bool for one-bit signals, and value-description strings.
+type Values map[string]any
 
 // FrameFormat is the message format declared by VFrameFormat.
 type FrameFormat uint8

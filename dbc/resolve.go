@@ -53,6 +53,7 @@ func resolve(raw rawDatabase) (*Database, error) {
 		r.resolveSignalGroups,
 		r.resolveMultiplexing,
 		r.resolveFrameFormats,
+		r.compileCodecs,
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -436,6 +437,28 @@ func (r *resolver) resolveFrameFormats() error {
 		if err := validateFrameFormat(*message); err != nil {
 			return semanticError(r.messagePositions[index], "BA_", "message %q: %v", message.Name, err)
 		}
+		brs := effectiveAttribute(message.Attributes, r.definition("CANFD_BRS"))
+		if brs != nil {
+			switch {
+			case brs.Integer == 0 && (brs.Text == "" || brs.Text == "0"):
+				message.bitRateSwitch = false
+			case brs.Integer == 1 || brs.Text == "1":
+				message.bitRateSwitch = true
+			default:
+				return semanticError(r.messagePositions[index], "BA_", "message %q: unsupported CANFD_BRS value %q (%d)", message.Name, brs.Text, brs.Integer)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *resolver) compileCodecs() error {
+	r.db.messagesByName = make(map[string]int, len(r.messagesByName))
+	for name, index := range r.messagesByName {
+		r.db.messagesByName[name] = index
+	}
+	for index := range r.db.Messages {
+		r.db.Messages[index].codec = compileMessageCodec(&r.db.Messages[index])
 	}
 	return nil
 }

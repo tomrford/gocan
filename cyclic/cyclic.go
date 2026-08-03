@@ -88,6 +88,15 @@ func (task *Task) Update(frame gocan.Frame) error {
 	return nil
 }
 
+// Frame returns a snapshot of the complete frame used by later sends.
+// The returned value can be passed to a semantic codec, then replaced with
+// Update without retaining the frame originally passed to Start.
+func (task *Task) Frame() gocan.Frame {
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	return task.frame
+}
+
 // Stop stops recurring transmission and waits until no further sends can
 // start. A native send already in progress is allowed to reach its definite
 // result before Stop returns.

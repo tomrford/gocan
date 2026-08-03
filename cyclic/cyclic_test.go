@@ -55,6 +55,9 @@ func TestTaskLifecycle(t *testing.T) {
 	if err := task.Update(updated); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
+	if got := task.Frame(); got != updated {
+		t.Fatalf("Frame after Update = %+v, want %+v", got, updated)
+	}
 	for {
 		var next gocan.FrameEvent
 		next, cursor, err = capture.Next(ctx, key, cursor)
