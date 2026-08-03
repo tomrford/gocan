@@ -108,13 +108,11 @@ has enough usage to define how hardware-produced occurrences enter Capture.
 
 ### DBC
 
-[`dbc`](dbc) currently parses DBC files into a resolved, read-only semantic
-model. Encoding, lazy signal decoding, and message construction remain future
-work and will be designed against runtime-loaded databases.
-
-New named messages must eventually encode a complete valid message for the
-selected multiplexing path. Per-signal changes apply to an existing complete
-message rather than creating partial CAN transmissions.
+[`dbc`](dbc) parses runtime-loaded DBC files into a resolved semantic model.
+Named messages encode complete frames, patch existing complete frames, and
+lazily decode one requested signal. Encoding requires every signal active on
+the selected multiplexing path. Changing that path requires values for the
+newly active signals.
 
 ### ISO-TP
 
@@ -148,10 +146,9 @@ Deferred ISO-TP features are recorded as code TODOs.
 
 ### Network descriptions
 
-DBC support will grow from its current parser to runtime message construction,
-complete-message encoding, and lazy signal decoding. AUTOSAR ARXML support may
-later provide equivalent CAN network descriptions for the subsets established
-by real files.
+DBC support currently uses exact message identifiers, including its initial
+J1939 support. J1939 PGN matching and AUTOSAR ARXML descriptions remain future
+work to define from real inputs.
 
 ### UDS
 
