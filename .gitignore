@@ -1,0 +1,3 @@
+.direnv
+.repos/*
+!.repos/.lock

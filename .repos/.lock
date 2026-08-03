@@ -1,0 +1,51 @@
+[repos.can-dbc]
+url = "https://github.com/oxibus/can-dbc.git"
+mode = "default"
+commit = "bc28d7b3d657a621e0ccdc0bcb85c7702d61424a"
+
+[repos.can-dbc-pest]
+backend = "tarball"
+source = "cargo:can-dbc-pest@0.8.0"
+url = "https://crates.io/api/v1/crates/can-dbc-pest/0.8.0/download"
+sha256 = "598a39f5454c5c1b2dfad86f162a0a982aee85d09503b25834a6e9976dcf0eb0"
+
+[repos.can-isotp]
+url = "https://github.com/pylessard/python-can-isotp.git"
+mode = "default"
+commit = "7b44c5282ee390df4977b710218564eb73e2dc2a"
+
+[repos.cantools]
+url = "https://github.com/cantools/cantools.git"
+mode = "default"
+commit = "f74f76888d2c88329266b33947aa6ea534ddd213"
+
+[repos.cantraceviewer]
+url = "https://github.com/tomrford/cantraceviewer.git"
+mode = "default"
+commit = "8c10de10e3a38ddf3dda64797edc4353022f243a"
+
+[repos.dbc-rs]
+backend = "tarball"
+source = "cargo:dbc-rs@0.10.0"
+url = "https://crates.io/api/v1/crates/dbc-rs/0.10.0/download"
+sha256 = "377234afc4098d58394a3c05d0b60530e42ffea04374961998ec33ea882b1aeb"
+
+[repos.einride-can-go]
+url = "https://github.com/einride/can-go.git"
+mode = "default"
+commit = "5d10e1695b248bc60ad98b2601152966775c8c6a"
+
+[repos.nixnet-python]
+url = "https://github.com/ni/nixnet-python.git"
+mode = "default"
+commit = "b9851d3f431183849078f174a7fb8ee349facd81"
+
+[repos.python-can]
+url = "https://github.com/hardbyte/python-can.git"
+mode = "default"
+commit = "b4f82abede25ff83376be793a2935c41f81c3869"
+
+[repos.udsoncan]
+url = "https://github.com/pylessard/python-udsoncan.git"
+mode = "default"
+commit = "52a09ad0c1c22d4cb73fd5bd4f9aca6f3fca5b37"

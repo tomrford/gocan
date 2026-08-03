@@ -1,0 +1,30 @@
+VERSION ""
+
+NS_ :
+	BA_DEF_
+	BA_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: ECU
+
+BO_ 2147483650 NestedMux: 8 ECU
+ SG_ RootA M : 0|8@1+ (1,0) [0|255] "" ECU
+ SG_ ChildSelector m2M : 8|8@1+ (1,0) [0|255] "" ECU
+ SG_ Leaf m3 : 16|8@1+ (1,0) [0|255] "" ECU
+ SG_ RootB M : 24|8@1+ (1,0) [0|255] "" ECU
+ SG_ Other m7 : 32|8@1+ (1,0) [0|255] "" ECU
+
+BO_ 2566844032 EngineTemperature: 8 ECU
+ SG_ Coolant : 0|8@1+ (1,-40) [-40|210] "degC" ECU
+
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_ SG_ "SPN" INT 0 524287;
+BA_ "VFrameFormat" BO_ 2147483650 1;
+BA_ "VFrameFormat" BO_ 2566844032 3;
+BA_ "SPN" SG_ 2566844032 Coolant 110;
+
+SG_MUL_VAL_ 2147483650 ChildSelector RootA 2-2;
+SG_MUL_VAL_ 2147483650 Leaf ChildSelector 3-5;
+SG_MUL_VAL_ 2147483650 Other RootB 7-9;
