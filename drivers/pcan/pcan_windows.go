@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -15,7 +17,6 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/internal/devicechange"
-	"github.com/tomrford/gocan/internal/driverdll"
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
 )
@@ -257,9 +258,18 @@ type pcanAPI struct {
 }
 
 func loadPCANAPI() (*pcanAPI, error) {
-	dll, err := driverdll.LoadSystem("PCANBasic.dll")
-	if err != nil {
-		return nil, err
+	dll := windows.NewLazySystemDLL("PCANBasic.dll")
+	if err := dll.Load(); err != nil {
+		if errors.Is(err, windows.ERROR_MOD_NOT_FOUND) {
+			systemDirectory, directoryErr := windows.GetSystemDirectory()
+			if directoryErr == nil {
+				_, statErr := os.Stat(filepath.Join(systemDirectory, dll.Name))
+				if os.IsNotExist(statErr) {
+					return nil, fmt.Errorf("%w: load PCANBasic.dll: %v", gocan.ErrDriverUnavailable, err)
+				}
+			}
+		}
+		return nil, fmt.Errorf("load PCANBasic.dll from the Windows system directory: %w", err)
 	}
 
 	api := &pcanAPI{
