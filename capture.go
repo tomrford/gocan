@@ -530,11 +530,6 @@ func (capture *Capture) endLocked() Cursor {
 // traffic since cursor, however busy the rest of the capture is. To step
 // through deep history, read in bulk with SeriesSince and continue from the
 // returned cursor.
-//
-// TODO: Consider NextOr (the first frame matching any of several keys) and
-// possibly NextAnd (one frame per key) when a consumer such as UDS functional
-// addressing needs them. The waiter table extends naturally: register one
-// waiter under several keys.
 func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (FrameEvent, Cursor, error) {
 	search := cursor
 	for {
