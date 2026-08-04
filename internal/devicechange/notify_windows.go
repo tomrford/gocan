@@ -5,8 +5,7 @@
 //
 // TODO: Migrate Vector from its native-status disconnect detection to a
 // Monitor once physical-removal notifications are qualified on Vector
-// hardware. Add the equivalent OS-level boundary on Linux, normally using
-// netlink, instead of adding provider-specific background liveness polls.
+// hardware.
 // Native API failures remain synchronous fallbacks.
 package devicechange
 
