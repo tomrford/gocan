@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/driverdll"
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
 )
@@ -373,10 +374,9 @@ type xlAPI struct {
 }
 
 func loadXLAPI(fd bool) (*xlAPI, error) {
-	dll := windows.NewLazySystemDLL("vxlapi64.dll")
-	if err := dll.Load(); err != nil {
-		return nil, fmt.Errorf("%w: load vxlapi64.dll from the Windows system directory: %v",
-			gocan.ErrDriverUnavailable, err)
+	dll, err := driverdll.LoadSystem("vxlapi64.dll")
+	if err != nil {
+		return nil, err
 	}
 
 	api := &xlAPI{

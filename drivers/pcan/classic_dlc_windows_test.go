@@ -33,8 +33,6 @@ func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = b.Close() })
 
-	// The rejection contract itself is unit-tested; this exercises hardware
-	// recovery after a rejected send.
 	rejected := gocan.Frame{ID: 0x6e0, DLC: 9}
 	copy(rejected.Data[:8], []byte{9, 1, 2, 3, 4, 5, 6, 7})
 	if err := a.Send(context.Background(), rejected); err == nil {

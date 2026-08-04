@@ -43,9 +43,6 @@ type xlCANFDConfig struct {
 }
 
 func newXLCanFDConfig(config Config) xlCANFDConfig {
-	// These python-can default segments are qualified on Vector hardware at
-	// 500 kbit/s arbitration with 1, 2, and 4 Mbit/s data. Add typed segments
-	// only when a consumer needs another sample point or nominal rate.
 	return xlCANFDConfig{
 		arbitrationBitrate: config.Bitrate,
 		sjwArbitration:     2,

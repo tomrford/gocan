@@ -60,9 +60,6 @@ func TestVectorToPCANClassicalDLCAboveEightHardware(t *testing.T) {
 	assertClassicalDLCs(t, capture, sender, receiver, 0x6c0)
 }
 
-// TestPCANFDAPIClassicalDLCAboveEightHardware qualifies the TPCANMsgFD
-// classical DLC 9..15 path in both directions against a classic-initialized
-// Vector peer.
 func TestPCANFDAPIClassicalDLCAboveEightHardware(t *testing.T) {
 	vectorIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
 	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")

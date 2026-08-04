@@ -18,8 +18,8 @@ type Channel struct {
 	Driver string
 	// Name is the device or interface name reported by the native stack.
 	Name string
-	// SupportsFD reports CAN FD support: native device capability for pcan
-	// and vector, and an FD-sized interface MTU for socketcan.
+	// SupportsFD reports whether the owning driver supports CAN FD on this
+	// channel.
 	SupportsFD bool
 
 	// Exactly one selector field, matching Driver, identifies the channel to
