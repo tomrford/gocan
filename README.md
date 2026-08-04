@@ -19,6 +19,9 @@ settles. Source and package documentation define current behaviour.
 macOS is currently a development target through the virtual driver. It has no
 physical-hardware driver.
 
+Each physical driver exposes its own `Discover`, and the `drivers` package
+aggregates them into one platform-wide channel inventory.
+
 ## Development
 
 The module currently requires Go 1.25 or newer:
