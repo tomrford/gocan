@@ -17,7 +17,7 @@ type Interface struct {
 	// Up reports whether the interface has the Linux IFF_UP flag.
 	Up bool
 	// SupportsFD reports whether the interface MTU accommodates CAN FD
-	// frames, which Config.FD requires.
+	// frames. CAN FD transmission fails on an interface without it.
 	SupportsFD bool
 }
 

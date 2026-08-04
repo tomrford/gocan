@@ -5,6 +5,7 @@ package vector
 import (
 	"context"
 	"encoding/binary"
+	"os"
 	"testing"
 
 	"github.com/tomrford/gocan"
@@ -126,6 +127,14 @@ func assertDiscoveredVectorChannel(t *testing.T, channels []ChannelInfo, want Ch
 		}
 		if channel.Name == "" {
 			t.Errorf("Vector channel %d has an empty name", want)
+		}
+		if channel.SerialNumber == 0 {
+			t.Errorf("Vector channel %d has serial number 0", want)
+		}
+		// A station that runs the FD suites declares this channel FD-capable,
+		// pinning the packed capability offset against the live driver.
+		if os.Getenv("GOCAN_VECTOR_FD_DATA_BITRATE") != "" && !channel.SupportsFD {
+			t.Errorf("Vector channel %d does not report CAN FD capability", want)
 		}
 		return
 	}

@@ -4,7 +4,6 @@ package pcan
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -34,11 +33,12 @@ func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = b.Close() })
 
+	// The rejection contract itself is unit-tested; this exercises hardware
+	// recovery after a rejected send.
 	rejected := gocan.Frame{ID: 0x6e0, DLC: 9}
 	copy(rejected.Data[:8], []byte{9, 1, 2, 3, 4, 5, 6, 7})
-	if err := a.Send(context.Background(), rejected); err == nil ||
-		!strings.Contains(err.Error(), "PCAN classical API cannot send DLC 9") {
-		t.Fatalf("send classical DLC 9 = %v, want path-specific rejection", err)
+	if err := a.Send(context.Background(), rejected); err == nil {
+		t.Fatal("classical API accepted DLC 9")
 	}
 
 	accepted, err := gocan.NewFrame(0x6e1, []byte{8, 1, 2, 3, 4, 5, 6, 7}, 0)

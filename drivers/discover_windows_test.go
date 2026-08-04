@@ -12,14 +12,14 @@ import (
 )
 
 func TestDiscoverWindowsHardware(t *testing.T) {
-	pcanValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
+	pcanValue := os.Getenv("GOCAN_PCAN_CHANNEL")
 	vectorValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
 	if pcanValue == "" || vectorValue == "" {
-		t.Skip("GOCAN_PCAN_CHANNEL_A and GOCAN_VECTOR_CHANNEL_INDEX are not set")
+		t.Skip("GOCAN_PCAN_CHANNEL and GOCAN_VECTOR_CHANNEL_INDEX are not set")
 	}
 	pcanChannel, err := strconv.ParseUint(pcanValue, 0, 16)
 	if err != nil || pcanChannel == 0 {
-		t.Fatalf("GOCAN_PCAN_CHANNEL_A=%q is not a nonzero 16-bit PCAN handle", pcanValue)
+		t.Fatalf("GOCAN_PCAN_CHANNEL=%q is not a nonzero 16-bit PCAN handle", pcanValue)
 	}
 	vectorIndex, err := strconv.ParseUint(vectorValue, 0, 8)
 	if err != nil || vectorIndex >= 64 {

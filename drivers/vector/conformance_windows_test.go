@@ -45,7 +45,10 @@ func TestVectorConformance(t *testing.T) {
 }
 
 // TestVectorPCANFDConformance qualifies the PCAN CAN FD API against a
-// Vector FD peer on the shared medium.
+// Vector FD peer on the shared medium. The FD cases require the PEAK
+// adapter's stored device configuration to be ISO CAN FD; PCAN-Basic cannot
+// select the framing mode, so a non-ISO adapter fails them while the
+// classical cases still pass.
 func TestVectorPCANFDConformance(t *testing.T) {
 	vectorChannel := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
 	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")

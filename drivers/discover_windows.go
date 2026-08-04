@@ -6,7 +6,6 @@ import (
 	"errors"
 
 	"github.com/tomrford/gocan/drivers/pcan"
-	"github.com/tomrford/gocan/drivers/vector"
 )
 
 // Discover reports the attached PCAN channels followed by the CAN-capable
@@ -15,7 +14,7 @@ import (
 // error, so one missing vendor stack does not hide the other's channels.
 func Discover() ([]Channel, error) {
 	pcanChannels, pcanErr := pcan.Discover()
-	vectorChannels, vectorErr := vector.Discover()
+	vectorChannels, vectorErr := discoverVector()
 
 	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels))
 	for _, channel := range pcanChannels {
@@ -26,13 +25,6 @@ func Discover() ([]Channel, error) {
 			PCANChannel: channel.Channel,
 		})
 	}
-	for _, channel := range vectorChannels {
-		channels = append(channels, Channel{
-			Driver:             "vector",
-			Name:               channel.Name,
-			SupportsFD:         channel.SupportsFD,
-			VectorChannelIndex: channel.ChannelIndex,
-		})
-	}
+	channels = append(channels, vectorChannels...)
 	return channels, errors.Join(pcanErr, vectorErr)
 }
