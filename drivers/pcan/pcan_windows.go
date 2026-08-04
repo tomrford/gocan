@@ -258,7 +258,8 @@ type pcanAPI struct {
 func loadPCANAPI() (*pcanAPI, error) {
 	dll := windows.NewLazySystemDLL("PCANBasic.dll")
 	if err := dll.Load(); err != nil {
-		return nil, fmt.Errorf("load PCANBasic.dll from the Windows system directory: %w", err)
+		return nil, fmt.Errorf("%w: load PCANBasic.dll from the Windows system directory: %v",
+			gocan.ErrDriverUnavailable, err)
 	}
 
 	api := &pcanAPI{

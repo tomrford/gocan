@@ -375,7 +375,8 @@ type xlAPI struct {
 func loadXLAPI(fd bool) (*xlAPI, error) {
 	dll := windows.NewLazySystemDLL("vxlapi64.dll")
 	if err := dll.Load(); err != nil {
-		return nil, fmt.Errorf("load vxlapi64.dll from the Windows system directory: %w", err)
+		return nil, fmt.Errorf("%w: load vxlapi64.dll from the Windows system directory: %v",
+			gocan.ErrDriverUnavailable, err)
 	}
 
 	api := &xlAPI{
