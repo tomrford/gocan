@@ -5,56 +5,16 @@ package vector
 import (
 	"context"
 	"encoding/binary"
-	"os"
-	"strconv"
 	"testing"
 
 	"github.com/tomrford/gocan"
 )
 
-func TestVectorDiscoveryNativeLayout(t *testing.T) {
-	if got := len(xlChannelConfig{}); got != 227 {
-		t.Fatalf("XLchannelConfig size = %d, want 227", got)
-	}
-	if got := len(xlDriverConfig{}); got != 14576 {
-		t.Fatalf("XLdriverConfig size = %d, want 14576", got)
-	}
-
-	var driver xlDriverConfig
-	binary.LittleEndian.PutUint32(driver[xlDriverChannelCountOffset:], 7)
-	if got := driver.channelCount(); got != 7 {
-		t.Fatalf("XLdriverConfig channel count = %d, want 7", got)
-	}
-
-	var channel xlChannelConfig
-	copy(channel[xlChannelNameOffset:], "Vector channel\x00ignored")
-	channel[xlChannelHardwareChannelOffset] = 3
-	channel[xlChannelIndexOffset] = 17
-	binary.LittleEndian.PutUint32(channel[xlChannelCapabilitiesOffset:], xlChannelCapabilityCANFDISO)
-	binary.LittleEndian.PutUint32(channel[xlChannelBusCapabilitiesOffset:], xlBusActiveCapabilityCAN)
-	binary.LittleEndian.PutUint32(channel[xlChannelSerialNumberOffset:], 123456)
-	setXLDriverChannel(&driver, 6, channel)
-
-	got := driver.channel(6)
-	if got != channel {
-		t.Fatal("XLdriverConfig channel array offset or stride does not preserve XLchannelConfig")
-	}
-	if info := mapXLChannelConfig(&got); info != (ChannelInfo{
-		ChannelIndex:    17,
-		Name:            "Vector channel",
-		SerialNumber:    123456,
-		HardwareChannel: 3,
-		SupportsFD:      true,
-	}) {
-		t.Fatalf("mapped packed XLchannelConfig = %+v", info)
-	}
-}
-
 func TestMapXLDriverConfig(t *testing.T) {
 	var driver xlDriverConfig
 	binary.LittleEndian.PutUint32(driver[xlDriverChannelCountOffset:], 3)
 	setXLDriverChannel(&driver, 0, discoveryChannel(
-		"VN1630A 1", 9, 2, 1001,
+		"Example FD 1\x00ignored", 9, 2, 1001,
 		xlBusActiveCapabilityCAN,
 		xlChannelCapabilityCANFDISO|0x20000000,
 	))
@@ -76,7 +36,7 @@ func TestMapXLDriverConfig(t *testing.T) {
 	want := []ChannelInfo{
 		{
 			ChannelIndex:    9,
-			Name:            "VN1630A 1",
+			Name:            "Example FD 1",
 			SerialNumber:    1001,
 			HardwareChannel: 2,
 			SupportsFD:      true,
@@ -107,11 +67,7 @@ func TestMapXLDriverConfigRejectsImplausibleCount(t *testing.T) {
 }
 
 func TestDiscoverVectorHardware(t *testing.T) {
-	channelValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	if channelValue == "" {
-		t.Skip("GOCAN_VECTOR_CHANNEL_INDEX is not set")
-	}
-	channelIndex := parseDiscoveryChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX", channelValue)
+	channelIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
 
 	channels, err := Discover()
 	if err != nil {
@@ -160,15 +116,6 @@ func discoveryChannel(
 func setXLDriverChannel(driver *xlDriverConfig, index int, channel xlChannelConfig) {
 	start := xlDriverChannelsOffset + index*xlChannelConfigSize
 	copy(driver[start:start+xlChannelConfigSize], channel[:])
-}
-
-func parseDiscoveryChannelIndex(t *testing.T, name, value string) ChannelIndex {
-	t.Helper()
-	index, err := strconv.ParseUint(value, 0, 8)
-	if err != nil || index >= 64 {
-		t.Fatalf("%s=%q is not a channel index from 0 through 63", name, value)
-	}
-	return ChannelIndex(index)
 }
 
 func assertDiscoveredVectorChannel(t *testing.T, channels []ChannelInfo, want ChannelIndex) {

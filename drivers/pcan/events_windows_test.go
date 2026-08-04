@@ -5,8 +5,6 @@ package pcan
 import (
 	"context"
 	"errors"
-	"os"
-	"strconv"
 	"testing"
 	"time"
 
@@ -14,8 +12,8 @@ import (
 )
 
 func TestPCANTransmitQueueFull(t *testing.T) {
-	channelA := eventTestChannel(t, "GOCAN_PCAN_CHANNEL_A")
-	channelB := eventTestChannel(t, "GOCAN_PCAN_CHANNEL_B")
+	channelA := testChannel(t, "GOCAN_PCAN_CHANNEL_A")
+	channelB := testChannel(t, "GOCAN_PCAN_CHANNEL_B")
 	capture := gocan.NewCapture()
 	target, err := Open(context.Background(), capture, Config{
 		ID: 1, Name: "pcan-target", Channel: channelA, Bitrate: Bitrate500K,
@@ -77,8 +75,8 @@ func TestPCANTransmitQueueFull(t *testing.T) {
 }
 
 func TestPCANClassicEvents(t *testing.T) {
-	channelA := eventTestChannel(t, "GOCAN_PCAN_CHANNEL_A")
-	channelB := eventTestChannel(t, "GOCAN_PCAN_CHANNEL_B")
+	channelA := testChannel(t, "GOCAN_PCAN_CHANNEL_A")
+	channelB := testChannel(t, "GOCAN_PCAN_CHANNEL_B")
 
 	capture := gocan.NewCapture()
 	target, err := Open(context.Background(), capture, Config{
@@ -169,19 +167,6 @@ func TestPCANClassicEvents(t *testing.T) {
 		return event.Kind == gocan.EventControllerState &&
 			event.ControllerState == gocan.ControllerActive
 	})
-}
-
-func eventTestChannel(t *testing.T, name string) Channel {
-	t.Helper()
-	value := os.Getenv(name)
-	if value == "" {
-		t.Skipf("%s is not set", name)
-	}
-	channel, err := strconv.ParseUint(value, 0, 16)
-	if err != nil || channel == 0 {
-		t.Fatalf("%s=%q is not a nonzero 16-bit PCAN handle", name, value)
-	}
-	return Channel(channel)
 }
 
 func waitForPCANEvents(

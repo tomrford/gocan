@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -170,7 +171,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		uninitialize()
 		return nil, err
 	}
-	if !containsPCANChannel(attached, config.Channel) {
+	if !slices.ContainsFunc(attached, func(info ChannelInfo) bool { return info.Channel == config.Channel }) {
 		uninitialize()
 		return nil, missingPCANChannelError(config.Channel)
 	}
@@ -356,15 +357,6 @@ func mapPCANChannelInformation(information pcanChannelInformation) ChannelInfo {
 		SupportsFD:       information.deviceFeatures&pcanFeatureFD != 0,
 		Condition:        ChannelCondition(information.channelCondition),
 	}
-}
-
-func containsPCANChannel(channels []ChannelInfo, channel Channel) bool {
-	for index := range channels {
-		if channels[index].Channel == channel {
-			return true
-		}
-	}
-	return false
 }
 
 func missingPCANChannelError(channel Channel) error {

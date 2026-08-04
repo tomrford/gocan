@@ -5,7 +5,6 @@ package pcan
 import (
 	"context"
 	"os"
-	"strconv"
 	"testing"
 
 	"github.com/tomrford/gocan"
@@ -13,22 +12,8 @@ import (
 )
 
 func TestPCANConformance(t *testing.T) {
-	channelAValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
-	channelBValue := os.Getenv("GOCAN_PCAN_CHANNEL_B")
-	if channelAValue == "" || channelBValue == "" {
-		t.Skip("GOCAN_PCAN_CHANNEL_A and GOCAN_PCAN_CHANNEL_B are not set")
-	}
-
-	parseChannel := func(name, value string) Channel {
-		t.Helper()
-		channel, err := strconv.ParseUint(value, 0, 16)
-		if err != nil || channel == 0 {
-			t.Fatalf("%s=%q is not a nonzero 16-bit numeric PCAN handle", name, value)
-		}
-		return Channel(channel)
-	}
-	channelA := parseChannel("GOCAN_PCAN_CHANNEL_A", channelAValue)
-	channelB := parseChannel("GOCAN_PCAN_CHANNEL_B", channelBValue)
+	channelA := testChannel(t, "GOCAN_PCAN_CHANNEL_A")
+	channelB := testChannel(t, "GOCAN_PCAN_CHANNEL_B")
 	fdBitrate := os.Getenv("GOCAN_PCAN_FD_BITRATE")
 
 	open := func(t *testing.T, capture *gocan.Capture) (gocan.Bus, gocan.Bus) {

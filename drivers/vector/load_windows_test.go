@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -20,13 +19,8 @@ import (
 const hardwareLoadTimeout = 30 * time.Second
 
 func TestVectorTransmitQueueFull(t *testing.T) {
-	pcanValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
-	vectorValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	if pcanValue == "" || vectorValue == "" {
-		t.Skip("GOCAN_PCAN_CHANNEL_A and GOCAN_VECTOR_CHANNEL_INDEX are not set")
-	}
-	pcanChannel := parseHardwareUint(t, "GOCAN_PCAN_CHANNEL_A", pcanValue, 16)
-	vectorIndex := parseHardwareUint(t, "GOCAN_VECTOR_CHANNEL_INDEX", vectorValue, 8)
+	vectorIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
+	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")
 
 	frame, err := gocan.NewFrame(0x590, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 0)
 	if err != nil {
@@ -34,11 +28,11 @@ func TestVectorTransmitQueueFull(t *testing.T) {
 	}
 	runVectorTransmitQueueFull(t, vectorSaturationSetup{
 		target: Config{
-			ID: 2, Name: "vector", ChannelIndex: ChannelIndex(vectorIndex), Bitrate: 500_000,
+			ID: 2, Name: "vector", ChannelIndex: vectorIndex, Bitrate: 500_000,
 		},
 		openPeer: func(capture *gocan.Capture) (gocan.Bus, error) {
 			return pcan.Open(context.Background(), capture, pcan.Config{
-				ID: 1, Name: "pcan-peer", Channel: pcan.Channel(pcanChannel), Bitrate: pcan.Bitrate500K,
+				ID: 1, Name: "pcan-peer", Channel: pcanChannel, Bitrate: pcan.Bitrate500K,
 			})
 		},
 		frame: frame,
@@ -132,30 +126,15 @@ func runVectorTransmitQueueFull(t *testing.T, setup vectorSaturationSetup) {
 }
 
 func TestVectorThreeAdapterLoad(t *testing.T) {
-	pcanChannelValue := os.Getenv("GOCAN_PCAN_CHANNEL")
-	vectorAValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	vectorBValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX_B")
-	if pcanChannelValue == "" || vectorAValue == "" || vectorBValue == "" {
-		t.Skip("GOCAN_PCAN_CHANNEL, GOCAN_VECTOR_CHANNEL_INDEX, and GOCAN_VECTOR_CHANNEL_INDEX_B are not set")
-	}
-
-	pcanChannel := parseHardwareUint(t, "GOCAN_PCAN_CHANNEL", pcanChannelValue, 16)
-	vectorAIndex := parseHardwareUint(t, "GOCAN_VECTOR_CHANNEL_INDEX", vectorAValue, 8)
-	vectorBIndex := parseHardwareUint(t, "GOCAN_VECTOR_CHANNEL_INDEX_B", vectorBValue, 8)
-	if pcanChannel == 0 {
-		t.Fatal("GOCAN_PCAN_CHANNEL must be nonzero")
-	}
-	if vectorAIndex >= 64 || vectorBIndex >= 64 || vectorAIndex == vectorBIndex {
-		t.Fatalf("Vector indexes must be distinct values from 0 through 63; got %d and %d", vectorAIndex, vectorBIndex)
-	}
-
+	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")
+	vectorAIndex, vectorBIndex := vectorPairIndexes(t)
 	framesPerAdapter, sendInterval := loadTestParameters(t)
 
 	capture := gocan.NewCapture()
 	pcanBus, err := pcan.Open(context.Background(), capture, pcan.Config{
 		ID:      1,
 		Name:    "pcan",
-		Channel: pcan.Channel(pcanChannel),
+		Channel: pcanChannel,
 		Bitrate: pcan.Bitrate500K,
 	})
 	if err != nil {
@@ -166,7 +145,7 @@ func TestVectorThreeAdapterLoad(t *testing.T) {
 	vectorA, err := Open(context.Background(), capture, Config{
 		ID:           2,
 		Name:         "vector-a",
-		ChannelIndex: ChannelIndex(vectorAIndex),
+		ChannelIndex: vectorAIndex,
 		Bitrate:      500_000,
 	})
 	if err != nil {
@@ -177,7 +156,7 @@ func TestVectorThreeAdapterLoad(t *testing.T) {
 	vectorB, err := Open(context.Background(), capture, Config{
 		ID:           3,
 		Name:         "vector-b",
-		ChannelIndex: ChannelIndex(vectorBIndex),
+		ChannelIndex: vectorBIndex,
 		Bitrate:      500_000,
 	})
 	if err != nil {
@@ -208,40 +187,31 @@ func TestVectorThreeAdapterLoad(t *testing.T) {
 }
 
 func TestTwoPCANVectorLoad(t *testing.T) {
-	pcanAValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
-	pcanBValue := os.Getenv("GOCAN_PCAN_CHANNEL_B")
-	vectorValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	if pcanAValue == "" || pcanBValue == "" || vectorValue == "" {
-		t.Skip("GOCAN_PCAN_CHANNEL_A, GOCAN_PCAN_CHANNEL_B, and GOCAN_VECTOR_CHANNEL_INDEX are not set")
-	}
-	pcanAChannel := parseHardwareUint(t, "GOCAN_PCAN_CHANNEL_A", pcanAValue, 16)
-	pcanBChannel := parseHardwareUint(t, "GOCAN_PCAN_CHANNEL_B", pcanBValue, 16)
-	vectorIndex := parseHardwareUint(t, "GOCAN_VECTOR_CHANNEL_INDEX", vectorValue, 8)
-	if pcanAChannel == 0 || pcanBChannel == 0 || pcanAChannel == pcanBChannel {
-		t.Fatalf("PCAN handles must be distinct and nonzero; got %#x and %#x", pcanAChannel, pcanBChannel)
-	}
-	if vectorIndex >= 64 {
-		t.Fatalf("Vector index must be from 0 through 63; got %d", vectorIndex)
+	pcanAChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL_A")
+	pcanBChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL_B")
+	vectorIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
+	if pcanAChannel == pcanBChannel {
+		t.Fatalf("GOCAN_PCAN_CHANNEL_A and GOCAN_PCAN_CHANNEL_B both select channel %#x", uint16(pcanAChannel))
 	}
 	framesPerAdapter, sendInterval := loadTestParameters(t)
 
 	capture := gocan.NewCapture()
 	pcanA, err := pcan.Open(context.Background(), capture, pcan.Config{
-		ID: 1, Name: "pcan-a", Channel: pcan.Channel(pcanAChannel), Bitrate: pcan.Bitrate500K,
+		ID: 1, Name: "pcan-a", Channel: pcanAChannel, Bitrate: pcan.Bitrate500K,
 	})
 	if err != nil {
 		t.Fatalf("open first PCAN: %v", err)
 	}
 	t.Cleanup(func() { _ = pcanA.Close() })
 	pcanB, err := pcan.Open(context.Background(), capture, pcan.Config{
-		ID: 2, Name: "pcan-b", Channel: pcan.Channel(pcanBChannel), Bitrate: pcan.Bitrate500K,
+		ID: 2, Name: "pcan-b", Channel: pcanBChannel, Bitrate: pcan.Bitrate500K,
 	})
 	if err != nil {
 		t.Fatalf("open second PCAN: %v", err)
 	}
 	t.Cleanup(func() { _ = pcanB.Close() })
 	vectorBus, err := Open(context.Background(), capture, Config{
-		ID: 3, Name: "vector", ChannelIndex: ChannelIndex(vectorIndex), Bitrate: 500_000,
+		ID: 3, Name: "vector", ChannelIndex: vectorIndex, Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open Vector: %v", err)
@@ -284,15 +254,6 @@ func loadTestParameters(t *testing.T) (int, time.Duration) {
 		sendInterval = parsedInterval
 	}
 	return int(framesPerAdapter), sendInterval
-}
-
-func parseHardwareUint(t testing.TB, name, value string, bits int) uint64 {
-	t.Helper()
-	parsed, err := strconv.ParseUint(value, 0, bits)
-	if err != nil {
-		t.Fatalf("%s=%q is not an unsigned %d-bit integer", name, value, bits)
-	}
-	return parsed
 }
 
 func sendThreeAdapterLoad(t *testing.T, buses []gocan.Bus, framesPerAdapter int, sendInterval time.Duration) {

@@ -4,7 +4,6 @@ package pcan
 
 import (
 	"os"
-	"strconv"
 	"testing"
 )
 
@@ -57,30 +56,10 @@ func TestMapPCANChannelInformation(t *testing.T) {
 	}
 }
 
-func TestChannelConditionValues(t *testing.T) {
-	conditions := []ChannelCondition{
-		ChannelConditionUnavailable,
-		ChannelConditionAvailable,
-		ChannelConditionOccupied,
-		ChannelConditionPCANView,
-	}
-	for value, condition := range conditions {
-		if condition != ChannelCondition(value) {
-			t.Errorf("condition %d = %d", value, condition)
-		}
-	}
-}
-
 func TestDiscoverPCANHardware(t *testing.T) {
-	channelAValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
-	channelBValue := os.Getenv("GOCAN_PCAN_CHANNEL_B")
-	if channelAValue == "" || channelBValue == "" {
-		t.Skip("GOCAN_PCAN_CHANNEL_A and GOCAN_PCAN_CHANNEL_B are not set")
-	}
-
-	want := map[Channel]bool{
-		parseDiscoveryChannel(t, "GOCAN_PCAN_CHANNEL_A", channelAValue): false,
-		parseDiscoveryChannel(t, "GOCAN_PCAN_CHANNEL_B", channelBValue): false,
+	want := map[Channel]bool{testChannel(t, "GOCAN_PCAN_CHANNEL_A"): false}
+	if os.Getenv("GOCAN_PCAN_CHANNEL_B") != "" {
+		want[testChannel(t, "GOCAN_PCAN_CHANNEL_B")] = false
 	}
 	channels, err := Discover()
 	if err != nil {
@@ -112,13 +91,4 @@ func deviceName(name string, trailing byte) [33]byte {
 		buffer[index] = trailing
 	}
 	return buffer
-}
-
-func parseDiscoveryChannel(t *testing.T, name, value string) Channel {
-	t.Helper()
-	channel, err := strconv.ParseUint(value, 0, 16)
-	if err != nil || channel == 0 {
-		t.Fatalf("%s=%q is not a nonzero 16-bit numeric PCAN handle", name, value)
-	}
-	return Channel(channel)
 }

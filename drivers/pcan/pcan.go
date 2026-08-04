@@ -144,7 +144,7 @@ func validateSendFrame(frame gocan.Frame, fdAPI bool) error {
 	// TPCANMsg's LEN member is limited to 0..8. TPCANMsgFD carries the full
 	// four-bit DLC even when the EDL/FD flag is clear.
 	// TODO: Qualify the TPCANMsgFD classical DLC 9..15 path on FD-capable PCAN
-	// hardware; the available PCAN-USB adapters support classical CAN only.
+	// hardware.
 	if !fdAPI && frame.DLC > 8 {
 		return fmt.Errorf("PCAN classical API cannot send DLC %d", frame.DLC)
 	}

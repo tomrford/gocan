@@ -4,8 +4,6 @@ package pcan
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +12,8 @@ import (
 )
 
 func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
-	channelA := currentPCANTestChannel(t, "GOCAN_PCAN_CHANNEL_A")
-	channelB := currentPCANTestChannel(t, "GOCAN_PCAN_CHANNEL_B")
+	channelA := testChannel(t, "GOCAN_PCAN_CHANNEL_A")
+	channelB := testChannel(t, "GOCAN_PCAN_CHANNEL_B")
 	if channelA == channelB {
 		t.Fatalf("GOCAN_PCAN_CHANNEL_A and GOCAN_PCAN_CHANNEL_B both select channel %#x", uint16(channelA))
 	}
@@ -62,28 +60,4 @@ func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
 	if event.Frame != accepted {
 		t.Fatalf("received DLC 8 frame = %+v, want %+v", event.Frame, accepted)
 	}
-}
-
-func currentPCANTestChannel(t *testing.T, envName string) Channel {
-	t.Helper()
-	value := os.Getenv(envName)
-	if value == "" {
-		t.Skipf("%s is not set", envName)
-	}
-	parsed, err := strconv.ParseUint(value, 0, 16)
-	if err != nil || parsed == 0 {
-		t.Fatalf("%s=%q is not a nonzero 16-bit PCAN handle", envName, value)
-	}
-	want := Channel(parsed)
-	channels, err := Discover()
-	if err != nil {
-		t.Fatalf("rediscover PCAN channels: %v", err)
-	}
-	for _, channel := range channels {
-		if channel.Channel == want {
-			return want
-		}
-	}
-	t.Fatalf("PCAN channel %#x from %s is absent from the current discovery result: %+v", uint16(want), envName, channels)
-	return 0
 }

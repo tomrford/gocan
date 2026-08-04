@@ -4,34 +4,16 @@ package pcan
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"testing"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/conformance"
 )
 
-func benchPCANPair(b *testing.B) (Channel, Channel) {
-	b.Helper()
-	channelAValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
-	channelBValue := os.Getenv("GOCAN_PCAN_CHANNEL_B")
-	if channelAValue == "" || channelBValue == "" {
-		b.Skip("GOCAN_PCAN_CHANNEL_A and GOCAN_PCAN_CHANNEL_B are not set")
-	}
-	parse := func(name, value string) Channel {
-		channel, err := strconv.ParseUint(value, 0, 16)
-		if err != nil || channel == 0 {
-			b.Fatalf("%s=%q is not a nonzero 16-bit numeric PCAN handle", name, value)
-		}
-		return Channel(channel)
-	}
-	return parse("GOCAN_PCAN_CHANNEL_A", channelAValue), parse("GOCAN_PCAN_CHANNEL_B", channelBValue)
-}
-
 func benchPCANBuses(b *testing.B, frameID uint32) (*gocan.Capture, gocan.Bus, gocan.Bus, gocan.Frame) {
 	b.Helper()
-	channelA, channelB := benchPCANPair(b)
+	channelA := testChannel(b, "GOCAN_PCAN_CHANNEL_A")
+	channelB := testChannel(b, "GOCAN_PCAN_CHANNEL_B")
 	ctx := context.Background()
 	capture := gocan.NewCapture()
 

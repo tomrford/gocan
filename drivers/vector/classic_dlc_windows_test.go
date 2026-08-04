@@ -4,8 +4,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"testing"
 	"time"
 
@@ -16,24 +14,24 @@ import (
 const classicalDLCHardwareTimeout = 5 * time.Second
 
 func TestVectorClassicDLCAboveEightHardware(t *testing.T) {
-	vectorA, vectorB := currentVectorPair(t, false)
+	vectorA, vectorB := vectorPairIndexes(t)
 	runVectorClassicalDLCMatrix(t, vectorA, vectorB, 0, 0)
 }
 
 func TestVectorFDAPIClassicalDLCAboveEightHardware(t *testing.T) {
-	vectorA, vectorB := currentVectorPair(t, true)
+	vectorA, vectorB := vectorPairIndexes(t)
 	dataBitrate := vectorFDDataBitrate(t)
 	runVectorClassicalDLCMatrix(t, vectorA, vectorB, dataBitrate, dataBitrate)
 }
 
 func TestVectorMixedAPIClassicalDLCAboveEightHardware(t *testing.T) {
-	vectorA, vectorB := currentVectorPair(t, true)
+	vectorA, vectorB := vectorPairIndexes(t)
 	runVectorClassicalDLCMatrix(t, vectorA, vectorB, 0, vectorFDDataBitrate(t))
 }
 
 func TestVectorToPCANClassicalDLCAboveEightHardware(t *testing.T) {
-	vectorIndex := currentVectorIndex(t, "GOCAN_VECTOR_CLASSIC_DLC_CHANNEL_INDEX", false)
-	pcanChannel := currentPCANChannel(t, "GOCAN_PCAN_CLASSIC_DLC_CHANNEL")
+	vectorIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
+	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")
 	capture := gocan.NewCapture()
 
 	sender, err := Open(context.Background(), capture, Config{
@@ -143,66 +141,4 @@ func assertClassicalDLCs(
 			}
 		}
 	}
-}
-
-func currentVectorPair(t *testing.T, requireFD bool) (ChannelIndex, ChannelIndex) {
-	t.Helper()
-	a := currentVectorIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX", requireFD)
-	b := currentVectorIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX_B", requireFD)
-	if a == b {
-		t.Fatalf("GOCAN_VECTOR_CHANNEL_INDEX and GOCAN_VECTOR_CHANNEL_INDEX_B both select channel %d", a)
-	}
-	return a, b
-}
-
-func currentVectorIndex(t *testing.T, envName string, requireFD bool) ChannelIndex {
-	t.Helper()
-	value := os.Getenv(envName)
-	if value == "" {
-		t.Skipf("%s is not set", envName)
-	}
-	parsed, err := strconv.ParseUint(value, 0, 8)
-	if err != nil || parsed >= 64 {
-		t.Fatalf("%s=%q is not a channel index from 0 through 63", envName, value)
-	}
-	want := ChannelIndex(parsed)
-	channels, err := Discover()
-	if err != nil {
-		t.Fatalf("rediscover Vector channels: %v", err)
-	}
-	for _, channel := range channels {
-		if channel.ChannelIndex != want {
-			continue
-		}
-		if requireFD && !channel.SupportsFD {
-			t.Fatalf("rediscovered Vector channel %d (%s) is not FD-capable", want, channel.Name)
-		}
-		return want
-	}
-	t.Fatalf("Vector channel index %d from %s is absent from the current discovery result: %+v", want, envName, channels)
-	return 0
-}
-
-func currentPCANChannel(t *testing.T, envName string) pcan.Channel {
-	t.Helper()
-	value := os.Getenv(envName)
-	if value == "" {
-		t.Skipf("%s is not set", envName)
-	}
-	parsed, err := strconv.ParseUint(value, 0, 16)
-	if err != nil || parsed == 0 {
-		t.Fatalf("%s=%q is not a nonzero 16-bit PCAN handle", envName, value)
-	}
-	want := pcan.Channel(parsed)
-	channels, err := pcan.Discover()
-	if err != nil {
-		t.Fatalf("rediscover PCAN channels: %v", err)
-	}
-	for _, channel := range channels {
-		if channel.Channel == want {
-			return want
-		}
-	}
-	t.Fatalf("PCAN channel %#x from %s is absent from the current discovery result: %+v", uint16(want), envName, channels)
-	return 0
 }
