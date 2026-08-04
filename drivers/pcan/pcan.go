@@ -68,6 +68,7 @@ const (
 	pcanAllowErrorFrames  = 0x20
 	pcanAttachedCount     = 0x2a
 	pcanAttachedChannels  = 0x2b
+	pcanFeatureFD         = 0x01
 
 	pcanMessageRemote   = 0x01
 	pcanMessageExtended = 0x02
@@ -94,10 +95,14 @@ type pcanMsgFD struct {
 }
 
 type pcanChannelInformation struct {
-	channelHandle Channel
-	_             [42]byte
-	deviceID      uint32
-	_             [4]byte
+	channelHandle    Channel
+	deviceType       uint8
+	controllerNumber uint8
+	deviceFeatures   uint32
+	deviceName       [33]byte
+	_                [3]byte
+	deviceID         uint32
+	channelCondition uint32
 }
 
 type pcanReceiveObservation struct {

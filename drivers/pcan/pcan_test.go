@@ -26,8 +26,23 @@ func TestNativeLayouts(t *testing.T) {
 	if got := unsafe.Sizeof(pcanChannelInformation{}); got != 52 {
 		t.Errorf("TPCANChannelInformation size = %d, want 52", got)
 	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceType); got != 2 {
+		t.Errorf("TPCANChannelInformation device type offset = %d, want 2", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.controllerNumber); got != 3 {
+		t.Errorf("TPCANChannelInformation controller number offset = %d, want 3", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceFeatures); got != 4 {
+		t.Errorf("TPCANChannelInformation device features offset = %d, want 4", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceName); got != 8 {
+		t.Errorf("TPCANChannelInformation device name offset = %d, want 8", got)
+	}
 	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceID); got != 44 {
 		t.Errorf("TPCANChannelInformation device ID offset = %d, want 44", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.channelCondition); got != 48 {
+		t.Errorf("TPCANChannelInformation channel condition offset = %d, want 48", got)
 	}
 }
 

@@ -3,10 +3,10 @@
 package pcan
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +35,41 @@ const channelSettleDelay = 25 * time.Millisecond
 // PCAN bus stops, because a classic PCAN-USB handle cannot be reliably mapped
 // to one Windows device instance.
 var processPCANDevices = devicechange.NewMonitor(`USB\VID_0C72&`, "PEAK USB")
+
+// ChannelCondition reports the native availability state of a PCAN channel.
+type ChannelCondition uint32
+
+const (
+	// ChannelConditionUnavailable means that the channel is not available.
+	ChannelConditionUnavailable ChannelCondition = iota
+	// ChannelConditionAvailable means that the channel is available for use.
+	ChannelConditionAvailable
+	// ChannelConditionOccupied means that the channel is already in use.
+	ChannelConditionOccupied
+	// ChannelConditionPCANView means that the channel is in use by PCAN-View
+	// but remains available to initialize.
+	ChannelConditionPCANView
+)
+
+// ChannelInfo describes one channel reported by PCAN-Basic.
+type ChannelInfo struct {
+	Channel          Channel
+	Name             string
+	DeviceID         uint32
+	ControllerNumber uint8
+	SupportsFD       bool
+	Condition        ChannelCondition
+}
+
+// Discover reports the attached PCAN channels without initializing them.
+// The result includes occupied channels in the order reported by PCAN-Basic.
+func Discover() ([]ChannelInfo, error) {
+	api, err := loadPCANAPI()
+	if err != nil {
+		return nil, err
+	}
+	return queryAttachedPCANChannels(api)
+}
 
 // Open initializes a PCAN-Basic channel and starts capturing received frames.
 //
@@ -135,7 +170,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		uninitialize()
 		return nil, err
 	}
-	if !slices.Contains(attached, config.Channel) {
+	if !containsPCANChannel(attached, config.Channel) {
 		uninitialize()
 		return nil, missingPCANChannelError(config.Channel)
 	}
@@ -273,7 +308,7 @@ func (api *pcanAPI) statusError(operation string, status pcanStatus) error {
 	return fmt.Errorf("%s: PCAN status %#08x: %s", operation, uint32(status), textBuffer[:length])
 }
 
-func queryAttachedPCANChannels(api *pcanAPI) ([]Channel, error) {
+func queryAttachedPCANChannels(api *pcanAPI) ([]ChannelInfo, error) {
 	var count uint32
 	result, _, _ := api.getValue.Call(
 		0,
@@ -301,11 +336,35 @@ func queryAttachedPCANChannels(api *pcanAPI) ([]Channel, error) {
 	if status := pcanStatus(result); status != pcanStatusOK {
 		return nil, api.statusError("query attached PCAN channels", status)
 	}
-	channels := make([]Channel, len(information))
+	channels := make([]ChannelInfo, len(information))
 	for index := range information {
-		channels[index] = information[index].channelHandle
+		channels[index] = mapPCANChannelInformation(information[index])
 	}
 	return channels, nil
+}
+
+func mapPCANChannelInformation(information pcanChannelInformation) ChannelInfo {
+	name := information.deviceName[:]
+	if end := bytes.IndexByte(name, 0); end >= 0 {
+		name = name[:end]
+	}
+	return ChannelInfo{
+		Channel:          information.channelHandle,
+		Name:             string(name),
+		DeviceID:         information.deviceID,
+		ControllerNumber: information.controllerNumber,
+		SupportsFD:       information.deviceFeatures&pcanFeatureFD != 0,
+		Condition:        ChannelCondition(information.channelCondition),
+	}
+}
+
+func containsPCANChannel(channels []ChannelInfo, channel Channel) bool {
+	for index := range channels {
+		if channels[index].Channel == channel {
+			return true
+		}
+	}
+	return false
 }
 
 func missingPCANChannelError(channel Channel) error {
