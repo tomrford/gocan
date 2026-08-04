@@ -257,7 +257,7 @@ func decodeClassicReceiveEvent(
 	if unsupported := message.flags & xlUnsupportedMessageFlags; unsupported != 0 {
 		return receiveObservation{}, fmt.Errorf("unsupported Vector message flags %#04x", unsupported)
 	}
-	if message.dlc > 8 {
+	if message.dlc > 15 {
 		return receiveObservation{}, fmt.Errorf("classic Vector frame has DLC %d", message.dlc)
 	}
 
@@ -275,7 +275,8 @@ func decodeClassicReceiveEvent(
 		Flags: flags,
 	}
 	if !flags.Has(gocan.FrameRemote) {
-		copy(frame.Data[:], message.data[:message.dlc])
+		length := min(int(frame.DLC), 8)
+		copy(frame.Data[:], message.data[:length])
 	}
 	if err := frame.Validate(); err != nil {
 		return receiveObservation{}, fmt.Errorf("decode Vector frame: %w", err)

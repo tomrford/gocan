@@ -134,6 +134,23 @@ func validateConfig(capture *gocan.Capture, config Config) error {
 	return nil
 }
 
+func validateSendFrame(frame gocan.Frame, fdAPI bool) error {
+	if err := frame.Validate(); err != nil {
+		return err
+	}
+	if frame.Flags.Has(gocan.FrameFD) && !fdAPI {
+		return errors.New("PCAN classical bus cannot send a CAN FD frame")
+	}
+	// TPCANMsg's LEN member is limited to 0..8. TPCANMsgFD carries the full
+	// four-bit DLC even when the EDL/FD flag is clear.
+	// TODO: Qualify the TPCANMsgFD classical DLC 9..15 path on FD-capable PCAN
+	// hardware; the available PCAN-USB adapters support classical CAN only.
+	if !fdAPI && frame.DLC > 8 {
+		return fmt.Errorf("PCAN classical API cannot send DLC %d", frame.DLC)
+	}
+	return nil
+}
+
 func encodeClassicMessage(frame gocan.Frame) pcanMsg {
 	message := pcanMsg{
 		id:          frame.ID,

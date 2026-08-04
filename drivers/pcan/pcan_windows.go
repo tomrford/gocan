@@ -408,17 +408,8 @@ func (bus *Bus) Name() string {
 
 // Send hands frame to PCAN-Basic and records an accepted transmission.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
-	if err := frame.Validate(); err != nil {
+	if err := validateSendFrame(frame, bus.fd); err != nil {
 		return err
-	}
-	if frame.Flags.Has(gocan.FrameFD) && !bus.fd {
-		return errors.New("PCAN classical bus cannot send a CAN FD frame")
-	}
-	// TODO: Preserve classical DLC values 9..15 only after real hardware
-	// confirms how PCAN-Basic reports them on receive across classic and FD
-	// channel initialization.
-	if !frame.Flags.Has(gocan.FrameFD) && frame.DLC > 8 {
-		return fmt.Errorf("PCAN does not yet support classical DLC %d", frame.DLC)
 	}
 
 	select {
