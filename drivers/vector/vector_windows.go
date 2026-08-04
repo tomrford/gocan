@@ -3,9 +3,13 @@
 package vector
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 	"unsafe"
@@ -25,6 +29,23 @@ const (
 	vectorApplication                     = "gocan\x00"
 	chipStateRequestInterval              = 50 * time.Millisecond
 	chipStateHealthInterval               = time.Second
+
+	xlChannelConfigSize       = 227
+	xlDriverConfigSize        = 14576
+	xlDriverChannelCountLimit = 64
+
+	xlChannelNameOffset            = 0
+	xlChannelNameSize              = 32
+	xlChannelHardwareChannelOffset = 34
+	xlChannelIndexOffset           = 41
+	xlChannelCapabilitiesOffset    = 50
+	xlChannelBusCapabilitiesOffset = 54
+	xlChannelSerialNumberOffset    = 147
+	xlDriverChannelCountOffset     = 4
+	xlDriverChannelsOffset         = 48
+
+	xlBusActiveCapabilityCAN    uint32 = 0x00010000
+	xlChannelCapabilityCANFDISO uint32 = 0x80000000
 )
 
 var processXLDriver xlDriverProcess
@@ -33,6 +54,97 @@ type xlDriverProcess struct {
 	mu          sync.Mutex
 	users       int
 	closeFailed error
+}
+
+// ChannelInfo describes one CAN-capable channel reported by the XL Driver
+// Library.
+type ChannelInfo struct {
+	ChannelIndex    ChannelIndex
+	Name            string
+	SerialNumber    uint32
+	HardwareChannel uint8
+	SupportsFD      bool
+}
+
+// xlChannelConfig is the packed XLchannelConfig ABI from vxlapi.h. Its
+// multi-byte members are intentionally decoded from bytes because several are
+// unaligned.
+type xlChannelConfig [xlChannelConfigSize]byte
+
+// xlDriverConfig is the packed XLdriverConfig ABI from vxlapi.h.
+type xlDriverConfig [xlDriverConfigSize]byte
+
+func (config *xlDriverConfig) channelCount() uint32 {
+	return binary.LittleEndian.Uint32(config[xlDriverChannelCountOffset:])
+}
+
+func (config *xlDriverConfig) channel(index int) xlChannelConfig {
+	var channel xlChannelConfig
+	start := xlDriverChannelsOffset + index*xlChannelConfigSize
+	copy(channel[:], config[start:start+xlChannelConfigSize])
+	return channel
+}
+
+func (config *xlChannelConfig) uint32(offset int) uint32 {
+	return binary.LittleEndian.Uint32(config[offset:])
+}
+
+// Discover reports the CAN-capable Vector channels in XL driver order without
+// activating them. Virtual channels are included when the driver marks them as
+// active CAN-capable channels.
+func Discover() (channels []ChannelInfo, err error) {
+	api, err := loadXLAPI(false)
+	if err != nil {
+		return nil, err
+	}
+	if err := processXLDriver.acquire(api.open); err != nil {
+		return nil, err
+	}
+	defer func() {
+		releaseErr := processXLDriver.release(api.close)
+		if releaseErr != nil {
+			channels = nil
+		}
+		err = errors.Join(err, releaseErr)
+	}()
+
+	var config xlDriverConfig
+	result, _, _ := api.getDriverConfig.Call(uintptr(unsafe.Pointer(&config[0])))
+	if status := xlStatus(result); status != xlSuccess {
+		return nil, api.statusError("query Vector driver configuration", status)
+	}
+	return mapXLDriverConfig(&config)
+}
+
+func mapXLDriverConfig(config *xlDriverConfig) ([]ChannelInfo, error) {
+	count := config.channelCount()
+	if count > xlDriverChannelCountLimit {
+		return nil, fmt.Errorf("query Vector driver configuration: implausible channel count %d", count)
+	}
+
+	channels := make([]ChannelInfo, 0, count)
+	for index := range int(count) {
+		native := config.channel(index)
+		if native.uint32(xlChannelBusCapabilitiesOffset)&xlBusActiveCapabilityCAN == 0 {
+			continue
+		}
+		channels = append(channels, mapXLChannelConfig(&native))
+	}
+	return channels, nil
+}
+
+func mapXLChannelConfig(config *xlChannelConfig) ChannelInfo {
+	name := config[xlChannelNameOffset : xlChannelNameOffset+xlChannelNameSize]
+	if end := bytes.IndexByte(name, 0); end >= 0 {
+		name = name[:end]
+	}
+	return ChannelInfo{
+		ChannelIndex:    ChannelIndex(config[xlChannelIndexOffset]),
+		Name:            string(name),
+		SerialNumber:    config.uint32(xlChannelSerialNumberOffset),
+		HardwareChannel: config[xlChannelHardwareChannelOffset],
+		SupportsFD:      config.uint32(xlChannelCapabilitiesOffset)&xlChannelCapabilityCANFDISO != 0,
+	}
 }
 
 func (driver *xlDriverProcess) acquire(open func() error) error {
@@ -246,6 +358,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 type xlAPI struct {
 	openDriver         *windows.LazyProc
 	closeDriver        *windows.LazyProc
+	getDriverConfig    *windows.LazyProc
 	openPort           *windows.LazyProc
 	closePort          *windows.LazyProc
 	setNotification    *windows.LazyProc
@@ -264,12 +377,22 @@ type xlAPI struct {
 func loadXLAPI(fd bool) (*xlAPI, error) {
 	dll := windows.NewLazySystemDLL("vxlapi64.dll")
 	if err := dll.Load(); err != nil {
+		if errors.Is(err, windows.ERROR_MOD_NOT_FOUND) {
+			systemDirectory, directoryErr := windows.GetSystemDirectory()
+			if directoryErr == nil {
+				_, statErr := os.Stat(filepath.Join(systemDirectory, dll.Name))
+				if os.IsNotExist(statErr) {
+					return nil, fmt.Errorf("%w: load vxlapi64.dll: %v", gocan.ErrDriverUnavailable, err)
+				}
+			}
+		}
 		return nil, fmt.Errorf("load vxlapi64.dll from the Windows system directory: %w", err)
 	}
 
 	api := &xlAPI{
 		openDriver:         dll.NewProc("xlOpenDriver"),
 		closeDriver:        dll.NewProc("xlCloseDriver"),
+		getDriverConfig:    dll.NewProc("xlGetDriverConfig"),
 		openPort:           dll.NewProc("xlOpenPort"),
 		closePort:          dll.NewProc("xlClosePort"),
 		setNotification:    dll.NewProc("xlSetNotification"),
@@ -287,6 +410,7 @@ func loadXLAPI(fd bool) (*xlAPI, error) {
 	procedures := []*windows.LazyProc{
 		api.openDriver,
 		api.closeDriver,
+		api.getDriverConfig,
 		api.openPort,
 		api.closePort,
 		api.setNotification,
@@ -374,12 +498,6 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	}
 	if frame.Flags.Has(gocan.FrameFD) && !bus.fd {
 		return errors.New("Vector classic bus cannot send a CAN FD frame")
-	}
-	// TODO: Preserve classical DLC values 9..15 only after real hardware
-	// confirms how the XL Driver Library reports them on receive across classic
-	// and FD channel activation.
-	if !frame.Flags.Has(gocan.FrameFD) && frame.DLC > 8 {
-		return fmt.Errorf("Vector does not yet support classic DLC %d", frame.DLC)
 	}
 	if frame.Flags.Has(gocan.FrameErrorStateIndicator) {
 		return errors.New("Vector cannot request the CAN FD error state indicator on transmit")

@@ -68,6 +68,7 @@ const (
 	pcanAllowErrorFrames  = 0x20
 	pcanAttachedCount     = 0x2a
 	pcanAttachedChannels  = 0x2b
+	pcanFeatureFD         = 0x01
 
 	pcanMessageRemote   = 0x01
 	pcanMessageExtended = 0x02
@@ -94,10 +95,14 @@ type pcanMsgFD struct {
 }
 
 type pcanChannelInformation struct {
-	channelHandle Channel
-	_             [42]byte
-	deviceID      uint32
-	_             [4]byte
+	channelHandle    Channel
+	deviceType       uint8
+	controllerNumber uint8
+	deviceFeatures   uint32
+	deviceName       [33]byte
+	_                [3]byte
+	deviceID         uint32
+	channelCondition uint32
 }
 
 type pcanReceiveObservation struct {
@@ -125,6 +130,21 @@ func validateConfig(capture *gocan.Capture, config Config) error {
 		return errors.New("PCAN bus requires a channel")
 	case (config.Bitrate == 0) == (config.FDBitrate == ""):
 		return errors.New("PCAN bus requires exactly one of Bitrate and FDBitrate")
+	}
+	return nil
+}
+
+func validateSendFrame(frame gocan.Frame, fdAPI bool) error {
+	if err := frame.Validate(); err != nil {
+		return err
+	}
+	if frame.Flags.Has(gocan.FrameFD) && !fdAPI {
+		return errors.New("PCAN classical bus cannot send a CAN FD frame")
+	}
+	// TPCANMsg's LEN member is limited to 0..8. TPCANMsgFD carries the full
+	// four-bit DLC even when the EDL/FD flag is clear.
+	if !fdAPI && frame.DLC > 8 {
+		return fmt.Errorf("PCAN classical API cannot send DLC %d", frame.DLC)
 	}
 	return nil
 }
@@ -242,9 +262,6 @@ func decodePCANErrorFrame(
 	var observation pcanReceiveObservation
 	observation.addEvent(errorEvent)
 
-	// TODO: Bus-off mapping is decoder-tested only. Bitrate mismatch and
-	// sustained same-ID collision runs on the qualification network stopped at
-	// error-passive; induce real PCAN bus-off when hardware permits.
 	if status&pcanStatusBusOff != 0 {
 		state, err := gocan.NewControllerStateEvent(
 			bus,

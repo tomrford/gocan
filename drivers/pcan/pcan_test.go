@@ -2,6 +2,7 @@ package pcan
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,23 @@ func TestNativeLayouts(t *testing.T) {
 	if got := unsafe.Sizeof(pcanChannelInformation{}); got != 52 {
 		t.Errorf("TPCANChannelInformation size = %d, want 52", got)
 	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceType); got != 2 {
+		t.Errorf("TPCANChannelInformation device type offset = %d, want 2", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.controllerNumber); got != 3 {
+		t.Errorf("TPCANChannelInformation controller number offset = %d, want 3", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceFeatures); got != 4 {
+		t.Errorf("TPCANChannelInformation device features offset = %d, want 4", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceName); got != 8 {
+		t.Errorf("TPCANChannelInformation device name offset = %d, want 8", got)
+	}
 	if got := unsafe.Offsetof(pcanChannelInformation{}.deviceID); got != 44 {
 		t.Errorf("TPCANChannelInformation device ID offset = %d, want 44", got)
+	}
+	if got := unsafe.Offsetof(pcanChannelInformation{}.channelCondition); got != 48 {
+		t.Errorf("TPCANChannelInformation channel condition offset = %d, want 48", got)
 	}
 }
 
@@ -78,6 +94,62 @@ func TestFrameTranslationRoundTripsNativeForms(t *testing.T) {
 	}
 	if classicalOnFD != remote {
 		t.Errorf("classical FD-API round trip = %+v, want %+v", classicalOnFD, remote)
+	}
+}
+
+func TestClassicalDLCAboveEightOnFDAPI(t *testing.T) {
+	for _, dlc := range []uint8{9, 12, 15} {
+		for _, remote := range []bool{false, true} {
+			name := fmt.Sprintf("DLC_%d/data", dlc)
+			flags := gocan.FrameFlags(0)
+			if remote {
+				name = fmt.Sprintf("DLC_%d/RTR", dlc)
+				flags = gocan.FrameRemote
+			}
+			t.Run(name, func(t *testing.T) {
+				frame := gocan.Frame{ID: 0x321, DLC: dlc, Flags: flags}
+				if !remote {
+					copy(frame.Data[:8], []byte{0, 1, 2, 3, 4, 5, 6, 7})
+				}
+				if err := frame.Validate(); err != nil {
+					t.Fatalf("validate fixture: %v", err)
+				}
+
+				if err := validateSendFrame(frame, false); err == nil ||
+					!strings.Contains(err.Error(), fmt.Sprintf("cannot send DLC %d", dlc)) {
+					t.Fatalf("classic API validation = %v, want DLC rejection", err)
+				}
+				if err := validateSendFrame(frame, true); err != nil {
+					t.Fatalf("FD API validation: %v", err)
+				}
+
+				native := encodeFDMessage(frame)
+				if native.dlc != dlc {
+					t.Fatalf("encoded DLC = %d, want %d", native.dlc, dlc)
+				}
+				if native.messageType&pcanMessageFD != 0 {
+					t.Fatalf("encoded classical message type %#02x has FD flag", native.messageType)
+				}
+				wantData := [8]byte{}
+				if !remote {
+					wantData = [8]byte{0, 1, 2, 3, 4, 5, 6, 7}
+				}
+				if got := [8]byte(native.data[:8]); got != wantData {
+					t.Fatalf("encoded data = %v, want %v", got, wantData)
+				}
+				if !remote {
+					native.data[8] = 0xff
+				}
+
+				got, err := decodeFDMessage(native)
+				if err != nil {
+					t.Fatalf("decode classical frame through FD API: %v", err)
+				}
+				if got != frame {
+					t.Fatalf("FD API round trip = %+v, want %+v", got, frame)
+				}
+			})
+		}
 	}
 }
 

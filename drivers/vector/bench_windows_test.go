@@ -4,7 +4,6 @@ package vector
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/tomrford/gocan"
@@ -16,25 +15,20 @@ import (
 // channel as receiver on the shared 500 kbit/s network.
 func benchVectorToPCAN(b *testing.B, frameID uint32) (*gocan.Capture, gocan.Bus, gocan.Bus, gocan.Frame) {
 	b.Helper()
-	vectorValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	pcanValue := os.Getenv("GOCAN_PCAN_CHANNEL_A")
-	if vectorValue == "" || pcanValue == "" {
-		b.Skip("GOCAN_VECTOR_CHANNEL_INDEX and GOCAN_PCAN_CHANNEL_A are not set")
-	}
-	vectorIndex := parseHardwareUint(b, "GOCAN_VECTOR_CHANNEL_INDEX", vectorValue, 8)
-	pcanChannel := parseHardwareUint(b, "GOCAN_PCAN_CHANNEL_A", pcanValue, 16)
+	vectorIndex := vectorChannelIndex(b, "GOCAN_VECTOR_CHANNEL_INDEX")
+	pcanChannel := pcanPeerChannel(b, "GOCAN_PCAN_CHANNEL")
 
 	ctx := context.Background()
 	capture := gocan.NewCapture()
 	sender, err := Open(ctx, capture, Config{
-		ID: 1, Name: "bench-vector-tx", ChannelIndex: ChannelIndex(vectorIndex), Bitrate: 500_000,
+		ID: 1, Name: "bench-vector-tx", ChannelIndex: vectorIndex, Bitrate: 500_000,
 	})
 	if err != nil {
 		b.Fatalf("Open Vector sender: %v", err)
 	}
 	b.Cleanup(func() { _ = sender.Close() })
 	receiver, err := pcan.Open(ctx, capture, pcan.Config{
-		ID: 2, Name: "bench-pcan-rx", Channel: pcan.Channel(pcanChannel), Bitrate: pcan.Bitrate500K,
+		ID: 2, Name: "bench-pcan-rx", Channel: pcanChannel, Bitrate: pcan.Bitrate500K,
 	})
 	if err != nil {
 		b.Fatalf("Open PCAN receiver: %v", err)
@@ -62,20 +56,13 @@ func BenchmarkVectorSaturatedCapture(b *testing.B) {
 // two back-to-back Vector FD channels at 500 kbit/s nominal and the configured
 // data bitrate.
 func BenchmarkVectorFDSaturatedCapture(b *testing.B) {
-	vectorAValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	vectorBValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX_B")
-	dataBitrateValue := os.Getenv("GOCAN_VECTOR_FD_DATA_BITRATE")
-	if vectorAValue == "" || vectorBValue == "" || dataBitrateValue == "" {
-		b.Skip("GOCAN_VECTOR_CHANNEL_INDEX, GOCAN_VECTOR_CHANNEL_INDEX_B, and GOCAN_VECTOR_FD_DATA_BITRATE are not set")
-	}
-	vectorA := parseHardwareUint(b, "GOCAN_VECTOR_CHANNEL_INDEX", vectorAValue, 8)
-	vectorB := parseHardwareUint(b, "GOCAN_VECTOR_CHANNEL_INDEX_B", vectorBValue, 8)
-	dataBitrate := uint32(parseHardwareUint(b, "GOCAN_VECTOR_FD_DATA_BITRATE", dataBitrateValue, 32))
+	vectorA, vectorB := vectorPairIndexes(b)
+	dataBitrate := vectorFDDataBitrate(b)
 
 	ctx := context.Background()
 	capture := gocan.NewCapture()
 	sender, err := Open(ctx, capture, Config{
-		ID: 1, Name: "bench-fd-tx", ChannelIndex: ChannelIndex(vectorA),
+		ID: 1, Name: "bench-fd-tx", ChannelIndex: vectorA,
 		Bitrate: 500_000, DataBitrate: dataBitrate,
 	})
 	if err != nil {
@@ -83,7 +70,7 @@ func BenchmarkVectorFDSaturatedCapture(b *testing.B) {
 	}
 	b.Cleanup(func() { _ = sender.Close() })
 	receiver, err := Open(ctx, capture, Config{
-		ID: 2, Name: "bench-fd-rx", ChannelIndex: ChannelIndex(vectorB),
+		ID: 2, Name: "bench-fd-rx", ChannelIndex: vectorB,
 		Bitrate: 500_000, DataBitrate: dataBitrate,
 	})
 	if err != nil {

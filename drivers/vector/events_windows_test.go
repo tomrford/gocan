@@ -5,8 +5,6 @@ package vector
 import (
 	"context"
 	"errors"
-	"os"
-	"strconv"
 	"testing"
 	"time"
 
@@ -38,32 +36,21 @@ func TestSameChipState(t *testing.T) {
 }
 
 func TestVectorClassicEvents(t *testing.T) {
-	vectorValue := os.Getenv("GOCAN_VECTOR_CHANNEL_INDEX")
-	pcanValue := os.Getenv("GOCAN_PCAN_CHANNEL")
-	if vectorValue == "" || pcanValue == "" {
-		t.Skip("GOCAN_VECTOR_CHANNEL_INDEX and GOCAN_PCAN_CHANNEL are not set")
-	}
-	vectorIndex, err := strconv.ParseUint(vectorValue, 0, 8)
-	if err != nil || vectorIndex >= 64 {
-		t.Fatalf("GOCAN_VECTOR_CHANNEL_INDEX=%q is not a channel index from 0 through 63", vectorValue)
-	}
-	pcanChannel, err := strconv.ParseUint(pcanValue, 0, 16)
-	if err != nil || pcanChannel == 0 {
-		t.Fatalf("GOCAN_PCAN_CHANNEL=%q is not a nonzero 16-bit PCAN handle", pcanValue)
-	}
+	vectorIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
+	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")
 
 	runVectorEventRecovery(t, vectorEventSetup{
 		target: Config{
 			ID:           1,
 			Name:         "vector-classic-event-target",
-			ChannelIndex: ChannelIndex(vectorIndex),
+			ChannelIndex: vectorIndex,
 			Bitrate:      500_000,
 		},
 		openPeer: func(capture *gocan.Capture) (gocan.Bus, error) {
 			return pcan.Open(context.Background(), capture, pcan.Config{
 				ID:      2,
 				Name:    "pcan-recovery-peer",
-				Channel: pcan.Channel(pcanChannel),
+				Channel: pcanChannel,
 				Bitrate: pcan.Bitrate500K,
 			})
 		},

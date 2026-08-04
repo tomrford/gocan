@@ -2,6 +2,7 @@ package vector
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 	"unsafe"
@@ -99,6 +100,71 @@ func TestFDNativeLayoutAndTranslation(t *testing.T) {
 	frame.Flags |= gocan.FrameErrorStateIndicator
 	if !got.hasFrame || got.frame != frame {
 		t.Fatalf("FD round trip = %+v, want frame %+v", got, frame)
+	}
+}
+
+func TestClassicalDLCAboveEightNativeTranslation(t *testing.T) {
+	for _, nativeAPI := range []string{"classic", "FD"} {
+		for dlc := uint8(9); dlc <= 15; dlc++ {
+			for _, remote := range []bool{false, true} {
+				kind := "data"
+				flags := gocan.FrameFlags(0)
+				if remote {
+					kind = "RTR"
+					flags = gocan.FrameRemote
+				}
+				t.Run(fmt.Sprintf("%s/DLC_%d/%s", nativeAPI, dlc, kind), func(t *testing.T) {
+					frame := gocan.Frame{ID: 0x321, DLC: dlc, Flags: flags}
+					if !remote {
+						copy(frame.Data[:8], []byte{0, 1, 2, 3, 4, 5, 6, 7})
+					}
+					if err := frame.Validate(); err != nil {
+						t.Fatalf("validate fixture: %v", err)
+					}
+
+					var (
+						got receiveObservation
+						err error
+					)
+					switch nativeAPI {
+					case "classic":
+						event := encodeEvent(frame)
+						event.tag = xlEventReceiveMessage
+						if event.message().dlc != uint16(dlc) {
+							t.Fatalf("encoded DLC = %d, want %d", event.message().dlc, dlc)
+						}
+						got, err = decodeClassicReceiveEvent(&event, 1, time.Unix(1, 2))
+					case "FD":
+						tx := encodeFDTransmitEvent(frame)
+						if tx.message.dlc != dlc {
+							t.Fatalf("encoded DLC = %d, want %d", tx.message.dlc, dlc)
+						}
+						if tx.message.flags&xlCANMessageFlagEDL != 0 {
+							t.Fatalf("encoded classical flags %#x have EDL set", tx.message.flags)
+						}
+						if !remote {
+							tx.message.data[8] = 0xff
+						}
+						rx := xlCANRXEvent{tag: xlCANEventRXOK}
+						*rx.message() = xlCANRXMessage{
+							id:    tx.message.id,
+							flags: tx.message.flags,
+							dlc:   tx.message.dlc,
+							data:  tx.message.data,
+						}
+						got, err = decodeFDReceiveEvent(&rx, 1, time.Unix(1, 2))
+					default:
+						t.Fatalf("unsupported native API %q", nativeAPI)
+					}
+					if err != nil {
+						t.Fatalf("decode: %v", err)
+					}
+					if !got.hasFrame || got.frame != frame {
+						t.Fatalf("round trip = %+v, want frame %+v", got, frame)
+					}
+				})
+			}
+		}
 	}
 }
 

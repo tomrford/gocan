@@ -25,6 +25,9 @@ var (
 	// after it was opened. The bus stops; reconnecting hardware requires a new
 	// Open call.
 	ErrHardwareDisconnected = errors.New("CAN hardware disconnected")
+	// ErrDriverUnavailable indicates that a driver's native vendor stack is
+	// not installed on this host, as opposed to an installed stack failing.
+	ErrDriverUnavailable = errors.New("CAN driver is not installed")
 )
 
 // Bus owns one logical CAN channel. It accepts frames for transmission and

@@ -3,6 +3,7 @@
 package socketcan
 
 import (
+	"encoding/binary"
 	"fmt"
 	"syscall"
 	"unsafe"
@@ -15,6 +16,9 @@ type Interface struct {
 	Name string
 	// Up reports whether the interface has the Linux IFF_UP flag.
 	Up bool
+	// SupportsFD reports whether the interface MTU accommodates CAN FD
+	// frames. CAN FD transmission fails on an interface without it.
+	SupportsFD bool
 }
 
 // Discover reports configured Linux CAN network interfaces, including
@@ -48,18 +52,24 @@ func Discover() ([]Interface, error) {
 			return nil, fmt.Errorf("parse SocketCAN interface attributes: %w", err)
 		}
 		name := ""
+		mtu := uint32(0)
 		for _, attribute := range attributes {
-			if attribute.Attr.Type == syscall.IFLA_IFNAME {
+			switch attribute.Attr.Type {
+			case syscall.IFLA_IFNAME:
 				name = unix.ByteSliceToString(attribute.Value)
-				break
+			case syscall.IFLA_MTU:
+				if len(attribute.Value) >= 4 {
+					mtu = binary.NativeEndian.Uint32(attribute.Value)
+				}
 			}
 		}
 		if name == "" {
 			return nil, fmt.Errorf("parse SocketCAN interface: link %d has no name", info.Index)
 		}
 		interfaces = append(interfaces, Interface{
-			Name: name,
-			Up:   info.Flags&unix.IFF_UP != 0,
+			Name:       name,
+			Up:         info.Flags&unix.IFF_UP != 0,
+			SupportsFD: mtu >= fdMTU,
 		})
 	}
 	return interfaces, nil

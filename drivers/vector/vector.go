@@ -1,4 +1,5 @@
-// Package vector provides CAN and CAN FD access through the Vector XL Driver Library.
+// Package vector provides classical CAN and ISO CAN FD access through the
+// Vector XL Driver Library.
 // Received frames use host timestamps; native timestamps are not read.
 package vector
 
@@ -26,10 +27,7 @@ type Config struct {
 	// in bits per second.
 	Bitrate uint32
 	// DataBitrate enables CAN FD and selects its data-phase bitrate in bits per
-	// second. Zero selects a classic CAN channel. The bit-timing segments are
-	// fixed defaults with hardware evidence only at 500 kbit/s arbitration and
-	// 2 Mbit/s data; other pairs run unvalidated sample points until timing
-	// becomes configurable.
+	// second. Zero selects a classic CAN channel. Bit-timing segments are fixed.
 	DataBitrate uint32
 }
 
@@ -257,7 +255,7 @@ func decodeClassicReceiveEvent(
 	if unsupported := message.flags & xlUnsupportedMessageFlags; unsupported != 0 {
 		return receiveObservation{}, fmt.Errorf("unsupported Vector message flags %#04x", unsupported)
 	}
-	if message.dlc > 8 {
+	if message.dlc > 15 {
 		return receiveObservation{}, fmt.Errorf("classic Vector frame has DLC %d", message.dlc)
 	}
 
@@ -275,7 +273,8 @@ func decodeClassicReceiveEvent(
 		Flags: flags,
 	}
 	if !flags.Has(gocan.FrameRemote) {
-		copy(frame.Data[:], message.data[:message.dlc])
+		length := min(int(frame.DLC), 8)
+		copy(frame.Data[:], message.data[:length])
 	}
 	if err := frame.Validate(); err != nil {
 		return receiveObservation{}, fmt.Errorf("decode Vector frame: %w", err)
