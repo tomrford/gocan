@@ -1,6 +1,5 @@
 // Package dbc parses CAN database files into a resolved semantic model and
-// encodes or lazily decodes raw CAN frames. It does not preserve source
-// formatting or provide DBC editing.
+// encodes or lazily decodes raw CAN frames.
 package dbc
 
 // Database is one resolved DBC file.
@@ -14,11 +13,7 @@ type Database struct {
 	ValueTables          []ValueTable
 	AttributeDefinitions []AttributeDefinition
 	Attributes           map[string]AttributeValue
-	// TODO: Comments (here and on nodes, messages, and signals) have no
-	// known consumer; drop them at parse time if none appears once the
-	// runtime layer exists.
-	Comment     string
-	Diagnostics []Diagnostic
+	Diagnostics          []Diagnostic
 
 	messagesByName map[string]int
 }
@@ -27,7 +22,6 @@ type Database struct {
 type Node struct {
 	Name       string
 	Attributes map[string]AttributeValue
-	Comment    string
 }
 
 // Message is one resolved BO_ definition.
@@ -41,7 +35,6 @@ type Message struct {
 	SignalGroups []SignalGroup
 	Format       FrameFormat
 	Attributes   map[string]AttributeValue
-	Comment      string
 
 	bitRateSwitch bool
 	codec         *messageCodec
@@ -81,7 +74,6 @@ type Signal struct {
 	IsMultiplexer bool
 	Multiplex     *MultiplexCondition
 	Attributes    map[string]AttributeValue
-	Comment       string
 }
 
 // ByteOrder is the DBC signal byte order.
