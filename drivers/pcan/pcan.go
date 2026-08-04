@@ -307,8 +307,7 @@ func decodePCANStatus(
 	bus gocan.BusID,
 	timestamp time.Time,
 ) (pcanReceiveObservation, error) {
-	// TODO: Qualify a controlled native receive overrun. One collision run
-	// returned status 0x00000002 but was not repeatable enough to gate on.
+	// TODO: Qualify a native receive overrun on hardware.
 	if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
 		event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
 		if err != nil {

@@ -136,8 +136,7 @@ func newErrorObservation(bus gocan.BusID, timestamp time.Time) (receiveObservati
 	return observation, nil
 }
 
-// TODO: Qualify a controlled Vector receive overrun on hardware; both native
-// overrun shapes are decoder-tested only.
+// TODO: Qualify a native receive overrun on hardware.
 func newOverrunObservation(bus gocan.BusID, timestamp time.Time, detail string) (receiveObservation, error) {
 	event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
 	if err != nil {
