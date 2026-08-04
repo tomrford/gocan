@@ -12,17 +12,32 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-func TestVectorPhysicalDisconnect(t *testing.T) {
+func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 	if os.Getenv("GOCAN_VECTOR_DISCONNECT_TEST") != "1" {
 		t.Skip("GOCAN_VECTOR_DISCONNECT_TEST=1 is not set")
 	}
 	vectorA, vectorB := vectorPairIndexes(t)
-	dataBitrate := vectorFDDataBitrate(t)
+	channels, err := Discover()
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	serials := make(map[ChannelIndex]uint32, len(channels))
+	for _, channel := range channels {
+		serials[channel.ChannelIndex] = channel.SerialNumber
+	}
+	serialA, foundA := serials[vectorA]
+	serialB, foundB := serials[vectorB]
+	if !foundA || !foundB {
+		t.Fatalf("Vector channels %d and %d not both present in %+v", vectorA, vectorB, channels)
+	}
+	if serialA == serialB {
+		t.Skip("select channels on different physical Vector adapters")
+	}
 
 	capture := gocan.NewCapture()
 	first, err := Open(context.Background(), capture, Config{
 		ID: 1, Name: "vector-disconnect-a", ChannelIndex: vectorA,
-		Bitrate: 500_000, DataBitrate: dataBitrate,
+		Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open first Vector channel: %v", err)
@@ -30,7 +45,7 @@ func TestVectorPhysicalDisconnect(t *testing.T) {
 	t.Cleanup(func() { _ = first.Close() })
 	second, err := Open(context.Background(), capture, Config{
 		ID: 2, Name: "vector-disconnect-b", ChannelIndex: vectorB,
-		Bitrate: 500_000, DataBitrate: dataBitrate,
+		Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open second Vector channel: %v", err)
@@ -38,12 +53,7 @@ func TestVectorPhysicalDisconnect(t *testing.T) {
 	t.Cleanup(func() { _ = second.Close() })
 
 	cursor := capture.End()
-	frame, err := vectorEventFrame(
-		0x5a8,
-		12,
-		1,
-		gocan.FrameFD|gocan.FrameBitRateSwitch,
-	)
+	frame, err := gocan.NewFrame(0x5a8, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 0)
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
@@ -61,7 +71,7 @@ func TestVectorPhysicalDisconnect(t *testing.T) {
 	}
 	cancel()
 
-	t.Log("initial FD traffic passed; disconnect the selected Vector USB adapter now")
+	t.Log("initial traffic passed; disconnect the selected Vector USB adapter now")
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	deadline := time.NewTimer(60 * time.Second)
@@ -81,14 +91,17 @@ func TestVectorPhysicalDisconnect(t *testing.T) {
 	}
 	t.Logf("first disconnect observation: %v", sendErr)
 
-	for _, bus := range []gocan.Bus{first, second} {
-		select {
-		case <-bus.Done():
-			if !errors.Is(bus.Err(), gocan.ErrHardwareDisconnected) {
-				t.Fatalf("Vector bus %q Err() = %v, want ErrHardwareDisconnected", bus.Name(), bus.Err())
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("Vector bus %q remained open after disconnect; first observation: %v", bus.Name(), sendErr)
+	select {
+	case <-first.Done():
+		if !errors.Is(first.Err(), gocan.ErrHardwareDisconnected) {
+			t.Fatalf("Vector bus %q Err() = %v, want ErrHardwareDisconnected", first.Name(), first.Err())
 		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Vector bus %q remained open after disconnect; first observation: %v", first.Name(), sendErr)
+	}
+	select {
+	case <-second.Done():
+		t.Fatalf("Vector bus %q on a different adapter stopped after disconnect: %v", second.Name(), second.Err())
+	case <-time.After(2 * chipStateHealthInterval):
 	}
 }

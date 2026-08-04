@@ -814,6 +814,8 @@ func (bus *Bus) setChipStateRefresh(refresh bool, now time.Time) {
 
 func (bus *Bus) runtimeStatusError(operation string, status xlStatus) error {
 	if status == xlInvalidHandle {
+		// Native status preserves adapter-local failure containment; Windows
+		// device instances cannot be stably mapped to XL serial numbers.
 		return fmt.Errorf(
 			"%w: %s: Vector status %d (XL_ERR_INVALID_HANDLE)",
 			gocan.ErrHardwareDisconnected,
