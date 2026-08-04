@@ -28,5 +28,11 @@ jobs:
       - name: Run flake checks
         run: nix flake check --print-build-logs
 
-      - name: Compile Windows drivers
-        run: nix develop --command env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -exec=true ./...
+      - name: Compile Windows targets
+        run: |
+          nix develop --command sh -eu -c '
+            for arch in amd64 arm64 386; do
+              echo "Compiling windows/$arch"
+              env CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go test -exec=true ./...
+            done
+          '
