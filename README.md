@@ -13,8 +13,8 @@ settles. Source and package documentation define current behaviour.
 | --- | --- | --- | --- | --- | --- |
 | `virtual` | Development and tests only | Portable, including macOS | Yes | Yes | No physical hardware |
 | `socketcan` | Physical hardware | Linux | Yes | Yes | — |
-| `pcan` | Physical PEAK hardware | Windows | Yes | Yes | The classical API rejects classical DLC 9–15; the FD API path awaits FD-capable PCAN hardware qualification |
-| `vector` | Physical Vector hardware | Windows | Yes | Yes | Classical DLC 9–15 is qualified on the classic API; the FD-initialized path awaits physical-link qualification; CAN FD error-state-indicator transmission is not supported |
+| `pcan` | Physical PEAK hardware | Windows | Yes | Yes | The classical API cannot transmit classical DLC 9–15 (the FD API preserves them); ISO/non-ISO CAN FD framing follows the adapter's stored device configuration, which PCAN-Basic cannot select |
+| `vector` | Physical Vector hardware | Windows | Yes | Yes | CAN FD error-state-indicator transmission is not supported |
 
 macOS is currently a development target through the virtual driver. It has no
 physical-hardware driver.

@@ -61,6 +61,17 @@ func pcanPeerChannel(tb testing.TB, name string) pcan.Channel {
 	return pcan.Channel(channel)
 }
 
+// pcanFDBitrate returns the PCAN-Basic CAN FD timing string selected by
+// GOCAN_PCAN_FD_BITRATE, skipping the test when it is not set.
+func pcanFDBitrate(tb testing.TB) string {
+	tb.Helper()
+	value := os.Getenv("GOCAN_PCAN_FD_BITRATE")
+	if value == "" {
+		tb.Skip("GOCAN_PCAN_FD_BITRATE is not set")
+	}
+	return value
+}
+
 // vectorFDDataBitrate returns the CAN FD data bitrate selected by
 // GOCAN_VECTOR_FD_DATA_BITRATE, skipping the test when it is not set.
 func vectorFDDataBitrate(tb testing.TB) uint32 {

@@ -60,6 +60,42 @@ func TestVectorToPCANClassicalDLCAboveEightHardware(t *testing.T) {
 	assertClassicalDLCs(t, capture, sender, receiver, 0x6c0)
 }
 
+// TestPCANFDAPIClassicalDLCAboveEightHardware qualifies the TPCANMsgFD
+// classical DLC 9..15 path in both directions against a classic-initialized
+// Vector peer.
+func TestPCANFDAPIClassicalDLCAboveEightHardware(t *testing.T) {
+	vectorIndex := vectorChannelIndex(t, "GOCAN_VECTOR_CHANNEL_INDEX")
+	pcanChannel := pcanPeerChannel(t, "GOCAN_PCAN_CHANNEL")
+	fdBitrate := pcanFDBitrate(t)
+	capture := gocan.NewCapture()
+
+	pcanBus, err := pcan.Open(context.Background(), capture, pcan.Config{
+		ID:        1,
+		Name:      "pcan-fd-classic-dlc",
+		Channel:   pcanChannel,
+		FDBitrate: fdBitrate,
+	})
+	if err != nil {
+		t.Fatalf("open PCAN FD channel: %v", err)
+	}
+	t.Cleanup(func() { _ = pcanBus.Close() })
+
+	vectorBus, err := Open(context.Background(), capture, Config{
+		ID:           2,
+		Name:         "vector-classic-dlc-peer",
+		ChannelIndex: vectorIndex,
+		Bitrate:      500_000,
+	})
+	if err != nil {
+		_ = pcanBus.Close()
+		t.Fatalf("open Vector peer: %v", err)
+	}
+	t.Cleanup(func() { _ = vectorBus.Close() })
+
+	assertClassicalDLCs(t, capture, pcanBus, vectorBus, 0x640)
+	assertClassicalDLCs(t, capture, vectorBus, pcanBus, 0x660)
+}
+
 func runVectorClassicalDLCMatrix(
 	t *testing.T,
 	vectorA, vectorB ChannelIndex,

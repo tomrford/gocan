@@ -488,8 +488,6 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if frame.Flags.Has(gocan.FrameFD) && !bus.fd {
 		return errors.New("Vector classic bus cannot send a CAN FD frame")
 	}
-	// TODO: Qualify classical DLC 9..15 on a physically connected Vector pair
-	// with one or both channels initialized through the CAN FD API.
 	if frame.Flags.Has(gocan.FrameErrorStateIndicator) {
 		return errors.New("Vector cannot request the CAN FD error state indicator on transmit")
 	}
