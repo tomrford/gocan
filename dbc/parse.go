@@ -50,7 +50,6 @@ type rawDatabase struct {
 	multiplex         []rawMultiplex
 	transmitters      []rawTransmitters
 	signalGroups      []rawSignalGroup
-	comments          []rawComment
 	attributeDefs     []rawAttributeDefinition
 	attributeDefaults []rawAttributeDefault
 	attributeValues   []rawAttributeAssignment
@@ -127,14 +126,6 @@ type rawSignalGroup struct {
 	repetitions uint32
 	signals     []string
 	pos         Position
-}
-
-type rawComment struct {
-	scope     AttributeScope
-	messageID uint32
-	object    string
-	text      string
-	pos       Position
 }
 
 type rawAttributeDefinition struct {
@@ -221,7 +212,7 @@ func (p *parser) parse() (rawDatabase, error) {
 		case "SIG_GROUP_":
 			err = p.parseSignalGroup(keyword)
 		case "CM_":
-			err = p.parseComment(keyword)
+			p.skipRecord()
 		case "BA_DEF_":
 			err = p.parseAttributeDefinition(keyword)
 		case "BA_DEF_DEF_":
@@ -632,62 +623,6 @@ func (p *parser) parseSignalGroup(keyword token) error {
 	p.raw.signalGroups = append(p.raw.signalGroups, rawSignalGroup{
 		messageID: messageID, name: name.text, repetitions: repetitions, signals: signals, pos: keyword.pos,
 	})
-	return nil
-}
-
-func (p *parser) parseComment(keyword token) error {
-	comment := rawComment{scope: AttributeScopeDatabase, pos: keyword.pos}
-	if p.peek().kind == tokenString {
-		comment.text = p.next().text
-	} else {
-		target, err := p.take(tokenAtom, "expected comment target")
-		if err != nil {
-			return err
-		}
-		switch target.text {
-		case "BU_":
-			comment.scope = AttributeScopeNode
-			name, err := p.take(tokenAtom, "expected node name")
-			if err != nil {
-				return err
-			}
-			comment.object = name.text
-		case "BO_":
-			comment.scope = AttributeScopeMessage
-			comment.messageID, err = p.parseUint32("message ID")
-			if err != nil {
-				return err
-			}
-		case "SG_":
-			comment.scope = AttributeScopeSignal
-			comment.messageID, err = p.parseUint32("message ID")
-			if err != nil {
-				return err
-			}
-			name, err := p.take(tokenAtom, "expected signal name")
-			if err != nil {
-				return err
-			}
-			comment.object = name.text
-		case "EV_":
-			p.raw.diagnostics = append(p.raw.diagnostics, Diagnostic{
-				Position: keyword.pos, Keyword: keyword.text, Message: "environment-variable comment was ignored",
-			})
-			p.skipRecord()
-			return nil
-		default:
-			return p.errorAt(target, "unsupported comment target")
-		}
-		text, err := p.take(tokenString, "expected quoted comment")
-		if err != nil {
-			return err
-		}
-		comment.text = text.text
-	}
-	if err := p.endStatement(); err != nil {
-		return err
-	}
-	p.raw.comments = append(p.raw.comments, comment)
 	return nil
 }
 

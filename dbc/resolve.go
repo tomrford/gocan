@@ -46,7 +46,6 @@ func resolve(raw rawDatabase) (*Database, error) {
 		r.resolveValueTables,
 		r.resolveAttributeDefinitions,
 		r.resolveAttributeValues,
-		r.resolveComments,
 		r.resolveTransmitters,
 		r.resolveValueLists,
 		r.resolveValueTypes,
@@ -231,35 +230,6 @@ func (r *resolver) resolveAttributeValues() error {
 			return semanticError(raw.pos, "BA_", "duplicate assignment of attribute %q", raw.name)
 		}
 		(*target)[raw.name] = value
-	}
-	return nil
-}
-
-func (r *resolver) resolveComments() error {
-	for _, raw := range r.raw.comments {
-		switch raw.scope {
-		case AttributeScopeDatabase:
-			r.db.Comment = raw.text
-		case AttributeScopeNode:
-			index, exists := r.nodesByName[raw.object]
-			if !exists {
-				r.diag(raw.pos, "CM_", "comment for unknown node %q was ignored", raw.object)
-				continue
-			}
-			r.db.Nodes[index].Comment = raw.text
-		case AttributeScopeMessage:
-			message, _, ok := r.message(raw.messageID, raw.pos, "CM_")
-			if !ok {
-				continue
-			}
-			message.Comment = raw.text
-		case AttributeScopeSignal:
-			_, signal, ok := r.signal(raw.messageID, raw.object, raw.pos, "CM_")
-			if !ok {
-				continue
-			}
-			signal.Comment = raw.text
-		}
 	}
 	return nil
 }

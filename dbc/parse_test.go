@@ -96,9 +96,9 @@ func TestDropsDanglingRecordsWithDiagnostics(t *testing.T) {
 	if len(db.Messages) != 1 || db.Messages[0].Name != "Status" {
 		t.Fatalf("unexpected messages: %#v", db.Messages)
 	}
-	// Pseudo-message, CM_, and BO_TX_BU_ each report once; the VAL_ that
-	// targets the dropped pseudo-message is skipped silently.
-	if len(db.Diagnostics) != 3 {
+	// The pseudo-message and BO_TX_BU_ each report once. Comments are discarded,
+	// and the VAL_ that targets the dropped pseudo-message is skipped silently.
+	if len(db.Diagnostics) != 2 {
 		t.Fatalf("unexpected diagnostics: %#v", db.Diagnostics)
 	}
 }

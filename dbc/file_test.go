@@ -11,9 +11,8 @@ func TestParseFile(t *testing.T) {
 		prefix = "VERSION \"1.0\"\n" +
 			"BU_: ECU\n" +
 			"BO_ 256 Status: 1 ECU\n" +
-			" SG_ State : 0|8@1+ (1,0) [0|255] \"\" ECU\n" +
-			"CM_ \"Fahrzeuggr"
-		suffix = "e\";\nFILTER ignored\n"
+			" SG_ State : 0|8@1+ (1,0) [0|255] \"Fahrzeuggr"
+		suffix = "e\" ECU\nCM_ \"ignored comment\";\nFILTER ignored\n"
 	)
 
 	utf8Source := append([]byte("\xef\xbb\xbf"), []byte(prefix+"öß"+suffix)...)
@@ -38,14 +37,15 @@ func TestParseFile(t *testing.T) {
 		"Windows-1252":   parse(windows1252Source),
 	} {
 		t.Run(encoding, func(t *testing.T) {
-			if db.Version != "1.0" || db.Comment != "Fahrzeuggröße" {
-				t.Fatalf("unexpected database metadata: version=%q comment=%q", db.Version, db.Comment)
+			if db.Version != "1.0" {
+				t.Fatalf("unexpected database version: %q", db.Version)
 			}
 			if len(db.Nodes) != 1 || db.Nodes[0].Name != "ECU" || len(db.Messages) != 1 {
 				t.Fatalf("unexpected resolved model: nodes=%#v messages=%#v", db.Nodes, db.Messages)
 			}
 			message := db.Messages[0]
-			if message.ID != 256 || message.Name != "Status" || len(message.Signals) != 1 || message.Signals[0].Name != "State" {
+			if message.ID != 256 || message.Name != "Status" || len(message.Signals) != 1 ||
+				message.Signals[0].Name != "State" || message.Signals[0].Unit != "Fahrzeuggröße" {
 				t.Fatalf("unexpected resolved message: %#v", message)
 			}
 			if len(db.Diagnostics) != 1 || db.Diagnostics[0].Position.Source != path {
