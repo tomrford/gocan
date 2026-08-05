@@ -4,8 +4,8 @@
 across multiple hardware vendors.
 
 The project is in its foundation stage. A temporary
-[working specification](GOCAN_SPEC.md) guides the work while the public API
-settles. Source and package documentation define current behaviour.
+[prerelease work tracker](GOCAN_SPEC.md) lists work intended before the first
+stable release. Source and package documentation define current behaviour.
 
 ## Driver support
 
