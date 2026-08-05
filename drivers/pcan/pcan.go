@@ -307,7 +307,6 @@ func decodePCANStatus(
 	bus gocan.BusID,
 	timestamp time.Time,
 ) (pcanReceiveObservation, error) {
-	// TODO: Qualify a native receive overrun on hardware.
 	if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
 		event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
 		if err != nil {
