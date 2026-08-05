@@ -92,13 +92,11 @@ drivers accept a classical bitrate or exact CAN FD bit timing. Vector uses ISO
 CAN FD; PCAN framing follows the adapter's stored ISO/non-ISO mode. Driver
 opening accepts a context without making that context own the returned bus.
 The reusable behavioural checks live in
-[`drivers/conformance`](drivers/conformance). Remaining release-required
-hardware checks stay as precise code TODOs beside the affected drivers.
-Conditional or later work belongs in GitHub issues.
-
-NI-XNET is the next intended provider. Its implementation may refine the common
-contract if its session model provides evidence that the existing shape is not
-general enough.
+[`drivers/conformance`](drivers/conformance). The Windows PCAN and Vector paths
+are qualified on physical classic and CAN FD adapters. SocketCAN physical
+adapter qualification remains tracked in
+[issue 10](https://github.com/tomrford/gocan/issues/10). NI-XNET is deferred
+until hardware is available and is outside the first release.
 
 ### ASC traces
 

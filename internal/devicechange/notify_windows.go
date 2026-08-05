@@ -3,9 +3,6 @@
 // Package devicechange reports Windows Plug and Play device-instance changes
 // and fans matching removals out to open buses; see Monitor.
 //
-// TODO: Add the equivalent OS-level boundary on Linux, normally using netlink,
-// instead of adding provider-specific background liveness polls.
-// Native API failures remain synchronous fallbacks.
 package devicechange
 
 import (

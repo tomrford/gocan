@@ -12,9 +12,9 @@ settles. Source and package documentation define current behaviour.
 | Driver | Platform | CAN | CAN FD | Current limits |
 | --- | --- | --- | --- | --- |
 | `drivers/virtual` | Portable, including macOS | Yes | Yes | Development and tests only |
-| SocketCAN through `drivers` | Linux | Yes | Yes | The Linux link configuration owns bit timing |
-| PCAN through `drivers` | Windows | Yes | Yes | PCAN-Basic cannot select ISO/non-ISO framing; the adapter's stored mode must match its peers. The classical API cannot transmit classical DLC 9–15 |
-| Vector through `drivers` | Windows x64 | Yes | Yes | ISO CAN FD only; error-state-indicator transmission is not supported |
+| SocketCAN through `drivers` | Linux | Yes | Yes | The Linux link configuration owns bit timing; physical-adapter qualification remains open |
+| PCAN through `drivers` | Windows | Yes | Yes | Classical configuration supports 500 kbit/s; PCAN-Basic cannot select ISO/non-ISO framing, so the adapter's stored mode must match its peers; the classical API cannot transmit classical DLC 9–15 |
+| Vector through `drivers` | Windows x64 | Yes | Yes | CAN FD uses an 80 MHz clock and ISO framing; error-state-indicator transmission is not supported |
 
 macOS is a development target through the virtual driver. It has no physical
 hardware driver.
@@ -49,6 +49,11 @@ bus, err := drivers.Open(ctx, capture, channel, drivers.Config{
 	ID: 1, Name: "powertrain", FDTiming: timing,
 })
 ```
+
+The Windows PCAN and Vector paths are qualified on physical classic and CAN FD
+adapters. SocketCAN passes the software and virtual-interface suites; its
+[physical-adapter qualification](https://github.com/tomrford/gocan/issues/10)
+remains release work. NI-XNET is deferred until hardware is available.
 
 ## Development
 
