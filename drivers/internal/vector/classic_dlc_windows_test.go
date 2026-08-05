@@ -100,22 +100,32 @@ func runVectorClassicalDLCMatrix(
 ) {
 	t.Helper()
 	capture := gocan.NewCapture()
-	a, err := Open(context.Background(), capture, Config{
+	configA := Config{
 		ID:           1,
 		Name:         "vector-dlc-a",
 		ChannelIndex: vectorA,
-		FDTiming:     vectorFDTiming(dataBitrateA),
-	})
+	}
+	if dataBitrateA == 0 {
+		configA.Bitrate = 500_000
+	} else {
+		configA.FDTiming = vectorFDTiming(dataBitrateA)
+	}
+	a, err := Open(context.Background(), capture, configA)
 	if err != nil {
 		t.Fatalf("open Vector A: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Close() })
-	b, err := Open(context.Background(), capture, Config{
+	configB := Config{
 		ID:           2,
 		Name:         "vector-dlc-b",
 		ChannelIndex: vectorB,
-		FDTiming:     vectorFDTiming(dataBitrateB),
-	})
+	}
+	if dataBitrateB == 0 {
+		configB.Bitrate = 500_000
+	} else {
+		configB.FDTiming = vectorFDTiming(dataBitrateB)
+	}
+	b, err := Open(context.Background(), capture, configB)
 	if err != nil {
 		_ = a.Close()
 		t.Fatalf("open Vector B: %v", err)
