@@ -44,14 +44,14 @@ type xlCANFDConfig struct {
 
 func newXLCanFDConfig(config Config) xlCANFDConfig {
 	return xlCANFDConfig{
-		arbitrationBitrate: config.Bitrate,
-		sjwArbitration:     2,
-		tseg1Arbitration:   6,
-		tseg2Arbitration:   3,
-		dataBitrate:        config.DataBitrate,
-		sjwData:            2,
-		tseg1Data:          6,
-		tseg2Data:          3,
+		arbitrationBitrate: config.FDTiming.ArbitrationBitrate,
+		sjwArbitration:     config.FDTiming.Arbitration.SJW,
+		tseg1Arbitration:   config.FDTiming.Arbitration.TSEG1,
+		tseg2Arbitration:   config.FDTiming.Arbitration.TSEG2,
+		dataBitrate:        config.FDTiming.DataBitrate,
+		sjwData:            config.FDTiming.Data.SJW,
+		tseg1Data:          config.FDTiming.Data.TSEG1,
+		tseg2Data:          config.FDTiming.Data.TSEG2,
 	}
 }
 

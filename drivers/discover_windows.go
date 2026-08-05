@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 // Discover reports the attached PCAN channels followed by the CAN-capable
@@ -27,10 +27,10 @@ func Discover() ([]Channel, error) {
 	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels))
 	for _, channel := range pcanChannels {
 		channels = append(channels, Channel{
-			Driver:      "pcan",
-			Name:        channel.Name,
-			SupportsFD:  channel.SupportsFD,
-			PCANChannel: channel.Channel,
+			driver:     driverPCAN,
+			name:       channel.Name,
+			native:     uint64(channel.Channel),
+			supportsFD: channel.SupportsFD,
 		})
 	}
 	channels = append(channels, vectorChannels...)

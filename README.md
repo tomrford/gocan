@@ -9,27 +9,50 @@ settles. Source and package documentation define current behaviour.
 
 ## Driver support
 
-| Driver | Use | Platform | CAN | CAN FD | Current limits |
-| --- | --- | --- | --- | --- | --- |
-| `virtual` | Development and tests only | Portable, including macOS | Yes | Yes | No physical hardware |
-| `socketcan` | Physical hardware | Linux | Yes | Yes | Tested only with `vcan`; see the qualification note below |
-| `pcan` | Physical PEAK hardware | Windows | Yes | Yes | The classical API cannot transmit classical DLC 9–15 (the FD API preserves them); CAN FD peers must agree on ISO or non-ISO framing, which follows the adapter's stored device configuration because PCAN-Basic cannot select it |
-| `vector` | Physical Vector hardware | Windows x64 | Yes | Yes | CAN FD error-state-indicator transmission is not supported |
+| Driver | Platform | CAN | CAN FD | Current limits |
+| --- | --- | --- | --- | --- |
+| `drivers/virtual` | Portable, including macOS | Yes | Yes | Development and tests only |
+| SocketCAN through `drivers` | Linux | Yes | Yes | The Linux link configuration owns bit timing |
+| PCAN through `drivers` | Windows | Yes | Yes | PCAN-Basic cannot select ISO/non-ISO framing; the adapter's stored mode must match its peers. The classical API cannot transmit classical DLC 9–15 |
+| Vector through `drivers` | Windows x64 | Yes | Yes | ISO CAN FD only; error-state-indicator transmission is not supported |
 
-macOS is currently a development target through the virtual driver. It has no
-physical-hardware driver.
+macOS is a development target through the virtual driver. It has no physical
+hardware driver.
 
-The `socketcan` implementation has been tested only with Linux `vcan`
-interfaces. [Physical-hardware qualification](https://github.com/tomrford/gocan/issues/10)
-is still required to qualify adapter removal, native controller error frames,
-transmit-queue saturation, and any refinements those results require.
+The `drivers` package is the physical-hardware API. Discover a channel and pass
+that opaque value to `Open`:
 
-Each physical driver exposes its own `Discover`, and the `drivers` package
-aggregates them into one platform-wide channel inventory.
+```go
+channels, err := drivers.Discover()
+if err != nil {
+	return err
+}
+if len(channels) == 0 {
+	return errors.New("no physical CAN channels")
+}
+bus, err := drivers.Open(ctx, capture, channels[0], drivers.Config{
+	ID: 1, Name: "powertrain", Bitrate: 500_000,
+})
+```
+
+SocketCAN channels use `External: true` because Linux owns their link timing.
+PCAN and Vector CAN FD channels accept the same exact bit-timing value.
+`FDTiming` does not alter the stored PCAN ISO/non-ISO framing mode:
+
+```go
+timing := drivers.FDTiming{
+	ClockHz: 80_000_000,
+	Nominal: drivers.BitTiming{BRP: 1, TSEG1: 119, TSEG2: 40, SJW: 1},
+	Data:    drivers.BitTiming{BRP: 1, TSEG1: 29, TSEG2: 10, SJW: 1},
+}
+bus, err := drivers.Open(ctx, capture, channel, drivers.Config{
+	ID: 1, Name: "powertrain", FDTiming: timing,
+})
+```
 
 ## Development
 
-The module currently requires Go 1.25 or newer:
+The module requires Go 1.25 or newer:
 
 ```sh
 go test ./...

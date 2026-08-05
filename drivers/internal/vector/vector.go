@@ -23,15 +23,28 @@ type Config struct {
 	Name string
 	// ChannelIndex is the global XL Driver Library channel index.
 	ChannelIndex ChannelIndex
-	// Bitrate is the classic bitrate, or the CAN FD arbitration-phase bitrate,
-	// in bits per second.
+	// Bitrate selects classical CAN in bits per second.
 	Bitrate uint32
-	// DataBitrate enables CAN FD and selects its data-phase bitrate in bits per
-	// second. Zero selects a classic CAN channel. Bit-timing segments are fixed.
-	DataBitrate uint32
+	// FDTiming selects ISO CAN FD with exact native timing.
+	FDTiming FDTiming
 }
 
-func (config Config) fd() bool { return config.DataBitrate != 0 }
+// FDTiming is the validated CAN FD configuration passed by package drivers.
+type FDTiming struct {
+	ArbitrationBitrate uint32
+	DataBitrate        uint32
+	Arbitration        BitTiming
+	Data               BitTiming
+}
+
+// BitTiming is one phase of validated native Vector timing.
+type BitTiming struct {
+	SJW   uint32
+	TSEG1 uint32
+	TSEG2 uint32
+}
+
+func (config Config) fd() bool { return config.FDTiming != (FDTiming{}) }
 
 type xlStatus int16
 type xlPortHandle int32
@@ -200,8 +213,8 @@ func validateConfig(capture *gocan.Capture, config Config) error {
 		return errors.New("Vector bus requires a name")
 	case config.ChannelIndex >= 64:
 		return fmt.Errorf("Vector channel index %d exceeds 63", config.ChannelIndex)
-	case config.Bitrate == 0:
-		return errors.New("Vector bus requires a bitrate")
+	case (config.Bitrate == 0) == (config.FDTiming == (FDTiming{})):
+		return errors.New("Vector bus requires exactly one of Bitrate and FDTiming")
 	}
 	return nil
 }

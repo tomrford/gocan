@@ -8,7 +8,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/conformance"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 func TestVectorConformance(t *testing.T) {
@@ -66,8 +66,7 @@ func TestVectorPCANFDConformance(t *testing.T) {
 			ID:           2,
 			Name:         "vector-fd",
 			ChannelIndex: vectorChannel,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
+			FDTiming:     vectorFDTiming(dataBitrate),
 		})
 		if err != nil {
 			_ = sender.Close()
@@ -102,8 +101,7 @@ func openVectorPair(vectorA, vectorB ChannelIndex, dataBitrate uint32) conforman
 			ID:           1,
 			Name:         "vector-a",
 			ChannelIndex: vectorA,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
+			FDTiming:     vectorFDTiming(dataBitrate),
 		})
 		if err != nil {
 			t.Fatalf("Open first Vector channel: %v", err)
@@ -114,8 +112,7 @@ func openVectorPair(vectorA, vectorB ChannelIndex, dataBitrate uint32) conforman
 			ID:           2,
 			Name:         "vector-b",
 			ChannelIndex: vectorB,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
+			FDTiming:     vectorFDTiming(dataBitrate),
 		})
 		if err != nil {
 			_ = first.Close()

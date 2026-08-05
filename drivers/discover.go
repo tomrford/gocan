@@ -1,34 +1,66 @@
-// Package drivers aggregates the physical CAN drivers behind one
-// platform-wide discovery call. Open a discovered channel with the owning
-// driver package; the virtual driver creates buses on demand and reports no
-// channels here.
+// Package drivers discovers and opens physical CAN channels. Native driver
+// selectors and configuration remain private to this package.
 package drivers
 
-import (
-	"github.com/tomrford/gocan/drivers/pcan"
-	"github.com/tomrford/gocan/drivers/vector"
+import "fmt"
+
+type driverKind uint8
+
+const (
+	driverUnknown driverKind = iota
+	driverSocketCAN
+	driverPCAN
+	driverVector
 )
 
-// Channel is one CAN channel reported by a physical driver on this platform.
-// It carries the shape every driver shares; detail beyond it comes from the
-// owning driver's own Discover.
+func (driver driverKind) String() string {
+	switch driver {
+	case driverSocketCAN:
+		return "socketcan"
+	case driverPCAN:
+		return "pcan"
+	case driverVector:
+		return "vector"
+	default:
+		return ""
+	}
+}
+
+// Channel is one physical CAN channel returned by Discover. Its native
+// selector is intentionally opaque; pass the value unchanged to Open.
 type Channel struct {
-	// Driver is the reporting driver package: "socketcan", "pcan", or
-	// "vector".
-	Driver string
-	// Name is the device or interface name reported by the native stack.
-	Name string
-	// SupportsFD reports whether the owning driver supports CAN FD on this
-	// channel.
-	SupportsFD bool
+	driver     driverKind
+	name       string
+	nativeName string
+	native     uint64
+	supportsFD bool
+	external   bool
+}
 
-	// Exactly one selector field, matching Driver, identifies the channel to
-	// that driver's Config.
+// Driver returns "socketcan", "pcan", or "vector".
+func (channel Channel) Driver() string { return channel.driver.String() }
 
-	// SocketCANInterface is the Linux network interface name.
-	SocketCANInterface string
-	// PCANChannel is the PCAN-Basic channel handle.
-	PCANChannel pcan.Channel
-	// VectorChannelIndex is the XL global channel index.
-	VectorChannelIndex vector.ChannelIndex
+// Name returns the device or interface name reported by the native stack.
+func (channel Channel) Name() string { return channel.name }
+
+// SupportsFD reports whether the channel supports CAN FD.
+func (channel Channel) SupportsFD() bool { return channel.supportsFD }
+
+// ExternallyConfigured reports whether the operating system, rather than
+// gocan, owns the channel's bit timing.
+func (channel Channel) ExternallyConfigured() bool { return channel.external }
+
+// Identifier returns a session-local display key which distinguishes channels
+// that have the same driver and name. Pass Channel itself to Open.
+func (channel Channel) Identifier() string {
+	switch channel.driver {
+	case driverSocketCAN:
+		return "socketcan:" + channel.nativeName
+	case driverPCAN:
+		return fmt.Sprintf("pcan:%#x", channel.native)
+	case driverVector:
+		return fmt.Sprintf("vector:%d", channel.native)
+	default:
+		return ""
+	}
 }

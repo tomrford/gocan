@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 const classicalDLCHardwareTimeout = 5 * time.Second
@@ -104,8 +104,7 @@ func runVectorClassicalDLCMatrix(
 		ID:           1,
 		Name:         "vector-dlc-a",
 		ChannelIndex: vectorA,
-		Bitrate:      500_000,
-		DataBitrate:  dataBitrateA,
+		FDTiming:     vectorFDTiming(dataBitrateA),
 	})
 	if err != nil {
 		t.Fatalf("open Vector A: %v", err)
@@ -115,8 +114,7 @@ func runVectorClassicalDLCMatrix(
 		ID:           2,
 		Name:         "vector-dlc-b",
 		ChannelIndex: vectorB,
-		Bitrate:      500_000,
-		DataBitrate:  dataBitrateB,
+		FDTiming:     vectorFDTiming(dataBitrateB),
 	})
 	if err != nil {
 		_ = a.Close()

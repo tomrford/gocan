@@ -177,7 +177,7 @@ func testLifecycle(t *testing.T, open Pair) {
 // repeatedly instead of sending once: the PCAN driver lost roughly a quarter of
 // first frames until Open began waiting for its channel, and a single sample
 // would have passed three times in four. See channelSettleDelay in
-// drivers/pcan. This is also the case to run when qualifying new hardware,
+// PCAN. This is also the case to run when qualifying new hardware,
 // because a settle budget that is too short for a slower host fails silently.
 func testFirstFrameAfterOpen(t *testing.T, open Pair) {
 	const samples = 20
