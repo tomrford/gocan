@@ -19,6 +19,7 @@ the raw `uds` request and response values.
 
 ### CANdela CDD
 
-Use real CANdela CDD files to define and implement a useful subset for named
-requests, responses, DIDs, routines, and timing. Report unsupported semantics
-rather than silently discarding them.
+Validate the current resolved DID catalog against real CANdela CDD files. Add
+DID payload codecs, then expand the catalog for named sessions, security
+levels, routines, and timing as semantic UDS gains those operations. Report
+unsupported selected records rather than silently discarding their fields.
