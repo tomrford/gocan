@@ -407,8 +407,10 @@ func (r *resolver) resolveFrameFormats() error {
 		if err := validateFrameFormat(*message); err != nil {
 			return semanticError(r.messagePositions[index], "BA_", "message %q: %v", message.Name, err)
 		}
+		// CANFD_BRS has no meaning for a classical message, even when an
+		// exporter gives the message-scoped attribute a database-wide default.
 		brs := effectiveAttribute(message.Attributes, r.definition("CANFD_BRS"))
-		if brs != nil {
+		if brs != nil && (message.Format == FrameFormatStandardCANFD || message.Format == FrameFormatExtendedCANFD) {
 			switch {
 			case brs.Integer == 0 && (brs.Text == "" || brs.Text == "0"):
 				message.bitRateSwitch = false
@@ -709,7 +711,7 @@ func frameFormat(value AttributeValue) (FrameFormat, error) {
 }
 
 func validateFrameFormat(message Message) error {
-	if message.Length > 64 {
+	if message.Length > 64 && message.Format != FrameFormatJ1939 {
 		return fmt.Errorf("CAN message length %d exceeds 64", message.Length)
 	}
 	switch message.Format {

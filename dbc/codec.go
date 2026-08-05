@@ -29,8 +29,9 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 }
 
 // Encode constructs a complete raw frame from the values of every signal
-// active on the selected multiplexing path. Messages containing a signal
-// wider than 64 bits are not supported by the codec.
+// active on the selected multiplexing path. Messages longer than the 64-byte
+// raw frame representation or containing a signal wider than 64 bits are not
+// supported by the codec.
 func (message *Message) Encode(values Values) (gocan.Frame, error) {
 	codec, err := message.writableCodec()
 	if err != nil {
@@ -69,8 +70,9 @@ func (message *Message) Encode(values Values) (gocan.Frame, error) {
 // Patch applies changes to frame. Signals omitted from changes retain their
 // existing raw bits. Changing a multiplexing path requires values for every
 // signal that becomes active on the new path. Patch validates all changes
-// before modifying frame. Messages containing a signal wider than 64 bits are
-// not supported by the codec.
+// before modifying frame. Messages longer than the 64-byte raw frame
+// representation or containing a signal wider than 64 bits are not supported
+// by the codec.
 func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 	codec, err := message.writableCodec()
 	if err != nil {
@@ -133,8 +135,8 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 
 // Decode returns the physical value of one named signal from frame. It reads
 // only that signal and the multiplexors needed to establish whether it is
-// active. Messages containing a signal wider than 64 bits are not supported by
-// the codec.
+// active. Messages longer than the 64-byte raw frame representation or
+// containing a signal wider than 64 bits are not supported by the codec.
 func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
 	codec, err := message.usableCodec()
 	if err != nil {
@@ -188,6 +190,10 @@ func compileMessageCodec(message *Message) *messageCodec {
 		signalsByName: make(map[string]int, len(message.Signals)),
 		constraints:   make([]map[int][]MultiplexRange, len(message.Signals)),
 		selectors:     make([]bool, len(message.Signals)),
+	}
+	if message.Length > gocan.MaxDataLength {
+		codec.err = fmt.Errorf("%d-byte message exceeds the %d-byte raw frame representation", message.Length, gocan.MaxDataLength)
+		return codec
 	}
 	for index, signal := range message.Signals {
 		if signal.BitLength > 64 {
