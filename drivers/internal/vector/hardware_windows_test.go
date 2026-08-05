@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 func parseHardwareUint(tb testing.TB, name, value string, bits int) uint64 {
@@ -85,4 +85,13 @@ func vectorFDDataBitrate(tb testing.TB) uint32 {
 		tb.Fatal("GOCAN_VECTOR_FD_DATA_BITRATE must be nonzero")
 	}
 	return uint32(dataBitrate)
+}
+
+func vectorFDTiming(dataBitrate uint32) FDTiming {
+	return FDTiming{
+		ArbitrationBitrate: 500_000,
+		DataBitrate:        dataBitrate,
+		Arbitration:        BitTiming{SJW: 2, TSEG1: 6, TSEG2: 3},
+		Data:               BitTiming{SJW: 2, TSEG1: 6, TSEG2: 3},
+	}
 }

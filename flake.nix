@@ -23,9 +23,16 @@
           env.CGO_ENABLED = 1;
           excludedPackages =
             ["internal/devicechange"]
-            ++ pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isLinux) ["drivers/socketcan"];
+            ++ pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isLinux) ["drivers/internal/socketcan"];
           checkFlags = ["-race"];
-          postCheck = "go vet ./...";
+          postCheck = ''
+            go vet ./...
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "gofmt required: $unformatted"
+              exit 1
+            fi
+          '';
         };
 
         devShells.default = pkgs.mkShell {

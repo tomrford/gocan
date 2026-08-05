@@ -80,10 +80,6 @@ func (link *Link) waitFlowControl(ctx context.Context) (pdu, error) {
 }
 
 func (link *Link) sendFrame(ctx context.Context, frame gocan.Frame) error {
-	// TODO: Decide a measured retry delay and limit for ErrTransmitQueueFull.
-	// Retrying that explicitly rejected frame is protocol-safe because the bus
-	// did not accept or record it. Any other mid-transfer Send error terminates
-	// the transmission because restarting a PDU could corrupt peer state.
 	return link.bus.Send(ctx, frame)
 }
 

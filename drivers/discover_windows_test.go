@@ -3,12 +3,10 @@
 package drivers
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
-
-	"github.com/tomrford/gocan/drivers/pcan"
-	"github.com/tomrford/gocan/drivers/vector"
 )
 
 func TestDiscoverWindowsHardware(t *testing.T) {
@@ -33,13 +31,13 @@ func TestDiscoverWindowsHardware(t *testing.T) {
 	foundPCAN := false
 	foundVector := false
 	for _, channel := range channels {
-		if channel.Name == "" {
-			t.Errorf("%s channel %+v has an empty name", channel.Driver, channel)
+		if channel.Name() == "" {
+			t.Errorf("%s channel %s has an empty name", channel.Driver(), channel.Identifier())
 		}
 		switch {
-		case channel.Driver == "pcan" && channel.PCANChannel == pcan.Channel(pcanChannel):
+		case channel.Identifier() == fmt.Sprintf("pcan:%#x", pcanChannel):
 			foundPCAN = true
-		case channel.Driver == "vector" && channel.VectorChannelIndex == vector.ChannelIndex(vectorIndex):
+		case channel.Identifier() == fmt.Sprintf("vector:%d", vectorIndex):
 			foundVector = true
 		}
 	}

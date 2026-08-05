@@ -39,7 +39,8 @@ const (
 		unix.CAN_ERR_BUSERROR
 )
 
-// Config selects one Linux SocketCAN interface.
+// Config selects one Linux SocketCAN interface. Package drivers constructs
+// and validates it.
 type Config struct {
 	// ID is the one-based trace channel assigned to the bus.
 	ID gocan.BusID
@@ -55,18 +56,6 @@ type Config struct {
 // Context controls opening only; canceling it after Open returns does not stop
 // the bus.
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, error) {
-	if capture == nil {
-		return nil, errors.New("SocketCAN bus requires a capture")
-	}
-	if config.ID == 0 {
-		return nil, errors.New("SocketCAN bus requires an ID")
-	}
-	if config.Name == "" {
-		return nil, errors.New("SocketCAN bus requires a name")
-	}
-	if config.Interface == "" {
-		return nil, errors.New("SocketCAN bus requires an interface")
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

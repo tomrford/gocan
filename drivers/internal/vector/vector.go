@@ -4,7 +4,6 @@
 package vector
 
 import (
-	"errors"
 	"fmt"
 	"time"
 	"unsafe"
@@ -15,7 +14,8 @@ import (
 // ChannelIndex is a global channel index reported by the XL Driver Library.
 type ChannelIndex uint8
 
-// Config selects and configures one Vector CAN channel.
+// Config selects and configures one Vector CAN channel. Package drivers
+// constructs and validates it.
 type Config struct {
 	// ID is the one-based trace channel assigned to the bus.
 	ID gocan.BusID
@@ -23,15 +23,28 @@ type Config struct {
 	Name string
 	// ChannelIndex is the global XL Driver Library channel index.
 	ChannelIndex ChannelIndex
-	// Bitrate is the classic bitrate, or the CAN FD arbitration-phase bitrate,
-	// in bits per second.
+	// Bitrate selects classical CAN in bits per second.
 	Bitrate uint32
-	// DataBitrate enables CAN FD and selects its data-phase bitrate in bits per
-	// second. Zero selects a classic CAN channel. Bit-timing segments are fixed.
-	DataBitrate uint32
+	// FDTiming selects ISO CAN FD with exact native timing.
+	FDTiming FDTiming
 }
 
-func (config Config) fd() bool { return config.DataBitrate != 0 }
+// FDTiming is the validated CAN FD configuration passed by package drivers.
+type FDTiming struct {
+	ArbitrationBitrate uint32
+	DataBitrate        uint32
+	Arbitration        BitTiming
+	Data               BitTiming
+}
+
+// BitTiming is one phase of validated native Vector timing.
+type BitTiming struct {
+	SJW   uint32
+	TSEG1 uint32
+	TSEG2 uint32
+}
+
+func (config Config) fd() bool { return config.FDTiming != (FDTiming{}) }
 
 type xlStatus int16
 type xlPortHandle int32
@@ -136,8 +149,6 @@ func newErrorObservation(bus gocan.BusID, timestamp time.Time) (receiveObservati
 	return observation, nil
 }
 
-// TODO: Qualify a controlled Vector receive overrun on hardware; both native
-// overrun shapes are decoder-tested only.
 func newOverrunObservation(bus gocan.BusID, timestamp time.Time, detail string) (receiveObservation, error) {
 	event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
 	if err != nil {
@@ -190,22 +201,6 @@ func decodeChipState(status uint8) (gocan.ControllerState, error) {
 	default:
 		return 0, fmt.Errorf("unsupported Vector chip state %#02x", status)
 	}
-}
-
-func validateConfig(capture *gocan.Capture, config Config) error {
-	switch {
-	case capture == nil:
-		return errors.New("Vector bus requires a capture")
-	case config.ID == 0:
-		return errors.New("Vector bus requires an ID")
-	case config.Name == "":
-		return errors.New("Vector bus requires a name")
-	case config.ChannelIndex >= 64:
-		return fmt.Errorf("Vector channel index %d exceeds 63", config.ChannelIndex)
-	case config.Bitrate == 0:
-		return errors.New("Vector bus requires a bitrate")
-	}
-	return nil
 }
 
 func channelAccess(index ChannelIndex) xlAccess {

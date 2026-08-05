@@ -2,11 +2,6 @@
 
 // Package devicechange reports Windows Plug and Play device-instance changes
 // and fans matching removals out to open buses; see Monitor.
-//
-// TODO: Migrate Vector from its native-status disconnect detection to a
-// Monitor once physical-removal notifications are qualified on Vector
-// hardware.
-// Native API failures remain synchronous fallbacks.
 package devicechange
 
 import (

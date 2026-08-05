@@ -8,7 +8,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/conformance"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 // benchVectorToPCAN opens one Vector classic channel as sender and one PCAN
@@ -63,7 +63,7 @@ func BenchmarkVectorFDSaturatedCapture(b *testing.B) {
 	capture := gocan.NewCapture()
 	sender, err := Open(ctx, capture, Config{
 		ID: 1, Name: "bench-fd-tx", ChannelIndex: vectorA,
-		Bitrate: 500_000, DataBitrate: dataBitrate,
+		FDTiming: vectorFDTiming(dataBitrate),
 	})
 	if err != nil {
 		b.Fatalf("Open FD sender: %v", err)
@@ -71,7 +71,7 @@ func BenchmarkVectorFDSaturatedCapture(b *testing.B) {
 	b.Cleanup(func() { _ = sender.Close() })
 	receiver, err := Open(ctx, capture, Config{
 		ID: 2, Name: "bench-fd-rx", ChannelIndex: vectorB,
-		Bitrate: 500_000, DataBitrate: dataBitrate,
+		FDTiming: vectorFDTiming(dataBitrate),
 	})
 	if err != nil {
 		b.Fatalf("Open FD receiver: %v", err)

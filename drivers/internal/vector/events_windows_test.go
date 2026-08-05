@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 func TestSameChipState(t *testing.T) {
@@ -69,16 +69,14 @@ func TestVectorFDEvents(t *testing.T) {
 			ID:           1,
 			Name:         "vector-fd-event-target",
 			ChannelIndex: vectorA,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
+			FDTiming:     vectorFDTiming(dataBitrate),
 		},
 		openPeer: func(capture *gocan.Capture) (gocan.Bus, error) {
 			return Open(context.Background(), capture, Config{
 				ID:           2,
 				Name:         "vector-fd-recovery-peer",
 				ChannelIndex: vectorB,
-				Bitrate:      500_000,
-				DataBitrate:  dataBitrate,
+				FDTiming:     vectorFDTiming(dataBitrate),
 			})
 		},
 		faultID:     0x5a4,
@@ -99,7 +97,7 @@ func TestVectorFDMismatchedDataBitrateEvents(t *testing.T) {
 	capture := gocan.NewCapture()
 	sender, err := Open(context.Background(), capture, Config{
 		ID: 1, Name: "vector-fd-mismatch-sender", ChannelIndex: vectorA,
-		Bitrate: 500_000, DataBitrate: dataBitrate,
+		FDTiming: vectorFDTiming(dataBitrate),
 	})
 	if err != nil {
 		t.Fatalf("open Vector FD sender: %v", err)
@@ -107,7 +105,7 @@ func TestVectorFDMismatchedDataBitrateEvents(t *testing.T) {
 	t.Cleanup(func() { _ = sender.Close() })
 	receiver, err := Open(context.Background(), capture, Config{
 		ID: 2, Name: "vector-fd-mismatch-receiver", ChannelIndex: vectorB,
-		Bitrate: 500_000, DataBitrate: mismatchedDataBitrate,
+		FDTiming: vectorFDTiming(mismatchedDataBitrate),
 	})
 	if err != nil {
 		t.Fatalf("open Vector FD receiver: %v", err)

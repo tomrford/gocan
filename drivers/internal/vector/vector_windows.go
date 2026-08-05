@@ -188,8 +188,10 @@ func (driver *xlDriverProcess) release(close func() error) error {
 // Context controls opening only; canceling it after Open returns does not stop
 // the bus. Native calls cannot be interrupted, so Open checks ctx between them.
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus *Bus, err error) {
-	if err := validateConfig(capture, config); err != nil {
-		return nil, err
+	// The 64-bit XL access mask cannot address higher indexes; a larger value
+	// would shift to an empty mask.
+	if config.ChannelIndex >= 64 {
+		return nil, fmt.Errorf("Vector channel index %d exceeds 63", config.ChannelIndex)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -814,6 +816,8 @@ func (bus *Bus) setChipStateRefresh(refresh bool, now time.Time) {
 
 func (bus *Bus) runtimeStatusError(operation string, status xlStatus) error {
 	if status == xlInvalidHandle {
+		// Native status preserves adapter-local failure containment; Windows
+		// device instances cannot be stably mapped to XL serial numbers.
 		return fmt.Errorf(
 			"%w: %s: Vector status %d (XL_ERR_INVALID_HANDLE)",
 			gocan.ErrHardwareDisconnected,

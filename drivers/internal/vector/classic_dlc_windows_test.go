@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 const classicalDLCHardwareTimeout = 5 * time.Second
@@ -100,24 +100,32 @@ func runVectorClassicalDLCMatrix(
 ) {
 	t.Helper()
 	capture := gocan.NewCapture()
-	a, err := Open(context.Background(), capture, Config{
+	configA := Config{
 		ID:           1,
 		Name:         "vector-dlc-a",
 		ChannelIndex: vectorA,
-		Bitrate:      500_000,
-		DataBitrate:  dataBitrateA,
-	})
+	}
+	if dataBitrateA == 0 {
+		configA.Bitrate = 500_000
+	} else {
+		configA.FDTiming = vectorFDTiming(dataBitrateA)
+	}
+	a, err := Open(context.Background(), capture, configA)
 	if err != nil {
 		t.Fatalf("open Vector A: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Close() })
-	b, err := Open(context.Background(), capture, Config{
+	configB := Config{
 		ID:           2,
 		Name:         "vector-dlc-b",
 		ChannelIndex: vectorB,
-		Bitrate:      500_000,
-		DataBitrate:  dataBitrateB,
-	})
+	}
+	if dataBitrateB == 0 {
+		configB.Bitrate = 500_000
+	} else {
+		configB.FDTiming = vectorFDTiming(dataBitrateB)
+	}
+	b, err := Open(context.Background(), capture, configB)
 	if err != nil {
 		_ = a.Close()
 		t.Fatalf("open Vector B: %v", err)

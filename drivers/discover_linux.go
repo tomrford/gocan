@@ -2,7 +2,7 @@
 
 package drivers
 
-import "github.com/tomrford/gocan/drivers/socketcan"
+import "github.com/tomrford/gocan/drivers/internal/socketcan"
 
 // Discover reports the SocketCAN interfaces on this host, including
 // interfaces which are down, in kernel order.
@@ -14,10 +14,11 @@ func Discover() ([]Channel, error) {
 	channels := make([]Channel, len(interfaces))
 	for index, network := range interfaces {
 		channels[index] = Channel{
-			Driver:             "socketcan",
-			Name:               network.Name,
-			SupportsFD:         network.SupportsFD,
-			SocketCANInterface: network.Name,
+			driver:     driverSocketCAN,
+			name:       network.Name,
+			nativeName: network.Name,
+			supportsFD: network.SupportsFD,
+			external:   true,
 		}
 	}
 	return channels, nil

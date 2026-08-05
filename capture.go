@@ -706,11 +706,6 @@ func (capture *Capture) Frames() []FrameEvent {
 // A writer may commit partial output before returning an error. Capture tracks
 // completed writer calls, not the transactional state of the underlying
 // output. Pass the zero Cursor to write the full retained Capture.
-//
-// TODO: Add a periodic recorder only when its flush and shutdown lifecycle is
-// defined. It should drain WriteRecordsSince from its own goroutine and must
-// never invoke a writer from Append. Do not expose Capture chunk rotation
-// unless measured polling overhead makes that necessary.
 func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
 	views, skip, next := capture.viewsSince(cursor)
 	lastWritten := cursor

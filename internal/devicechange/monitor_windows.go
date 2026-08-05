@@ -194,10 +194,6 @@ func (monitor *Monitor) run(watcher instanceWatcher, stop <-chan struct{}, done 
 				event.InstanceID,
 			))
 		case <-ticker.C:
-			// TODO: Requalify physical removal on both PEAK stacks: the
-			// existing qualification predates the shared-callback dispatch,
-			// and this fail-closed stop on a lost notification has never been
-			// observed on hardware.
 			if watcher.Lost() {
 				monitor.stopAll(stop, fmt.Errorf(
 					"%w: Windows device notifications were lost",

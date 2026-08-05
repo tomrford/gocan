@@ -97,16 +97,6 @@ type Config struct {
 //
 // Reuse one Link for each logical endpoint: separately constructed Links with
 // an overlapping bus and receive address cannot distinguish their traffic.
-//
-// TODO: Give a Link that is both a client and a server a defined receive
-// routing rule if a consumer needs one. It requires deciding whether an open
-// Exchange claims every matching payload or only the first, which is a policy
-// question no current consumer answers.
-//
-// TODO: Add ISO-TP extended and mixed address-byte modes, asymmetric links,
-// and functional requests when a consumer requires them. The frame codec keeps
-// protocol headers separate from link configuration so this API can remain
-// unchanged.
 type Link struct {
 	bus     gocan.Bus
 	capture *gocan.Capture

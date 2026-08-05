@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -21,17 +20,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// channelSettleDelay covers a period after CAN_Initialize during which the
-// first received frame can be lost rather than delayed.
-//
-// Hardware qualification showed a short loss window after initialization.
-// PCAN_RECEIVE_EVENT increased losses inside that window, and polling CAN_Read
-// did not avoid them. PCAN-Basic exposes no usable readiness signal:
-// CAN_GetStatus reports OK immediately and initialization queues no activation
-// status. Use a generous margin because a short delay fails silently.
-//
-// TODO: Revalidate this budget on other adapters, hosts, hubs, and driver
-// versions with the conformance suite's "first frame after open" case.
+// channelSettleDelay covers a brief post-initialization interval during which
+// PCAN-Basic can silently lose the first received frame. It exposes no
+// readiness signal, so retain margin over the observed roughly 3 ms window.
 const channelSettleDelay = 25 * time.Millisecond
 
 // A PEAK USB removal is one shared PCAN process failure domain: every open
@@ -80,12 +71,6 @@ func Discover() ([]ChannelInfo, error) {
 // immediately; see channelSettleDelay. Context controls opening only;
 // canceling it after Open returns does not stop the bus.
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus *Bus, err error) {
-	if err := validateConfig(capture, config); err != nil {
-		return nil, err
-	}
-	if strings.IndexByte(config.FDBitrate, 0) >= 0 {
-		return nil, errors.New("PCAN FD bitrate contains a NUL byte")
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

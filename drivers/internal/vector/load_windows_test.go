@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 const hardwareLoadTimeout = 30 * time.Second
@@ -53,12 +53,12 @@ func TestVectorFDTransmitQueueFull(t *testing.T) {
 	runVectorTransmitQueueFull(t, vectorSaturationSetup{
 		target: Config{
 			ID: 2, Name: "vector-fd", ChannelIndex: vectorA,
-			Bitrate: 500_000, DataBitrate: dataBitrate,
+			FDTiming: vectorFDTiming(dataBitrate),
 		},
 		openPeer: func(capture *gocan.Capture) (gocan.Bus, error) {
 			return Open(context.Background(), capture, Config{
 				ID: 1, Name: "vector-fd-peer", ChannelIndex: vectorB,
-				Bitrate: 500_000, DataBitrate: dataBitrate,
+				FDTiming: vectorFDTiming(dataBitrate),
 			})
 		},
 		frame: frame,

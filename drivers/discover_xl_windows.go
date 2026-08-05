@@ -2,17 +2,17 @@
 
 package drivers
 
-import "github.com/tomrford/gocan/drivers/vector"
+import "github.com/tomrford/gocan/drivers/internal/vector"
 
 func discoverVector() ([]Channel, error) {
 	vectorChannels, err := vector.Discover()
 	channels := make([]Channel, 0, len(vectorChannels))
 	for _, channel := range vectorChannels {
 		channels = append(channels, Channel{
-			Driver:             "vector",
-			Name:               channel.Name,
-			SupportsFD:         channel.SupportsFD,
-			VectorChannelIndex: channel.ChannelIndex,
+			driver:     driverVector,
+			name:       channel.Name,
+			native:     uint64(channel.ChannelIndex),
+			supportsFD: channel.SupportsFD,
 		})
 	}
 	return channels, err

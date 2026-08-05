@@ -8,7 +8,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/conformance"
-	"github.com/tomrford/gocan/drivers/pcan"
+	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
 func TestVectorConformance(t *testing.T) {
@@ -66,8 +66,7 @@ func TestVectorPCANFDConformance(t *testing.T) {
 			ID:           2,
 			Name:         "vector-fd",
 			ChannelIndex: vectorChannel,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
+			FDTiming:     vectorFDTiming(dataBitrate),
 		})
 		if err != nil {
 			_ = sender.Close()
@@ -98,25 +97,33 @@ func TestVectorFDConformance(t *testing.T) {
 
 func openVectorPair(vectorA, vectorB ChannelIndex, dataBitrate uint32) conformance.Pair {
 	return func(t *testing.T, capture *gocan.Capture) (gocan.Bus, gocan.Bus) {
-		first, err := Open(context.Background(), capture, Config{
+		configA := Config{
 			ID:           1,
 			Name:         "vector-a",
 			ChannelIndex: vectorA,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
-		})
+		}
+		if dataBitrate == 0 {
+			configA.Bitrate = 500_000
+		} else {
+			configA.FDTiming = vectorFDTiming(dataBitrate)
+		}
+		first, err := Open(context.Background(), capture, configA)
 		if err != nil {
 			t.Fatalf("Open first Vector channel: %v", err)
 		}
 		t.Cleanup(func() { _ = first.Close() })
 
-		second, err := Open(context.Background(), capture, Config{
+		configB := Config{
 			ID:           2,
 			Name:         "vector-b",
 			ChannelIndex: vectorB,
-			Bitrate:      500_000,
-			DataBitrate:  dataBitrate,
-		})
+		}
+		if dataBitrate == 0 {
+			configB.Bitrate = 500_000
+		} else {
+			configB.FDTiming = vectorFDTiming(dataBitrate)
+		}
+		second, err := Open(context.Background(), capture, configB)
 		if err != nil {
 			_ = first.Close()
 			t.Fatalf("Open second Vector channel: %v", err)
