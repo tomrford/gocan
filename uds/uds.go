@@ -1,11 +1,13 @@
-// Package uds exchanges raw Unified Diagnostic Services requests and responses
-// over an ISO-TP link.
+// Package uds exchanges raw and typed Unified Diagnostic Services requests and
+// responses over an ISO-TP link. Typed operations encode one standard service;
+// callers retain session, security, and workflow policy.
 package uds
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/tomrford/gocan/isotp"
@@ -71,6 +73,7 @@ type Config struct {
 // but callers must not operate the Link independently or construct another
 // Client around it.
 type Client struct {
+	timingMu      sync.RWMutex
 	link          *isotp.Link
 	p2Timeout     time.Duration
 	p2StarTimeout time.Duration
@@ -110,7 +113,8 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 	}
 	defer exchange.Close()
 
-	timeout := client.p2Timeout
+	p2Timeout, p2StarTimeout := client.timeouts()
+	timeout := p2Timeout
 	timeoutError := ErrP2Timeout
 	for {
 		payload, err := nextWithTimeout(ctx, exchange, timeout, timeoutError)
@@ -127,9 +131,15 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		if negative.Code != responsePending {
 			return Response{}, negative
 		}
-		timeout = client.p2StarTimeout
+		timeout = p2StarTimeout
 		timeoutError = ErrP2StarTimeout
 	}
+}
+
+func (client *Client) timeouts() (time.Duration, time.Duration) {
+	client.timingMu.RLock()
+	defer client.timingMu.RUnlock()
+	return client.p2Timeout, client.p2StarTimeout
 }
 
 // Send transmits request without waiting for a response. It is intended for a

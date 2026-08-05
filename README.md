@@ -3,10 +3,6 @@
 `gocan` is a Go stack for communicating with automotive CAN networks
 across multiple hardware vendors.
 
-The project is in its foundation stage. A temporary
-[prerelease work tracker](GOCAN_SPEC.md) lists work intended before the first
-stable release. Source and package documentation define current behaviour.
-
 ## Driver support
 
 | Driver | Platform | CAN | CAN FD | Current limits |
