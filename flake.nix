@@ -21,7 +21,9 @@
           proxyVendor = true;
 
           env.CGO_ENABLED = 1;
-          excludedPackages = ["internal/devicechange"];
+          excludedPackages =
+            ["internal/devicechange"]
+            ++ pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isLinux) ["drivers/internal/socketcan"];
           checkFlags = ["-race"];
           postCheck = "go vet ./...";
         };
