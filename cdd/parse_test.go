@@ -1,149 +1,148 @@
 package cdd_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tomrford/gocan/cdd"
 )
 
-func TestParseResolvedDIDCatalog(t *testing.T) {
-	database, err := cdd.Parse("catalog.cdd", fixtureCDD())
+// TestParseVectorDocument fixes the resolution required by real Vector input:
+// the identifier width and record layout both arrive through references.
+func TestParseVectorDocument(t *testing.T) {
+	database, err := cdd.ParseFile(filepath.Join("testdata", "vector-diddataref.cdd"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(database.DIDs) != 1 {
-		t.Fatalf("got %d DIDs, want 1", len(database.DIDs))
+	if len(database.Diagnostics) != 0 || len(database.DIDs) != 1 {
+		t.Fatalf("got %d DIDs and diagnostics %#v", len(database.DIDs), database.Diagnostics)
 	}
 
-	did, ok := database.DIDByName("CaféStatus")
-	if !ok {
-		t.Fatal("DID lookup by decoded ISO-8859-1 name failed")
+	did := database.DIDs[0]
+	if did.Name != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Length != 2 {
+		t.Fatalf("unexpected DID: %#v", did)
 	}
-	if did.Identifier != 0xf190 || did.Length != 5 {
-		t.Fatalf("got DID %#04x with length %d, want 0xf190 with length 5", did.Identifier, did.Length)
+	if len(did.Fields) != 2 || did.Fields[0].BitOffset != 0 || did.Fields[1].BitOffset != 8 {
+		t.Fatalf("unexpected fields: %#v", did.Fields)
 	}
-	if byIdentifier, ok := database.DIDByIdentifier(0xf190); !ok || byIdentifier != did {
-		t.Fatal("DID lookup by identifier did not return the catalog entry")
-	}
-	if len(did.Fields) != 2 {
-		t.Fatalf("got %d fields, want 2", len(did.Fields))
-	}
-
-	signed := did.Fields[0]
-	if signed.Name != "Temperature" || signed.BitOffset != 0 || signed.BitLength != 8 || signed.Encoding != cdd.EncodingSigned || signed.ByteOrder != cdd.ByteOrderLittle {
-		t.Fatalf("unexpected signed field: %#v", signed)
-	}
-	if signed.Conversion == nil || signed.Conversion.Scale != 0.5 || signed.Conversion.Offset != -40 || signed.Unit != "degC" {
-		t.Fatalf("unexpected signed field conversion: %#v", signed)
-	}
-	if len(signed.Choices) != 1 || signed.Choices[0].Value != -1 || signed.Choices[0].Label != "Unavailable" {
-		t.Fatalf("unexpected signed field choices: %#v", signed.Choices)
-	}
-
-	text := did.Fields[1]
-	if text.Name != "Code" || text.BitOffset != 8 || text.BitLength != 32 || text.Encoding != cdd.EncodingASCII || text.ByteOrder != cdd.ByteOrderBig {
-		t.Fatalf("unexpected shared text field: %#v", text)
+	if choices := did.Fields[0].Choices; len(choices) != 3 || choices[1].Label != "DIO_HIGH" {
+		t.Fatalf("unexpected value labels: %#v", choices)
 	}
 }
 
-func TestParseSelectedDIDTrustBoundaries(t *testing.T) {
-	t.Run("broken shared data reference", func(t *testing.T) {
-		source := strings.Replace(string(fixtureCDD()), `didRef="sharedData"`, `didRef="missing"`, 1)
-		if _, err := cdd.Parse("broken.cdd", []byte(source)); err == nil || !strings.Contains(err.Error(), "does not resolve") {
-			t.Fatalf("got error %v, want unresolved DIDDATAREF", err)
-		}
-	})
+// TestParseRecordLayouts covers the record constructs that determine the
+// decoded payload shape. The class also declares an unused write service, so
+// successful resolution proves that only services enabled by an instance are
+// used to select its data proxy.
+func TestParseRecordLayouts(t *testing.T) {
+	database, err := cdd.ParseFile(filepath.Join("testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	t.Run("duplicate identifier", func(t *testing.T) {
-		source := strings.Replace(string(fixtureCDD()), "</DIAGCLASS>", `
-          <DIAGINST tmplref="didClass">
-            <QUAL>Duplicate</QUAL>
-            <SERVICE tmplref="readTemplate"/>
-            <STATICVALUE shstaticref="didStatic" v="61840"/>
-            <SIMPLECOMPCONT><DATAOBJ dtref="signed8"><QUAL>Value</QUAL></DATAOBJ></SIMPLECOMPCONT>
-          </DIAGINST>
-        </DIAGCLASS>`, 1)
-		if _, err := cdd.Parse("duplicate.cdd", []byte(source)); err == nil || !strings.Contains(err.Error(), "use identifier") {
-			t.Fatalf("got error %v, want duplicate identifier", err)
-		}
-	})
+	thermal, ok := database.DIDByIdentifier(0xf190)
+	if !ok || thermal.Length != 5 || len(thermal.Fields) != 3 {
+		t.Fatalf("unexpected thermal record: %#v", thermal)
+	}
+	if thermal.Fields[0].BitOffset != 0 || thermal.Fields[1].BitOffset != 16 || thermal.Fields[2].BitOffset != 32 {
+		t.Fatalf("unexpected thermal field offsets: %#v", thermal.Fields)
+	}
+	coolant := thermal.Fields[1]
+	if coolant.ByteOrder != cdd.ByteOrderLittle || coolant.Conversion == nil || coolant.Conversion.Scale != 0.5 || coolant.Conversion.Offset != -40 {
+		t.Fatalf("unexpected coolant field: %#v", coolant)
+	}
 
-	t.Run("layout overflow", func(t *testing.T) {
-		source := strings.Replace(string(fixtureCDD()), `bl="8" bo="12" enc="sgn"`, `bl="4294967295" bo="12" enc="sgn"`, 1)
-		if _, err := cdd.Parse("overflow.cdd", []byte(source)); err == nil || !strings.Contains(err.Error(), "exceeds the supported bit length") {
-			t.Fatalf("got error %v, want layout overflow", err)
-		}
-	})
+	nameplate, ok := database.DIDByIdentifier(0xf191)
+	if !ok || nameplate.Length != 20 || len(nameplate.Fields) != 3 {
+		t.Fatalf("unexpected nameplate record: %#v", nameplate)
+	}
+	if nameplate.Fields[0].Count != 12 || nameplate.Fields[1].BitOffset != 96 || nameplate.Fields[1].Count != 4 || nameplate.Fields[2].Encoding != cdd.EncodingFloat {
+		t.Fatalf("unexpected nameplate fields: %#v", nameplate.Fields)
+	}
+
+	buffer, ok := database.DIDByIdentifier(0xf192)
+	if !ok || buffer.Length != 3 || buffer.MaxLength != 66 || len(buffer.Fields) != 2 {
+		t.Fatalf("unexpected variable record: %#v", buffer)
+	}
+	variable := buffer.Fields[1].Variable
+	if variable == nil || variable.MinCount != 1 || variable.MaxCount != 64 {
+		t.Fatalf("unexpected variable field: %#v", buffer.Fields[1])
+	}
 }
 
-func fixtureCDD() []byte {
-	source := `<?xml version="1.0" encoding="iso-8859-1"?>
-<CANDELA>
-  <ECUDOC>
-    <DATATYPES>
-      <IDENT id="identifier16"><QUAL>Identifier</QUAL><CVALUETYPE bl="16" bo="21" enc="uns" qty="atom"/></IDENT>
-      <IDENT id="signed8">
-        <QUAL>Signed</QUAL><CVALUETYPE bl="8" bo="12" enc="sgn" qty="atom"/>
-        <PVALUETYPE><UNIT>degC</UNIT></PVALUETYPE><COMP f="0.5" o="-40"/>
-        <TEXTMAP s="(-1)" e="(-1)"><TEXT><TUV>Unavailable</TUV></TEXT></TEXTMAP>
-      </IDENT>
-      <IDENT id="ascii4"><QUAL>ASCII</QUAL><CVALUETYPE bl="8" bo="21" enc="asc" qty="field" minsz="4" maxsz="4"/></IDENT>
-    </DATATYPES>
-    <DIDS>
-      <DID id="sharedData"><STRUCTURE><DATAOBJ dtref="ascii4"><QUAL>Code</QUAL></DATAOBJ></STRUCTURE></DID>
-    </DIDS>
-    <PROTOCOLSERVICES>
-      <PROTOCOLSERVICE id="readDID">
-		<REQ><CONSTCOMP spec="sid" v="34"/><STATICCOMP id="didComponent" spec="id" dtref="identifier16"/></REQ>
-		<POS><SIMPLEPROXYCOMP id="readData" dest="data"/></POS>
-      </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="sessionControl"><REQ><CONSTCOMP spec="sid" v="16"/></REQ></PROTOCOLSERVICE>
-    </PROTOCOLSERVICES>
-    <DCLTMPLS>
-      <DCLTMPL id="didClass">
-        <DCLSRVTMPL id="readTemplate" tmplref="readDID"/>
-        <SHSTATIC id="didStatic" spec="id"><STATICCOMPREF idref="didComponent"/></SHSTATIC>
-		<SHPROXY dest="data" spec="didDataReference"><PROXYCOMPREF idref="readData"/></SHPROXY>
-      </DCLTMPL>
-      <DCLTMPL id="sessionClass">
-        <DCLSRVTMPL id="sessionTemplate" tmplref="sessionControl"/>
-        <SHSTATIC id="sessionStatic" spec="sub"/>
-      </DCLTMPL>
-	  <DCLTMPL id="borrowerClass">
-		<SHSTATIC id="borrowerStatic" spec="id"><STATICCOMPREF idref="didComponent"/></SHSTATIC>
-		<SHPROXY dest="data" spec="didDataReference"><PROXYCOMPREF idref="readData"/></SHPROXY>
-	  </DCLTMPL>
-    </DCLTMPLS>
-    <ECU>
-      <VAR>
-        <DIAGCLASS>
-          <DIAGINST tmplref="sessionClass">
-            <QUAL>ProgrammingSession</QUAL><SERVICE tmplref="sessionTemplate"/><STATICVALUE shstaticref="sessionStatic" v="2"/>
-          </DIAGINST>
-        </DIAGCLASS>
-		<DIAGCLASS>
-		  <DIAGINST tmplref="borrowerClass">
-			<QUAL>BorrowedService</QUAL><SERVICE tmplref="readTemplate"/><STATICVALUE shstaticref="borrowerStatic" v="61841"/>
-			<SIMPLECOMPCONT><DATAOBJ dtref="signed8"><QUAL>Value</QUAL></DATAOBJ></SIMPLECOMPCONT>
-		  </DIAGINST>
-		</DIAGCLASS>
-        <DIAGCLASS>
-          <DIAGINST tmplref="didClass">
-            <QUAL>Caf` + string([]byte{0xe9}) + `Status</QUAL>
-            <SERVICE tmplref="readTemplate"/>
-            <STATICVALUE shstaticref="didStatic" v="61840"/>
-            <SIMPLECOMPCONT>
-              <DATAOBJ dtref="signed8"><QUAL>Temperature</QUAL></DATAOBJ>
-              <DIDDATAREF didRef="sharedData"/>
-            </SIMPLECOMPCONT>
-          </DIAGINST>
-        </DIAGCLASS>
-      </VAR>
-      <VAR><DIAGCLASS><DIAGINST tmplref="didClass"><SERVICE tmplref="readTemplate"/></DIAGINST></DIAGCLASS></VAR>
-    </ECU>
-    <ECU><VAR><DIAGCLASS><DIAGINST tmplref="didClass"><SERVICE tmplref="readTemplate"/></DIAGINST></DIAGCLASS></VAR></ECU>
-  </ECUDOC>
-</CANDELA>`
-	return []byte(source)
+// TestParseDropsInvalidDIDs checks that unsupported records cost those records,
+// not the usable catalog around them.
+func TestParseDropsInvalidDIDs(t *testing.T) {
+	database, err := cdd.ParseFile(filepath.Join("testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(database.DIDs) != 3 {
+		t.Fatalf("got %d DIDs, want 3", len(database.DIDs))
+	}
+	if _, ok := database.DIDByName("ProgrammingSession"); ok {
+		t.Fatal("a session control instance was admitted as a data identifier")
+	}
+	if _, ok := database.DIDByName("NotInspected"); ok {
+		t.Fatal("a DID from a second variant was admitted")
+	}
+
+	dropped := make(map[string]string, len(database.Diagnostics))
+	for _, diagnostic := range database.Diagnostics {
+		dropped[diagnostic.Name] = diagnostic.Message
+	}
+	checks := map[string]string{
+		"ThermalStatusMirror": "identifier 0xf190 is already used",
+		"InteriorBuffer":      `variable-length field "Buffer" is followed by DATAOBJ`,
+		"CyclicRecord":        "forms a reference cycle",
+	}
+	if len(dropped) != len(checks) {
+		t.Fatalf("unexpected diagnostics: %#v", database.Diagnostics)
+	}
+	for name, text := range checks {
+		if !strings.Contains(dropped[name], text) {
+			t.Errorf("DID %q: got %q, want %q", name, dropped[name], text)
+		}
+	}
+}
+
+// TestParseCorpus runs the parser over real CDD files that cannot be committed.
+func TestParseCorpus(t *testing.T) {
+	directory := os.Getenv("GOCAN_CDD_CORPUS")
+	if directory == "" {
+		t.Skip("set GOCAN_CDD_CORPUS to a directory of CDD files")
+	}
+	paths, err := filepath.Glob(filepath.Join(directory, "*.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatalf("no CDD files in %s", directory)
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			database, err := cdd.ParseFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, did := range database.DIDs {
+				var end uint32
+				for index, field := range did.Fields {
+					if field.BitOffset < end {
+						t.Errorf("DID %#04x field %q overlaps its predecessor", did.Identifier, field.Name)
+					}
+					if field.Variable != nil && index != len(did.Fields)-1 {
+						t.Errorf("DID %#04x field %q is variable but not last", did.Identifier, field.Name)
+					}
+					end = field.BitOffset + field.MaxBitSize()
+				}
+				if end > did.MaxLength*8 {
+					t.Errorf("DID %#04x ends outside its declared payload", did.Identifier)
+				}
+			}
+			t.Logf("%d DIDs, %d dropped", len(database.DIDs), len(database.Diagnostics))
+		})
+	}
 }

@@ -16,10 +16,3 @@ behaviour, then implement the minimum useful path.
 
 Add typed standard services, session state, and OEM extension points on top of
 the raw `uds` request and response values.
-
-### CANdela CDD
-
-Validate the current resolved DID catalog against real CANdela CDD files. Add
-DID payload codecs, then expand the catalog for named sessions, security
-levels, routines, and timing as semantic UDS gains those operations. Report
-unsupported selected records rather than silently discarding their fields.

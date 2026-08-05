@@ -5,17 +5,34 @@ package cdd
 // Database is the resolved catalog from the first ECU and its first variant in
 // a CDD document. DIDs remain in source order.
 type Database struct {
-	DIDs []DID
+	DIDs        []DID
+	Diagnostics []Diagnostic
 
 	didsByName       map[string]int
 	didsByIdentifier map[uint16]int
 }
 
-// DID describes one UDS data identifier and its fixed payload layout.
+// Diagnostic reports a data identifier dropped from the catalog without making
+// the database unsafe to use: layouts outside the supported subset, unresolved
+// references, and duplicate names or identifiers. Name is the QUAL of the
+// dropped diagnostic instance, which CDD documents may leave empty.
+type Diagnostic struct {
+	Name    string
+	Message string
+}
+
+// TODO: Add DID payload codecs before the first stable release.
+
+// DID describes one UDS data identifier and its payload layout.
+//
+// Length is the payload size in bytes. MaxLength exceeds it only when the last
+// field is variable length, in which case Length is the smallest payload the
+// ECU may return and MaxLength the largest.
 type DID struct {
 	Name       string
 	Identifier uint16
 	Length     uint32
+	MaxLength  uint32
 	Fields     []Field
 }
 
@@ -38,7 +55,8 @@ const (
 	EncodingASCII    Encoding = "asc"
 	EncodingUTF      Encoding = "utf"
 	EncodingBCD      Encoding = "bcd"
-	EncodingFloat    Encoding = "dbl"
+	EncodingFloat    Encoding = "flt"
+	EncodingDouble   Encoding = "dbl"
 )
 
 // LinearConversion maps a coded numeric value to its physical value.
@@ -55,15 +73,47 @@ type Choice struct {
 
 // Field describes one fixed-size coded field. BitOffset is a linear offset
 // from the start of the DID data record; it does not use DBC bit numbering.
+//
+// BitLength is the width of a single element and Count its repetition, so the
+// field occupies BitLength*Count bits. Count is 1 for scalars and greater for
+// fixed-size arrays such as ASCII serial numbers and calibration blocks.
+//
+// Variable is set when the element count is only known from the length of the
+// response. Count then repeats Variable.MinCount, so BitSize remains the number
+// of bits the field always occupies.
 type Field struct {
 	Name       string
 	BitOffset  uint32
 	BitLength  uint32
+	Count      uint32
+	Variable   *Extent
 	ByteOrder  ByteOrder
 	Encoding   Encoding
 	Conversion *LinearConversion
 	Unit       string
 	Choices    []Choice
+}
+
+// Extent bounds the element count of a variable-length field. A field carrying
+// one is the last field of its record, so no other field's offset depends on
+// the count the ECU actually returns.
+type Extent struct {
+	MinCount uint32
+	MaxCount uint32
+}
+
+// BitSize is the number of bits the field always occupies. A variable-length
+// field can occupy up to MaxBitSize.
+func (field Field) BitSize() uint32 {
+	return field.BitLength * field.Count
+}
+
+// MaxBitSize is the largest number of bits the field can occupy.
+func (field Field) MaxBitSize() uint32 {
+	if field.Variable == nil {
+		return field.BitSize()
+	}
+	return field.BitLength * field.Variable.MaxCount
 }
 
 // DIDByName returns the DID with name.

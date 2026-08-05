@@ -1,6 +1,7 @@
 package cdd
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -17,11 +18,13 @@ type element struct {
 }
 
 func decodeXML(name string, source []byte) (*element, error) {
-	decoder := xml.NewDecoder(strings.NewReader(string(source)))
+	decoder := xml.NewDecoder(bytes.NewReader(source))
 	decoder.CharsetReader = func(label string, input io.Reader) (io.Reader, error) {
 		switch strings.ToLower(strings.TrimSpace(label)) {
 		case "iso-8859-1", "iso8859-1", "latin1":
 			return charmap.ISO8859_1.NewDecoder().Reader(input), nil
+		case "windows-1252", "cp1252":
+			return charmap.Windows1252.NewDecoder().Reader(input), nil
 		default:
 			return nil, fmt.Errorf("unsupported XML encoding %q", label)
 		}
@@ -90,7 +93,7 @@ func (node *element) childrenNamed(name string) []*element {
 	if node == nil {
 		return nil
 	}
-	children := make([]*element, 0)
+	var children []*element
 	for _, child := range node.children {
 		if child.name == name {
 			children = append(children, child)
@@ -105,14 +108,4 @@ func (node *element) childText(name string) string {
 		return ""
 	}
 	return strings.TrimSpace(child.text.String())
-}
-
-func (node *element) firstText(path ...string) string {
-	for _, name := range path {
-		node = node.child(name)
-		if node == nil {
-			return ""
-		}
-	}
-	return strings.TrimSpace(node.text.String())
 }

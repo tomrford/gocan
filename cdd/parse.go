@@ -3,14 +3,27 @@ package cdd
 import (
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 )
 
+const maxRecordNesting = 256
+
 // Parse parses the supported CDD subset into a resolved UDS DID catalog. It
-// includes fixed-layout records used by ReadDataByIdentifier or
-// WriteDataByIdentifier. Parse uses the first ECU and that ECU's first direct
-// VAR. Other ECUs and variants are not inspected.
+// includes the fixed-layout records of diagnostic instances whose class
+// template binds ReadDataByIdentifier or WriteDataByIdentifier. Parse uses the
+// first ECU and that ECU's first direct VAR; other ECUs and variants are not
+// inspected.
+//
+// A data identifier whose record falls outside the subset is reported in
+// Database.Diagnostics rather than failing the document, because a document
+// mixes records this package can lay out with records it cannot: variable-length
+// fields followed by further data, alternative layouts selected by a union, and
+// the record data types behind fault memory. Parse fails only when the document
+// itself is unusable. A document that describes no data identifiers, such as one
+// written against KWP2000 local identifiers, yields an empty catalog and no
+// error.
 func Parse(name string, source []byte) (*Database, error) {
 	root, err := decodeXML(name, source)
 	if err != nil {
@@ -30,6 +43,16 @@ func Parse(name string, source []byte) (*Database, error) {
 		return nil, err
 	}
 	return database, nil
+}
+
+// ParseFile reads and parses a CDD file. The XML declaration states the
+// character encoding, so the bytes are passed through unchanged.
+func ParseFile(path string) (*Database, error) {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(path, source)
 }
 
 type resolver struct {
@@ -59,6 +82,8 @@ func newResolver(name string, ecuDoc *element) *resolver {
 
 func (resolver *resolver) index(node *element) {
 	if id := node.attr("id"); id != "" {
+		// CANdela IDs should be unique. Retaining the last definition keeps
+		// malformed documents deterministic and matches cantools.
 		resolver.byID[id] = node
 	}
 	for _, child := range node.children {
@@ -83,17 +108,20 @@ func (resolver *resolver) resolve() (*Database, error) {
 	for _, class := range variant.childrenNamed("DIAGCLASS") {
 		for _, instance := range class.childrenNamed("DIAGINST") {
 			did, selected, err := resolver.resolveDID(instance)
-			if err != nil {
-				return nil, err
-			}
 			if !selected {
 				continue
 			}
-			if _, exists := database.didsByName[did.Name]; exists {
-				return nil, sourceError(resolver.name, "duplicate DID name %q", did.Name)
+			if err != nil {
+				database.drop(instance.childText("QUAL"), err)
+				continue
+			}
+			if previous, exists := database.didsByName[did.Name]; exists {
+				database.drop(did.Name, sourceError(resolver.name, "name repeats DID %#04x", database.DIDs[previous].Identifier))
+				continue
 			}
 			if previous, exists := database.didsByIdentifier[did.Identifier]; exists {
-				return nil, sourceError(resolver.name, "DIDs %q and %q use identifier %#04x", database.DIDs[previous].Name, did.Name, did.Identifier)
+				database.drop(did.Name, sourceError(resolver.name, "identifier %#04x is already used by DID %q", did.Identifier, database.DIDs[previous].Name))
+				continue
 			}
 			database.didsByName[did.Name] = len(database.DIDs)
 			database.didsByIdentifier[did.Identifier] = len(database.DIDs)
@@ -103,35 +131,36 @@ func (resolver *resolver) resolve() (*Database, error) {
 	return database, nil
 }
 
+func (database *Database) drop(name string, err error) {
+	database.Diagnostics = append(database.Diagnostics, Diagnostic{Name: name, Message: err.Error()})
+}
+
+// resolveDID resolves one diagnostic instance. The boolean reports whether the
+// instance is a data identifier at all; an unselected instance is some other
+// diagnostic class and is not a defect. A selected instance that cannot be
+// resolved returns an error for the caller to record as a diagnostic.
 func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 	classTemplate := resolver.byID[instance.attr("tmplref")]
 	if classTemplate == nil || classTemplate.name != "DCLTMPL" {
 		return DID{}, false, nil
 	}
-
-	identifierComponents := make(map[string]struct{})
-	dataComponents := make(map[string]struct{})
-	for _, service := range instance.childrenNamed("SERVICE") {
-		serviceTemplate := resolver.byID[service.attr("tmplref")]
-		if serviceTemplate == nil || serviceTemplate.name != "DCLSRVTMPL" || !directChild(classTemplate, serviceTemplate) {
-			continue
-		}
-		protocolService := resolver.byID[serviceTemplate.attr("tmplref")]
-		if protocolService == nil || protocolService.name != "PROTOCOLSERVICE" {
-			continue
-		}
-		sid, ok := requestServiceID(protocolService)
-		if ok && (sid == 0x22 || sid == 0x2e) {
-			collectServiceComponents(protocolService, identifierComponents, dataComponents)
-		}
-	}
-	if len(identifierComponents) == 0 {
+	identifiers, data, selected := resolver.didServiceComponents(instance, classTemplate)
+	if !selected {
 		return DID{}, false, nil
 	}
 
-	identifierStatic, err := resolver.identifierStatic(classTemplate, identifierComponents)
+	identifierStatic, err := resolver.identifierStatic(classTemplate, identifiers)
 	if err != nil {
-		return DID{}, false, err
+		return DID{}, true, err
+	}
+	dataProxy, err := resolver.dataProxy(classTemplate, data)
+	if err != nil {
+		return DID{}, true, err
+	}
+
+	name := instance.childText("QUAL")
+	if name == "" {
+		return DID{}, true, sourceError(resolver.name, "data identifier has no QUAL")
 	}
 	var identifierValue *element
 	for _, value := range instance.childrenNamed("STATICVALUE") {
@@ -141,34 +170,62 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 		}
 	}
 	if identifierValue == nil {
-		return DID{}, false, sourceError(resolver.name, "selected diagnostic instance %q has no data identifier value", instance.childText("QUAL"))
+		return DID{}, true, sourceError(resolver.name, "DID %q has no data identifier value", name)
 	}
-	identifier64, err := strconv.ParseUint(identifierValue.attr("v"), 0, 16)
+	identifier64, err := strconv.ParseUint(identifierValue.attr("v"), 10, 16)
 	if err != nil {
-		return DID{}, false, sourceError(resolver.name, "diagnostic instance %q has invalid data identifier %q", instance.childText("QUAL"), identifierValue.attr("v"))
+		return DID{}, true, sourceError(resolver.name, "DID %q has invalid data identifier %q", name, identifierValue.attr("v"))
 	}
 
-	if err := resolver.validateDataProxy(classTemplate, dataComponents); err != nil {
-		return DID{}, false, err
+	// A diagnostic instance carries one component container per shared proxy of
+	// its class template: the data record, and one per negative-response code.
+	// Only the container bound to the data proxy describes the payload.
+	var container *element
+	for _, candidate := range instance.childrenNamed("SIMPLECOMPCONT") {
+		if candidate.attr("shproxyref") == dataProxy.attr("id") {
+			container = candidate
+			break
+		}
 	}
-	container := instance.child("SIMPLECOMPCONT")
 	if container == nil {
-		return DID{}, false, sourceError(resolver.name, "selected DID %q has no SIMPLECOMPCONT", instance.childText("QUAL"))
+		return DID{}, true, sourceError(resolver.name, "DID %q has no component container for its data proxy", name)
 	}
-	fields, bitLength, err := resolver.resolveFields(container)
+	fields, bitLength, maxBitLength, err := resolver.resolveFields(container)
 	if err != nil {
-		return DID{}, false, fmt.Errorf("CDD DID %q: %w", instance.childText("QUAL"), err)
-	}
-	name := instance.childText("QUAL")
-	if name == "" {
-		return DID{}, false, sourceError(resolver.name, "selected DID %#04x has no QUAL", identifier64)
+		return DID{}, true, fmt.Errorf("DID %q: %w", name, err)
 	}
 	return DID{
 		Name:       name,
 		Identifier: uint16(identifier64),
 		Length:     uint32((uint64(bitLength) + 7) / 8),
+		MaxLength:  uint32((uint64(maxBitLength) + 7) / 8),
 		Fields:     fields,
 	}, true, nil
+}
+
+// didServiceComponents returns the identifier and data components used by the
+// ReadDataByIdentifier or WriteDataByIdentifier services enabled for this
+// instance. The service identifier is the authority here; DCLTMPL@cls is an
+// authoring hint that CANdela versions spell differently.
+func (resolver *resolver) didServiceComponents(instance, classTemplate *element) (map[string]struct{}, map[string]struct{}, bool) {
+	identifiers := make(map[string]struct{})
+	data := make(map[string]struct{})
+	selected := false
+	for _, service := range instance.childrenNamed("SERVICE") {
+		serviceTemplate := resolver.byID[service.attr("tmplref")]
+		if serviceTemplate == nil || serviceTemplate.name != "DCLSRVTMPL" || !directChild(classTemplate, serviceTemplate) {
+			continue
+		}
+		protocolService := resolver.byID[serviceTemplate.attr("tmplref")]
+		if protocolService == nil || protocolService.name != "PROTOCOLSERVICE" {
+			continue
+		}
+		if sid, ok := requestServiceID(protocolService); ok && (sid == 0x22 || sid == 0x2e) {
+			collectServiceComponents(protocolService, identifiers, data)
+			selected = true
+		}
+	}
+	return identifiers, data, selected
 }
 
 func directChild(parent, candidate *element) bool {
@@ -202,7 +259,7 @@ func requestServiceID(protocolService *element) (uint8, bool) {
 		if component.attr("spec") != "sid" {
 			continue
 		}
-		value, err := strconv.ParseUint(component.attr("v"), 0, 8)
+		value, err := strconv.ParseUint(component.attr("v"), 10, 8)
 		return uint8(value), err == nil
 	}
 	return 0, false
@@ -245,65 +302,126 @@ func (resolver *resolver) identifierStatic(classTemplate *element, allowed map[s
 	return identifier, nil
 }
 
-func (resolver *resolver) validateDataProxy(classTemplate *element, allowed map[string]struct{}) error {
-	matched := 0
+// dataProxy returns the shared proxy carrying the data record of a data
+// identifier class. Only newer CANdela versions mark it with
+// spec="didDataReference", so the proxy is identified by the request and
+// response components it references instead.
+func (resolver *resolver) dataProxy(classTemplate *element, allowed map[string]struct{}) (*element, error) {
+	var matched *element
 	for _, proxy := range classTemplate.childrenNamed("SHPROXY") {
-		if proxy.attr("dest") != "data" || proxy.attr("spec") != "didDataReference" {
+		if proxy.attr("dest") != "data" || proxy.attr("id") == "" {
 			continue
 		}
 		for _, reference := range proxy.childrenNamed("PROXYCOMPREF") {
-			if _, ok := allowed[reference.attr("idref")]; ok {
-				matched++
-				break
+			if _, ok := allowed[reference.attr("idref")]; !ok {
+				continue
 			}
+			if matched != nil {
+				return nil, sourceError(resolver.name, "DCLTMPL %q has more than one data proxy", classTemplate.attr("id"))
+			}
+			matched = proxy
+			break
 		}
 	}
-	if matched != 1 {
-		return sourceError(resolver.name, "DCLTMPL %q has %d matching DID data proxies, want 1", classTemplate.attr("id"), matched)
+	if matched == nil {
+		return nil, sourceError(resolver.name, "DCLTMPL %q has no data proxy", classTemplate.attr("id"))
 	}
-	return nil
+	return matched, nil
 }
 
-func (resolver *resolver) resolveFields(container *element) ([]Field, uint32, error) {
+// resolveFields returns the record layout with the bit lengths of its smallest
+// and largest payload. The two differ only when the record ends in a
+// variable-length field.
+func (resolver *resolver) resolveFields(container *element) ([]Field, uint32, uint32, error) {
 	var fields []Field
 	var offset uint64
-	for _, item := range container.children {
-		switch item.name {
-		case "DATAOBJ":
-			field, err := resolver.resolveField(item, uint32(offset))
-			if err != nil {
-				return nil, 0, err
+	if err := resolver.appendFields(container, &fields, &offset, make(map[string]struct{}), 0); err != nil {
+		return nil, 0, 0, err
+	}
+	maximum := offset
+	if len(fields) > 0 {
+		last := fields[len(fields)-1]
+		maximum += uint64(last.MaxBitSize()) - uint64(last.BitSize())
+	}
+	if maximum > math.MaxUint32 {
+		return nil, 0, 0, sourceError(resolver.name, "data record exceeds the supported bit length")
+	}
+	return fields, uint32(offset), uint32(maximum), nil
+}
+
+// appendFields walks one record in document order. Element order is the only
+// statement of layout a CDD record makes, so every item either contributes a
+// field or advances the offset.
+func (resolver *resolver) appendFields(
+	record *element,
+	fields *[]Field,
+	offset *uint64,
+	activeReferences map[string]struct{},
+	depth int,
+) error {
+	if depth > maxRecordNesting {
+		return sourceError(resolver.name, "data record exceeds the supported nesting depth of %d", maxRecordNesting)
+	}
+	for _, item := range record.children {
+		// A variable-length field has no fixed end, so nothing can follow it.
+		if length := len(*fields); length > 0 && (*fields)[length-1].Variable != nil {
+			switch item.name {
+			case "NAME", "QUAL", "DESC":
+			default:
+				return sourceError(resolver.name, "variable-length field %q is followed by %s", (*fields)[length-1].Name, item.name)
 			}
-			fields = append(fields, field)
-			offset += uint64(field.BitLength)
+		}
+		switch item.name {
+		case "NAME", "QUAL", "DESC":
+			// Presentation, not layout.
+		case "DATAOBJ":
+			field, err := resolver.resolveField(item, uint32(*offset))
+			if err != nil {
+				return err
+			}
+			*fields = append(*fields, field)
+			*offset += uint64(field.BitSize())
+		case "GAPDATAOBJ":
+			// Explicit padding between fields, named only by its width.
+			gap, err := strconv.ParseUint(item.attr("bl"), 10, 32)
+			if err != nil {
+				return sourceError(resolver.name, "GAPDATAOBJ has invalid bit length %q", item.attr("bl"))
+			}
+			*offset += gap
+		case "STRUCT":
+			if err := resolver.appendFields(item, fields, offset, activeReferences, depth+1); err != nil {
+				return err
+			}
 		case "DIDDATAREF":
-			shared := resolver.byID[item.attr("didRef")]
+			reference := item.attr("didRef")
+			shared := resolver.byID[reference]
 			if shared == nil || shared.name != "DID" {
-				return nil, 0, sourceError(resolver.name, "DIDDATAREF %q does not resolve", item.attr("didRef"))
+				return sourceError(resolver.name, "DIDDATAREF %q does not resolve", reference)
+			}
+			if _, active := activeReferences[reference]; active {
+				return sourceError(resolver.name, "DIDDATAREF %q forms a reference cycle", reference)
 			}
 			structure := shared.child("STRUCTURE")
 			if structure == nil {
-				return nil, 0, sourceError(resolver.name, "shared DID %q has no STRUCTURE", item.attr("didRef"))
+				return sourceError(resolver.name, "shared DID %q has no STRUCTURE", reference)
 			}
-			for _, data := range structure.children {
-				if data.name != "DATAOBJ" {
-					return nil, 0, sourceError(resolver.name, "shared DID %q contains unsupported %s", item.attr("didRef"), data.name)
-				}
-				field, err := resolver.resolveField(data, uint32(offset))
-				if err != nil {
-					return nil, 0, err
-				}
-				fields = append(fields, field)
-				offset += uint64(field.BitLength)
+			activeReferences[reference] = struct{}{}
+			err := resolver.appendFields(structure, fields, offset, activeReferences, depth+1)
+			delete(activeReferences, reference)
+			if err != nil {
+				return err
 			}
 		default:
-			return nil, 0, sourceError(resolver.name, "selected data record contains unsupported %s", item.name)
+			// UNION selects between alternative layouts, and MUX and the record
+			// data types describe payloads whose shape depends on the response.
+			// Neither is a fixed record.
+			return sourceError(resolver.name, "data record contains unsupported %s", item.name)
 		}
-		if offset > math.MaxUint32 {
-			return nil, 0, sourceError(resolver.name, "selected data record exceeds the supported bit length")
+		if *offset > math.MaxUint32 {
+			return sourceError(resolver.name, "data record exceeds the supported bit length")
 		}
 	}
-	return fields, uint32(offset), nil
+	return nil
 }
 
 func (resolver *resolver) resolveField(data *element, offset uint32) (Field, error) {
@@ -326,22 +444,34 @@ func (resolver *resolver) resolveField(data *element, offset uint32) (Field, err
 	bitLength := uint32(bitLength64)
 	encoding := Encoding(coded.attr("enc"))
 	switch encoding {
-	case EncodingUnsigned, EncodingSigned, EncodingBCD, EncodingFloat:
-		if coded.attr("qty") != "" && coded.attr("qty") != "atom" {
-			return Field{}, sourceError(resolver.name, "field %q uses unsupported quantity %q", name, coded.attr("qty"))
-		}
-	case EncodingASCII, EncodingUTF:
-		minimum, minErr := strconv.ParseUint(coded.attr("minsz"), 10, 32)
-		maximum, maxErr := strconv.ParseUint(coded.attr("maxsz"), 10, 32)
-		if coded.attr("qty") != "field" || minErr != nil || maxErr != nil || minimum == 0 || minimum != maximum {
-			return Field{}, sourceError(resolver.name, "field %q is not fixed-size text", name)
-		}
-		if minimum > math.MaxUint32/uint64(bitLength) {
-			return Field{}, sourceError(resolver.name, "field %q bit length overflows", name)
-		}
-		bitLength *= uint32(minimum)
+	case EncodingUnsigned, EncodingSigned, EncodingBCD, EncodingFloat, EncodingDouble, EncodingASCII, EncodingUTF:
 	default:
 		return Field{}, sourceError(resolver.name, "field %q uses unsupported encoding %q", name, encoding)
+	}
+
+	// A field quantity repeats the coded element: fixed-size text, serial
+	// numbers, calibration blocks, and buffers whose length the ECU chooses. On
+	// an atom the size bounds constrain the value rather than the repetition, so
+	// they are not read here.
+	count := uint32(1)
+	var extent *Extent
+	if coded.attr("qty") == "field" {
+		minimum, minErr := strconv.ParseUint(coded.attr("minsz"), 10, 32)
+		maximum, maxErr := strconv.ParseUint(coded.attr("maxsz"), 10, 32)
+		switch {
+		case minErr != nil || maxErr != nil || minimum > maximum:
+			return Field{}, sourceError(resolver.name, "field %q has invalid size bounds %q to %q", name, coded.attr("minsz"), coded.attr("maxsz"))
+		case maximum == 0:
+			return Field{}, sourceError(resolver.name, "field %q is empty", name)
+		case maximum > uint64(math.MaxUint32)/uint64(bitLength):
+			return Field{}, sourceError(resolver.name, "field %q bit length overflows", name)
+		}
+		count = uint32(minimum)
+		if minimum != maximum {
+			extent = &Extent{MinCount: uint32(minimum), MaxCount: uint32(maximum)}
+		}
+	} else if quantity := coded.attr("qty"); quantity != "" && quantity != "atom" {
+		return Field{}, sourceError(resolver.name, "field %q uses unsupported quantity %q", name, quantity)
 	}
 
 	var byteOrder ByteOrder
@@ -358,6 +488,8 @@ func (resolver *resolver) resolveField(data *element, offset uint32) (Field, err
 		Name:      name,
 		BitOffset: offset,
 		BitLength: bitLength,
+		Count:     count,
+		Variable:  extent,
 		ByteOrder: byteOrder,
 		Encoding:  encoding,
 	}
@@ -375,10 +507,16 @@ func (resolver *resolver) resolveField(data *element, offset uint32) (Field, err
 	for _, textMap := range datatype.childrenNamed("TEXTMAP") {
 		first, firstErr := parseBound(textMap.attr("s"))
 		last, lastErr := parseBound(textMap.attr("e"))
-		if firstErr != nil || lastErr != nil || first != last {
-			return Field{}, sourceError(resolver.name, "field %q contains an unsupported choice range", name)
+		if firstErr != nil || lastErr != nil {
+			return Field{}, sourceError(resolver.name, "field %q has an invalid choice range %q to %q", name, textMap.attr("s"), textMap.attr("e"))
 		}
-		label := textMap.firstText("TEXT", "TUV")
+		// Text maps also label whole bands, such as reserved or unused ranges.
+		// A band is presentation rather than a distinct value, and dropping it
+		// leaves the exact labels of the same field intact.
+		if first != last {
+			continue
+		}
+		label := textMap.child("TEXT").childText("TUV")
 		if label == "" {
 			return Field{}, sourceError(resolver.name, "field %q contains a choice with no label", name)
 		}
@@ -391,7 +529,7 @@ func parseBound(value string) (int64, error) {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "(")
 	value = strings.TrimSuffix(value, ")")
-	return strconv.ParseInt(value, 0, 64)
+	return strconv.ParseInt(value, 10, 64)
 }
 
 func sourceError(source, format string, args ...any) error {
