@@ -146,6 +146,62 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	assertDecoded(t, j1939, j1939Frame, "Coolant", 60.0)
 }
 
+func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {
+	source := "BU_: ECU\n" +
+		"BO_ 256 Classic: 8 ECU\n" +
+		" SG_ Value : 0|8@1+ (1,0) [0|255] \"\" ECU\n" +
+		"BA_DEF_ BO_ \"CANFD_BRS\" ENUM \"0\",\"1\";\n" +
+		"BA_DEF_DEF_ \"CANFD_BRS\" \"1\";\n"
+
+	database, err := Parse("real-world.dbc", source)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	classic, ok := database.MessageByName("Classic")
+	if !ok {
+		t.Fatal("Classic message was not resolved")
+	}
+	frame, err := classic.Encode(Values{"Value": uint64(7)})
+	if err != nil {
+		t.Fatalf("Encode Classic: %v", err)
+	}
+	if frame.Flags != 0 {
+		t.Fatalf("Classic flags = %#x, want no CAN FD or BRS flags", frame.Flags)
+	}
+	assertDecoded(t, classic, frame, "Value", uint64(7))
+}
+
+func TestLongJ1939MessageFailsCodecNotDatabase(t *testing.T) {
+	source := "BU_: ECU\n" +
+		"BO_ 2566834942 LongJ1939: 1785 ECU\n" +
+		" SG_ DTC : 16|32@1+ (1,0) [0|4294967295] \"\" ECU\n" +
+		" SG_ HighSignal : 1544|64@1+ (1,0) [0|4294967295] \"\" ECU\n" +
+		"BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\n" +
+		"BA_ \"VFrameFormat\" BO_ 2566834942 3;\n"
+
+	database, err := Parse("long-j1939.dbc", source)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	long, ok := database.MessageByName("LongJ1939")
+	if !ok {
+		t.Fatal("LongJ1939 message was not resolved")
+	}
+	if long.Format != FrameFormatJ1939 || long.Length != 1785 || len(long.Signals) != 2 {
+		t.Fatalf("LongJ1939 metadata = format %d length %d signals %d", long.Format, long.Length, len(long.Signals))
+	}
+	if _, err := long.Encode(Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
+		t.Fatalf("LongJ1939 Encode error = %v", err)
+	}
+	if _, err := long.Decode(gocan.Frame{}, "DTC"); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
+		t.Fatalf("LongJ1939 Decode error = %v", err)
+	}
+	frame := gocan.Frame{}
+	if err := long.Patch(&frame, Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
+		t.Fatalf("LongJ1939 Patch error = %v", err)
+	}
+}
+
 func assertDecoded(t *testing.T, message *Message, frame gocan.Frame, signal string, want any) {
 	t.Helper()
 	got, err := message.Decode(frame, signal)
