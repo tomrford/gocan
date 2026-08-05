@@ -2,7 +2,10 @@
 
 package drivers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestVectorFDConfigHasNoTimingDefaults(t *testing.T) {
 	channel := Channel{driver: driverVector, native: 2, supportsFD: true}
@@ -18,5 +21,14 @@ func TestVectorFDConfigHasNoTimingDefaults(t *testing.T) {
 	}
 	if got := native.FDTiming.Data; got.SJW != 1 || got.TSEG1 != 29 || got.TSEG2 != 10 {
 		t.Fatalf("native data timing = %+v", got)
+	}
+}
+
+func TestVectorFDConfigRejectsUnsupportedClock(t *testing.T) {
+	channel := Channel{driver: driverVector, native: 2, supportsFD: true}
+	config := Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}
+	config.FDTiming.ClockHz = 40_000_000
+	if _, err := nativeVectorConfig(channel, config, modeFD); err == nil || !strings.Contains(err.Error(), "80 MHz") {
+		t.Fatalf("nativeVectorConfig error = %v, want 80 MHz requirement", err)
 	}
 }

@@ -4,10 +4,13 @@ package drivers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/internal/vector"
 )
+
+const vectorFDClockHz = 80_000_000
 
 func openVector(ctx context.Context, capture *gocan.Capture, channel Channel, config Config, mode configMode) (gocan.Bus, error) {
 	native, err := nativeVectorConfig(channel, config, mode)
@@ -27,6 +30,9 @@ func nativeVectorConfig(channel Channel, config Config, mode configMode) (vector
 	case modeClassic:
 		native.Bitrate = config.Bitrate
 	case modeFD:
+		if config.FDTiming.ClockHz != vectorFDClockHz {
+			return vector.Config{}, fmt.Errorf("Vector CAN FD requires an 80 MHz clock, got %d Hz", config.FDTiming.ClockHz)
+		}
 		nominal, data, _ := deriveFDBitrates(config.FDTiming)
 		native.FDTiming = vector.FDTiming{
 			ArbitrationBitrate: nominal,
