@@ -97,23 +97,33 @@ func TestVectorFDConformance(t *testing.T) {
 
 func openVectorPair(vectorA, vectorB ChannelIndex, dataBitrate uint32) conformance.Pair {
 	return func(t *testing.T, capture *gocan.Capture) (gocan.Bus, gocan.Bus) {
-		first, err := Open(context.Background(), capture, Config{
+		configA := Config{
 			ID:           1,
 			Name:         "vector-a",
 			ChannelIndex: vectorA,
-			FDTiming:     vectorFDTiming(dataBitrate),
-		})
+		}
+		if dataBitrate == 0 {
+			configA.Bitrate = 500_000
+		} else {
+			configA.FDTiming = vectorFDTiming(dataBitrate)
+		}
+		first, err := Open(context.Background(), capture, configA)
 		if err != nil {
 			t.Fatalf("Open first Vector channel: %v", err)
 		}
 		t.Cleanup(func() { _ = first.Close() })
 
-		second, err := Open(context.Background(), capture, Config{
+		configB := Config{
 			ID:           2,
 			Name:         "vector-b",
 			ChannelIndex: vectorB,
-			FDTiming:     vectorFDTiming(dataBitrate),
-		})
+		}
+		if dataBitrate == 0 {
+			configB.Bitrate = 500_000
+		} else {
+			configB.FDTiming = vectorFDTiming(dataBitrate)
+		}
+		second, err := Open(context.Background(), capture, configB)
 		if err != nil {
 			_ = first.Close()
 			t.Fatalf("Open second Vector channel: %v", err)

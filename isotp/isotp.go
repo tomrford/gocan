@@ -97,7 +97,6 @@ type Config struct {
 //
 // Reuse one Link for each logical endpoint: separately constructed Links with
 // an overlapping bus and receive address cannot distinguish their traffic.
-//
 type Link struct {
 	bus     gocan.Bus
 	capture *gocan.Capture

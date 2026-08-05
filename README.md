@@ -30,12 +30,15 @@ if err != nil {
 if len(channels) == 0 {
 	return errors.New("no physical CAN channels")
 }
-bus, err := drivers.Open(ctx, capture, channels[0], drivers.Config{
-	ID: 1, Name: "powertrain", Bitrate: 500_000,
-})
+channel := channels[0]
+config := drivers.Config{ID: 1, Name: "powertrain", Bitrate: 500_000}
+if channel.ExternallyConfigured() {
+	// Linux owns SocketCAN link timing.
+	config = drivers.Config{ID: 1, Name: "powertrain", External: true}
+}
+bus, err := drivers.Open(ctx, capture, channel, config)
 ```
 
-SocketCAN channels use `External: true` because Linux owns their link timing.
 PCAN and Vector CAN FD channels accept the same exact bit-timing value.
 `FDTiming` does not alter the stored PCAN ISO/non-ISO framing mode:
 

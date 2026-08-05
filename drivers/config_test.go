@@ -21,21 +21,21 @@ func TestConfigRequiresExactlyOneTimingMode(t *testing.T) {
 	tests := []struct {
 		name   string
 		config Config
-		want   configMode
+		wantFD bool
 	}{
-		{name: "classic", config: Config{ID: 1, Name: "can", Bitrate: 500_000}, want: modeClassic},
-		{name: "FD", config: Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, want: modeFD},
-		{name: "external", config: Config{ID: 1, Name: "can", External: true}, want: modeExternal},
+		{name: "classic", config: Config{ID: 1, Name: "can", Bitrate: 500_000}},
+		{name: "FD", config: Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, wantFD: true},
+		{name: "external", config: Config{ID: 1, Name: "can", External: true}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			testChannel := channel
-			if test.want == modeExternal {
+			if test.config.External {
 				testChannel = externalChannel
 			}
 			got, err := validateOpen(capture, testChannel, test.config)
-			if err != nil || got != test.want {
-				t.Fatalf("validateOpen = %d, %v; want %d", got, err, test.want)
+			if err != nil || got != test.wantFD {
+				t.Fatalf("validateOpen = %t, %v; want %t", got, err, test.wantFD)
 			}
 		})
 	}

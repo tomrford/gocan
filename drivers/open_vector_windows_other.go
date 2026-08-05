@@ -9,6 +9,6 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-func openVector(context.Context, *gocan.Capture, Channel, Config, configMode) (gocan.Bus, error) {
+func openVector(context.Context, *gocan.Capture, Channel, Config, bool) (gocan.Bus, error) {
 	return nil, fmt.Errorf("Vector driver is unavailable on this Windows architecture")
 }

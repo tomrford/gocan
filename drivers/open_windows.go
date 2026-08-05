@@ -13,45 +13,38 @@ import (
 // Open configures and opens a discovered physical CAN channel. Context
 // controls opening only; canceling it after Open returns does not stop the bus.
 func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config Config) (gocan.Bus, error) {
-	mode, err := validateOpen(capture, channel, config)
+	fd, err := validateOpen(capture, channel, config)
 	if err != nil {
 		return nil, err
 	}
 	switch channel.driver {
 	case driverPCAN:
-		return openPCAN(ctx, capture, channel, config, mode)
+		native, err := nativePCANConfig(channel, config, fd)
+		if err != nil {
+			return nil, err
+		}
+		return pcan.Open(ctx, capture, native)
 	case driverVector:
-		return openVector(ctx, capture, channel, config, mode)
+		return openVector(ctx, capture, channel, config, fd)
 	default:
 		return nil, fmt.Errorf("driver %q is not available on Windows", channel.Driver())
 	}
 }
 
-func openPCAN(ctx context.Context, capture *gocan.Capture, channel Channel, config Config, mode configMode) (gocan.Bus, error) {
-	native, err := nativePCANConfig(channel, config, mode)
-	if err != nil {
-		return nil, err
-	}
-	return pcan.Open(ctx, capture, native)
-}
-
-func nativePCANConfig(channel Channel, config Config, mode configMode) (pcan.Config, error) {
+func nativePCANConfig(channel Channel, config Config, fd bool) (pcan.Config, error) {
 	native := pcan.Config{
 		ID:      config.ID,
 		Name:    config.Name,
 		Channel: pcan.Channel(channel.native),
 	}
-	switch mode {
-	case modeClassic:
-		if config.Bitrate != 500_000 {
-			return pcan.Config{}, fmt.Errorf("PCAN classical bitrate %d is unsupported", config.Bitrate)
-		}
-		native.Bitrate = pcan.Bitrate500K
-	case modeFD:
+	if fd {
 		native.FDBitrate = pcanFDBitrate(config.FDTiming)
-	default:
-		return pcan.Config{}, invalidModeError(mode)
+		return native, nil
 	}
+	if config.Bitrate != 500_000 {
+		return pcan.Config{}, fmt.Errorf("PCAN classical bitrate %d is unsupported", config.Bitrate)
+	}
+	native.Bitrate = pcan.Bitrate500K
 	return native, nil
 }
 
@@ -68,8 +61,4 @@ func pcanFDBitrate(timing FDTiming) string {
 		timing.Data.TSEG2,
 		timing.Data.SJW,
 	)
-}
-
-func invalidModeError(mode configMode) error {
-	return fmt.Errorf("unsupported physical CAN configuration mode %d", mode)
 }

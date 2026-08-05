@@ -2,7 +2,6 @@
 
 // Package devicechange reports Windows Plug and Play device-instance changes
 // and fans matching removals out to open buses; see Monitor.
-//
 package devicechange
 
 import (

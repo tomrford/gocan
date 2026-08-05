@@ -4,7 +4,6 @@
 package vector
 
 import (
-	"errors"
 	"fmt"
 	"time"
 	"unsafe"
@@ -15,7 +14,8 @@ import (
 // ChannelIndex is a global channel index reported by the XL Driver Library.
 type ChannelIndex uint8
 
-// Config selects and configures one Vector CAN channel.
+// Config selects and configures one Vector CAN channel. Package drivers
+// constructs and validates it.
 type Config struct {
 	// ID is the one-based trace channel assigned to the bus.
 	ID gocan.BusID
@@ -201,22 +201,6 @@ func decodeChipState(status uint8) (gocan.ControllerState, error) {
 	default:
 		return 0, fmt.Errorf("unsupported Vector chip state %#02x", status)
 	}
-}
-
-func validateConfig(capture *gocan.Capture, config Config) error {
-	switch {
-	case capture == nil:
-		return errors.New("Vector bus requires a capture")
-	case config.ID == 0:
-		return errors.New("Vector bus requires an ID")
-	case config.Name == "":
-		return errors.New("Vector bus requires a name")
-	case config.ChannelIndex >= 64:
-		return fmt.Errorf("Vector channel index %d exceeds 63", config.ChannelIndex)
-	case (config.Bitrate == 0) == (config.FDTiming == (FDTiming{})):
-		return errors.New("Vector bus requires exactly one of Bitrate and FDTiming")
-	}
-	return nil
 }
 
 func channelAccess(index ChannelIndex) xlAccess {

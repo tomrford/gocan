@@ -29,7 +29,8 @@ const (
 	Bitrate500K Bitrate = 0x001c
 )
 
-// Config selects and configures one PCAN-Basic channel.
+// Config selects and configures one PCAN-Basic channel. Package drivers
+// constructs and validates it.
 type Config struct {
 	// ID is the one-based trace channel assigned to the bus.
 	ID gocan.BusID
@@ -116,22 +117,6 @@ type pcanReceiveObservation struct {
 func (observation *pcanReceiveObservation) addEvent(event gocan.Event) {
 	observation.events[observation.eventCount] = event
 	observation.eventCount++
-}
-
-func validateConfig(capture *gocan.Capture, config Config) error {
-	switch {
-	case capture == nil:
-		return errors.New("PCAN bus requires a capture")
-	case config.ID == 0:
-		return errors.New("PCAN bus requires an ID")
-	case config.Name == "":
-		return errors.New("PCAN bus requires a name")
-	case config.Channel == 0:
-		return errors.New("PCAN bus requires a channel")
-	case (config.Bitrate == 0) == (config.FDBitrate == ""):
-		return errors.New("PCAN bus requires exactly one of Bitrate and FDBitrate")
-	}
-	return nil
 }
 
 func validateSendFrame(frame gocan.Frame, fdAPI bool) error {

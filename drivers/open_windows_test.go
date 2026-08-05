@@ -11,14 +11,14 @@ import (
 
 func TestPCANConfigTranslation(t *testing.T) {
 	channel := Channel{driver: driverPCAN, native: 0x51, supportsFD: true}
-	classic, err := nativePCANConfig(channel, Config{ID: 1, Name: "can", Bitrate: 500_000}, modeClassic)
+	classic, err := nativePCANConfig(channel, Config{ID: 1, Name: "can", Bitrate: 500_000}, false)
 	if err != nil || classic.Bitrate != pcan.Bitrate500K || classic.FDBitrate != "" {
 		t.Fatalf("classic native config = %+v, %v", classic, err)
 	}
-	if _, err := nativePCANConfig(channel, Config{ID: 1, Name: "can", Bitrate: 250_000}, modeClassic); err == nil || !strings.Contains(err.Error(), "unsupported") {
+	if _, err := nativePCANConfig(channel, Config{ID: 1, Name: "can", Bitrate: 250_000}, false); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported bitrate error = %v", err)
 	}
-	fd, err := nativePCANConfig(channel, Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, modeFD)
+	fd, err := nativePCANConfig(channel, Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, true)
 	if err != nil {
 		t.Fatalf("FD native config: %v", err)
 	}

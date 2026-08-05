@@ -4,7 +4,6 @@ package drivers
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/internal/socketcan"
@@ -15,9 +14,6 @@ import (
 func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config Config) (gocan.Bus, error) {
 	if _, err := validateOpen(capture, channel, config); err != nil {
 		return nil, err
-	}
-	if channel.driver != driverSocketCAN {
-		return nil, fmt.Errorf("driver %q is not available on Linux", channel.Driver())
 	}
 	return socketcan.Open(ctx, capture, socketcan.Config{
 		ID: config.ID, Name: config.Name, Interface: channel.nativeName, FD: channel.supportsFD,

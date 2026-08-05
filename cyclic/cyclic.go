@@ -25,7 +25,6 @@ var errStopRequested = errors.New("cyclic task stop requested")
 //
 // Any send error stops the Task. Stop is idempotent and waits until no further
 // sends can start. Err reports the terminal error, or nil after Stop.
-//
 type Task struct {
 	bus    gocan.Bus
 	period time.Duration

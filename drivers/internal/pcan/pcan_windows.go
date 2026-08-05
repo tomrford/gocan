@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -72,12 +71,6 @@ func Discover() ([]ChannelInfo, error) {
 // immediately; see channelSettleDelay. Context controls opening only;
 // canceling it after Open returns does not stop the bus.
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus *Bus, err error) {
-	if err := validateConfig(capture, config); err != nil {
-		return nil, err
-	}
-	if strings.IndexByte(config.FDBitrate, 0) >= 0 {
-		return nil, errors.New("PCAN FD bitrate contains a NUL byte")
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

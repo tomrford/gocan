@@ -45,25 +45,18 @@ type BitTiming struct {
 	SJW uint32
 }
 
-type configMode uint8
-
-const (
-	modeInvalid configMode = iota
-	modeClassic
-	modeFD
-	modeExternal
-)
-
-func validateOpen(capture *gocan.Capture, channel Channel, config Config) (configMode, error) {
+// validateOpen checks the generic open contract once for every driver and
+// reports whether CAN FD timing was selected.
+func validateOpen(capture *gocan.Capture, channel Channel, config Config) (bool, error) {
 	switch {
 	case capture == nil:
-		return modeInvalid, errors.New("physical CAN bus requires a capture")
+		return false, errors.New("physical CAN bus requires a capture")
 	case channel.driver == driverUnknown:
-		return modeInvalid, errors.New("physical CAN bus requires a channel returned by Discover")
+		return false, errors.New("physical CAN bus requires a channel returned by Discover")
 	case config.ID == 0:
-		return modeInvalid, errors.New("physical CAN bus requires an ID")
+		return false, errors.New("physical CAN bus requires an ID")
 	case config.Name == "":
-		return modeInvalid, errors.New("physical CAN bus requires a name")
+		return false, errors.New("physical CAN bus requires a name")
 	}
 
 	fd := config.FDTiming != (FDTiming{})
@@ -78,38 +71,24 @@ func validateOpen(capture *gocan.Capture, channel Channel, config Config) (confi
 		choices++
 	}
 	if choices != 1 {
-		return modeInvalid, errors.New("physical CAN bus requires exactly one of Bitrate, FDTiming, and External")
+		return false, errors.New("physical CAN bus requires exactly one of Bitrate, FDTiming, and External")
 	}
 
-	var mode configMode
-	switch {
-	case config.External:
-		mode = modeExternal
-	case fd:
+	if channel.external && !config.External {
+		return false, fmt.Errorf("%s is configured externally; set Config.External", channel.Identifier())
+	}
+	if !channel.external && config.External {
+		return false, fmt.Errorf("%s requires programmable bit timing", channel.Identifier())
+	}
+	if fd {
 		if !channel.supportsFD {
-			return modeInvalid, fmt.Errorf("%s does not support CAN FD", channel.Identifier())
+			return false, fmt.Errorf("%s does not support CAN FD", channel.Identifier())
 		}
 		if _, _, err := deriveFDBitrates(config.FDTiming); err != nil {
-			return modeInvalid, err
+			return false, err
 		}
-		mode = modeFD
-	default:
-		mode = modeClassic
 	}
-	if err := validateChannelMode(channel, mode); err != nil {
-		return modeInvalid, err
-	}
-	return mode, nil
-}
-
-func validateChannelMode(channel Channel, mode configMode) error {
-	if channel.external && mode != modeExternal {
-		return fmt.Errorf("%s is configured externally; set Config.External", channel.Identifier())
-	}
-	if !channel.external && mode == modeExternal {
-		return fmt.Errorf("%s requires programmable bit timing", channel.Identifier())
-	}
-	return nil
+	return fd, nil
 }
 
 func deriveFDBitrates(timing FDTiming) (uint32, uint32, error) {
@@ -142,9 +121,5 @@ func deriveBitrate(clock uint32, phase string, timing BitTiming) (uint32, error)
 	if uint64(clock)%denominator != 0 {
 		return 0, fmt.Errorf("CAN FD %s timing does not divide %d Hz into an integral bitrate", phase, clock)
 	}
-	bitrate := uint64(clock) / denominator
-	if bitrate == 0 || bitrate > math.MaxUint32 {
-		return 0, fmt.Errorf("CAN FD %s timing derives invalid bitrate %d", phase, bitrate)
-	}
-	return uint32(bitrate), nil
+	return uint32(uint64(clock) / denominator), nil
 }
