@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -153,7 +154,7 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 	if err != nil {
 		return DID{}, true, err
 	}
-	dataProxy, err := resolver.dataProxy(classTemplate, data)
+	dataProxies, err := resolver.dataProxies(classTemplate, data)
 	if err != nil {
 		return DID{}, true, err
 	}
@@ -177,20 +178,7 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 		return DID{}, true, sourceError(resolver.name, "DID %q has invalid data identifier %q", name, identifierValue.attr("v"))
 	}
 
-	// A diagnostic instance carries one component container per shared proxy of
-	// its class template: the data record, and one per negative-response code.
-	// Only the container bound to the data proxy describes the payload.
-	var container *element
-	for _, candidate := range instance.childrenNamed("SIMPLECOMPCONT") {
-		if candidate.attr("shproxyref") == dataProxy.attr("id") {
-			container = candidate
-			break
-		}
-	}
-	if container == nil {
-		return DID{}, true, sourceError(resolver.name, "DID %q has no component container for its data proxy", name)
-	}
-	fields, bitLength, maxBitLength, err := resolver.resolveFields(container)
+	fields, bitLength, maxBitLength, err := resolver.resolveDataRecord(instance, dataProxies)
 	if err != nil {
 		return DID{}, true, fmt.Errorf("DID %q: %w", name, err)
 	}
@@ -302,12 +290,12 @@ func (resolver *resolver) identifierStatic(classTemplate *element, allowed map[s
 	return identifier, nil
 }
 
-// dataProxy returns the shared proxy carrying the data record of a data
-// identifier class. Only newer CANdela versions mark it with
+// dataProxies returns the shared proxies carrying the data record of a data
+// identifier class. Only newer CANdela versions mark them with
 // spec="didDataReference", so the proxy is identified by the request and
 // response components it references instead.
-func (resolver *resolver) dataProxy(classTemplate *element, allowed map[string]struct{}) (*element, error) {
-	var matched *element
+func (resolver *resolver) dataProxies(classTemplate *element, allowed map[string]struct{}) ([]*element, error) {
+	var matched []*element
 	for _, proxy := range classTemplate.childrenNamed("SHPROXY") {
 		if proxy.attr("dest") != "data" || proxy.attr("id") == "" {
 			continue
@@ -316,17 +304,47 @@ func (resolver *resolver) dataProxy(classTemplate *element, allowed map[string]s
 			if _, ok := allowed[reference.attr("idref")]; !ok {
 				continue
 			}
-			if matched != nil {
-				return nil, sourceError(resolver.name, "DCLTMPL %q has more than one data proxy", classTemplate.attr("id"))
-			}
-			matched = proxy
+			matched = append(matched, proxy)
 			break
 		}
 	}
-	if matched == nil {
+	if len(matched) == 0 {
 		return nil, sourceError(resolver.name, "DCLTMPL %q has no data proxy", classTemplate.attr("id"))
 	}
 	return matched, nil
+}
+
+// resolveDataRecord resolves every data proxy enabled for one instance. Read
+// and write services may use separate proxies, but one DID can represent them
+// only when both describe the same record.
+func (resolver *resolver) resolveDataRecord(instance *element, proxies []*element) ([]Field, uint32, uint32, error) {
+	var fields []Field
+	var bitLength, maxBitLength uint32
+	for index, proxy := range proxies {
+		var container *element
+		for _, candidate := range instance.childrenNamed("SIMPLECOMPCONT") {
+			if candidate.attr("shproxyref") == proxy.attr("id") {
+				container = candidate
+				break
+			}
+		}
+		if container == nil {
+			return nil, 0, 0, sourceError(resolver.name, "data proxy %q has no component container", proxy.attr("id"))
+		}
+
+		candidateFields, candidateLength, candidateMaxLength, err := resolver.resolveFields(container)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if index == 0 {
+			fields, bitLength, maxBitLength = candidateFields, candidateLength, candidateMaxLength
+			continue
+		}
+		if candidateLength != bitLength || candidateMaxLength != maxBitLength || !reflect.DeepEqual(candidateFields, fields) {
+			return nil, 0, 0, sourceError(resolver.name, "enabled services describe different data records")
+		}
+	}
+	return fields, bitLength, maxBitLength, nil
 }
 
 // resolveFields returns the record layout with the bit lengths of its smallest

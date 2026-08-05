@@ -182,8 +182,17 @@
           <DIAGINST tmplref="modernClass" req="notReq">
             <QUAL>UploadBuffer</QUAL>
             <SERVICE tmplref="modernRead" req="0"/>
+            <SERVICE tmplref="modernWrite" req="0"/>
             <STATICVALUE shstaticref="modernIdentifier" v="61842"/>
             <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" dtref="identifier16">
+                <QUAL>BlockNumber</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="payload">
+                <QUAL>Buffer</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="modernWriteData">
               <DATAOBJ spec="no" dtref="identifier16">
                 <QUAL>BlockNumber</QUAL>
               </DATAOBJ>
