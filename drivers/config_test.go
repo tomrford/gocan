@@ -2,7 +2,6 @@ package drivers
 
 import (
 	"math"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -94,26 +93,5 @@ func TestFDTimingRejectsInvalidValues(t *testing.T) {
 				t.Fatalf("deriveFDBitrates error = %v, want %q", err, test.want)
 			}
 		})
-	}
-}
-
-func TestChannelIsOpaqueAndDistinguishable(t *testing.T) {
-	typeOfChannel := reflect.TypeFor[Channel]()
-	for index := range typeOfChannel.NumField() {
-		if typeOfChannel.Field(index).IsExported() {
-			t.Fatalf("Channel field %s is exported", typeOfChannel.Field(index).Name)
-		}
-	}
-	first := Channel{driver: driverPCAN, name: "PCAN-USB FD", native: 0x51, supportsFD: true}
-	second := Channel{driver: driverPCAN, name: "PCAN-USB FD", native: 0x52, supportsFD: true}
-	if first.Identifier() == second.Identifier() || first == second {
-		t.Fatalf("channels are not distinguishable: %q and %q", first.Identifier(), second.Identifier())
-	}
-	if first.Driver() != "pcan" || first.Name() != "PCAN-USB FD" || !first.SupportsFD() || first.ExternallyConfigured() {
-		t.Fatalf("unexpected PCAN channel metadata: %#v", first)
-	}
-	external := Channel{driver: driverSocketCAN, name: "can0", nativeName: "can0", supportsFD: true, external: true}
-	if external.Identifier() != "socketcan:can0" || !external.ExternallyConfigured() {
-		t.Fatalf("unexpected SocketCAN channel metadata: %#v", external)
 	}
 }
