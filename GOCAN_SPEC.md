@@ -16,9 +16,3 @@ behaviour, then implement the minimum useful path.
 
 Add typed standard services, session state, and OEM extension points on top of
 the raw `uds` request and response values.
-
-### CANdela CDD
-
-Use real CANdela CDD files to define and implement a useful subset for named
-requests, responses, DIDs, routines, and timing. Report unsupported semantics
-rather than silently discarding them.

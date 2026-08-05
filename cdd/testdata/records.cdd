@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<CANDELA dtdvers="10.0.108">
+  <ECUDOC doctype="inst" manufacturer="Example" languages="(en-US)">
+    <DATATYPES>
+      <TEXTTBL id="identifier16" bm="65535">
+        <QUAL>Identifier</QUAL>
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" qty="atom" sz="no" minsz="1" maxsz="1"/>
+      </TEXTTBL>
+      <IDENT id="counter8" bm="255">
+        <QUAL>Counter</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="dec" qty="atom" sz="no" minsz="1" maxsz="1"/>
+      </IDENT>
+      <TEXTTBL id="state8" bm="255">
+        <QUAL>State</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="hex" qty="atom" sz="no" minsz="1" maxsz="1"/>
+        <TEXTMAP s="0" e="0">
+          <TEXT><TUV lang="en-US">Off</TUV></TEXT>
+        </TEXTMAP>
+        <TEXTMAP s="1" e="1">
+          <TEXT><TUV lang="en-US">On</TUV></TEXT>
+        </TEXTMAP>
+        <TEXTMAP s="(2)" e="(255)">
+          <TEXT><TUV lang="en-US">Reserved</TUV></TEXT>
+        </TEXTMAP>
+      </TEXTTBL>
+      <LINCOMP id="temperature16" bm="65535">
+        <QUAL>Temperature</QUAL>
+        <CVALUETYPE bl="16" bo="12" enc="sgn" sig="0" df="dec" qty="atom" sz="no" minsz="1" maxsz="1"/>
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="1" df="dec" qty="atom" sz="no" minsz="1" maxsz="1">
+          <UNIT>degC</UNIT>
+        </PVALUETYPE>
+        <COMP s="0" e="65535" f="0.5" o="-40"/>
+      </LINCOMP>
+      <IDENT id="serial12" bm="255">
+        <QUAL>Serial</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="asc" sig="0" df="text" qty="field" sz="no" minsz="12" maxsz="12"/>
+      </IDENT>
+      <IDENT id="block4" bm="255">
+        <QUAL>Block</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="hex" qty="field" sz="no" minsz="4" maxsz="4"/>
+      </IDENT>
+      <IDENT id="ratio32" bm="4294967295">
+        <QUAL>Ratio</QUAL>
+        <CVALUETYPE bl="32" bo="21" enc="flt" sig="6" df="flt" qty="atom" sz="no" minsz="1" maxsz="1"/>
+      </IDENT>
+      <IDENT id="payload" bm="255">
+        <QUAL>Payload</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="hex" qty="field" sz="no" minsz="1" maxsz="64"/>
+      </IDENT>
+    </DATATYPES>
+    <DIDS>
+      <DID id="sharedRecord" n="1">
+        <STRUCTURE>
+          <DATAOBJ spec="no" dtref="counter8">
+            <QUAL>Cycles</QUAL>
+          </DATAOBJ>
+        </STRUCTURE>
+      </DID>
+      <DID id="cycleA" n="1">
+        <STRUCTURE>
+          <DIDDATAREF didRef="cycleB"/>
+        </STRUCTURE>
+      </DID>
+      <DID id="cycleB" n="1">
+        <STRUCTURE>
+          <DIDDATAREF didRef="cycleA"/>
+        </STRUCTURE>
+      </DID>
+    </DIDS>
+    <PROTOCOLSERVICES>
+      <PROTOCOLSERVICE id="readByIdentifier" func="1" phys="1">
+        <REQ>
+          <CONSTCOMP id="readSid" must="1" spec="sid" bl="8" v="034"/>
+          <STATICCOMP id="readIdentifier" must="1" spec="id" dtref="identifier16"/>
+        </REQ>
+        <POS>
+          <SIMPLEPROXYCOMP id="readData" must="1" dest="data" minbl="8"/>
+        </POS>
+        <NEG>
+          <SIMPLEPROXYCOMP id="readCode" must="1" dest="resCode" minbl="8" maxbl="8"/>
+        </NEG>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="writeByIdentifier" func="1" phys="1">
+        <REQ>
+          <CONSTCOMP id="writeSid" must="1" spec="sid" bl="8" v="46"/>
+          <STATICCOMP id="writeIdentifier" must="1" spec="id" dtref="identifier16"/>
+          <SIMPLEPROXYCOMP id="writeData" must="1" dest="data" minbl="8"/>
+        </REQ>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="sessionControl" func="1" phys="1">
+        <REQ>
+          <CONSTCOMP id="sessionSid" must="1" spec="sid" bl="8" v="16"/>
+          <STATICCOMP id="sessionSubfunction" must="1" spec="sub" bl="8"/>
+        </REQ>
+      </PROTOCOLSERVICE>
+    </PROTOCOLSERVICES>
+    <DCLTMPLS>
+      <DCLTMPL id="modernClass" cls="idn" single="0">
+        <QUAL>Identification</QUAL>
+        <DCLSRVTMPL id="modernRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/>
+        <DCLSRVTMPL id="modernWrite" tmplref="writeByIdentifier" dtref="identifier16" conv="req"/>
+        <SHSTATIC id="modernIdentifier" spec="id">
+          <QUAL>RecordDataIdentifier</QUAL>
+          <STATICCOMPREF idref="readIdentifier"/>
+          <STATICCOMPREF idref="writeIdentifier"/>
+        </SHSTATIC>
+        <SHPROXY id="modernData" dest="data" spec="didDataReference">
+          <QUAL>Data</QUAL>
+          <PROXYCOMPREF idref="readData"/>
+        </SHPROXY>
+        <SHPROXY id="modernCode" dest="resCode">
+          <QUAL>Read_NR</QUAL>
+          <PROXYCOMPREF idref="readCode"/>
+        </SHPROXY>
+        <SHPROXY id="modernWriteData" dest="data">
+          <QUAL>WriteData</QUAL>
+          <PROXYCOMPREF idref="writeData"/>
+        </SHPROXY>
+      </DCLTMPL>
+      <DCLTMPL id="legacyClass" cls="ctl" single="0">
+        <QUAL>Legacy</QUAL>
+        <DCLSRVTMPL id="legacyRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/>
+        <SHSTATIC id="legacyIdentifier" spec="id">
+          <QUAL>RecordDataIdentifier</QUAL>
+          <STATICCOMPREF idref="readIdentifier"/>
+        </SHSTATIC>
+        <SHPROXY id="legacyCode" dest="resCode">
+          <QUAL>Read_NR</QUAL>
+          <PROXYCOMPREF idref="readCode"/>
+        </SHPROXY>
+        <SHPROXY id="legacyData" dest="data">
+          <QUAL>Data</QUAL>
+          <PROXYCOMPREF idref="readData"/>
+        </SHPROXY>
+      </DCLTMPL>
+      <DCLTMPL id="sessionClass" cls="ses" single="1">
+        <QUAL>Session</QUAL>
+        <DCLSRVTMPL id="sessionService" tmplref="sessionControl" conv="req"/>
+        <SHSTATIC id="sessionStatic" spec="sub">
+          <QUAL>Subfunction</QUAL>
+          <STATICCOMPREF idref="sessionSubfunction"/>
+        </SHSTATIC>
+      </DCLTMPL>
+    </DCLTMPLS>
+    <ECU id="ecu">
+      <VAR id="variant" base="1">
+        <DIAGCLASS tmplref="sessionClass">
+          <DIAGINST tmplref="sessionClass" req="notReq">
+            <QUAL>ProgrammingSession</QUAL>
+            <SERVICE tmplref="sessionService" req="0"/>
+            <STATICVALUE shstaticref="sessionStatic" v="2"/>
+          </DIAGINST>
+        </DIAGCLASS>
+        <DIAGCLASS tmplref="modernClass">
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>ThermalStatus</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61840"/>
+            <SIMPLECOMPCONT shproxyref="modernCode"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DESC><TUV lang="en-US">Thermal status record</TUV></DESC>
+              <DATAOBJ spec="no" def="0" dtref="state8">
+                <QUAL>Heater</QUAL>
+              </DATAOBJ>
+              <GAPDATAOBJ bl="8"/>
+              <DATAOBJ spec="no" def="0" dtref="temperature16">
+                <QUAL>Coolant</QUAL>
+              </DATAOBJ>
+              <DIDDATAREF didRef="sharedRecord"/>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>ThermalStatusMirror</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61840"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" def="0" dtref="counter8">
+                <QUAL>Cycles</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>UploadBuffer</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61842"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" dtref="identifier16">
+                <QUAL>BlockNumber</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="payload">
+                <QUAL>Buffer</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>InteriorBuffer</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61844"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" dtref="payload">
+                <QUAL>Buffer</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="counter8">
+                <QUAL>Checksum</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>CyclicRecord</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61845"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DIDDATAREF didRef="cycleA"/>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+        </DIAGCLASS>
+        <DIAGCLASS tmplref="legacyClass">
+          <DIAGINST tmplref="legacyClass" req="notReq">
+            <QUAL>Nameplate</QUAL>
+            <SERVICE tmplref="legacyRead" req="0"/>
+            <STATICVALUE shstaticref="legacyIdentifier" v="61841"/>
+            <SIMPLECOMPCONT shproxyref="legacyCode"/>
+            <SIMPLECOMPCONT shproxyref="legacyData">
+              <DATAOBJ spec="no" dtref="serial12">
+                <QUAL>SerialNumber</QUAL>
+              </DATAOBJ>
+              <STRUCT>
+                <QUAL>Calibration</QUAL>
+                <DESC><TUV lang="en-US">Calibration values</TUV></DESC>
+                <DATAOBJ spec="no" dtref="block4">
+                  <QUAL>Coefficients</QUAL>
+                </DATAOBJ>
+                <DATAOBJ spec="no" dtref="ratio32">
+                  <QUAL>Gain</QUAL>
+                </DATAOBJ>
+              </STRUCT>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+        </DIAGCLASS>
+      </VAR>
+      <VAR id="secondVariant">
+        <DIAGCLASS tmplref="modernClass">
+          <DIAGINST tmplref="modernClass">
+            <QUAL>NotInspected</QUAL>
+            <SERVICE tmplref="modernRead"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61843"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" dtref="counter8">
+                <QUAL>Cycles</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+        </DIAGCLASS>
+      </VAR>
+    </ECU>
+  </ECUDOC>
+</CANDELA>

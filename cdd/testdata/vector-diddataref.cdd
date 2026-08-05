@@ -1,0 +1,79 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<CANDELA dtdvers="10.0.108">
+  <ECUDOC oid="DCA1EB2CBF084f719F261BE35BBAEC31" temploid="{1DCA0988-4B31-4443-A70D-5056F6DD703B}" doctype="inst" manufacturer="Vector" mid="S9JkrbhBj9mehrSgeNmt1g==" saveno="22" languages="(en-US)" uptodateLanguages="(en-US)" jobfileext="" ftbPoolPath="qpath://[DATATYPE]SAE_J2012_Failure_Type_Byte" xdtauth="30" dtNesting="all">
+    <DATATYPES>
+      <TEXTTBL id="_000001B1ADB65370" oid="414BAE0FB8BE4b8aA359FB1C32E32D35" temploid="540B3E255AA6490cA8D3AB37A7817F52" bm="65535">
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" qty="atom" sz="no" minsz="1" maxsz="1"/>
+      </TEXTTBL>
+      <IDENT id="_000001B1ADB61A40" oid="717754569F0F4704A1B4DF3448CF5A65" bm="255">
+        <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="hex" qty="atom" sz="no" minsz="1" maxsz="1"/>
+      </IDENT>
+      <TEXTTBL id="_000001B1ADCA7750" oid="3D07CB4C556E48308225EF97723C4AE5" bm="255">
+        <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="hex" qty="atom" sz="no" minsz="1" maxsz="1"/>
+        <TEXTMAP s="0" e="0">
+          <TEXT>
+            <TUV lang="en-US">DIO_LOW</TUV>
+          </TEXT>
+        </TEXTMAP>
+        <TEXTMAP s="1" e="1">
+          <TEXT>
+            <TUV lang="en-US">DIO_HIGH</TUV>
+          </TEXT>
+        </TEXTMAP>
+        <TEXTMAP s="2" e="2">
+          <TEXT>
+            <TUV lang="en-US">DIO_FLIP</TUV>
+          </TEXT>
+        </TEXTMAP>
+      </TEXTTBL>
+    </DATATYPES>
+    <DIDS>
+      <DID id="_000001B1ADAB0A70" oid="231CC3CED4DD4bc69C4E5C5B47F76E3E" temploid="F992FD698FF84c479D8B8F19F6390C57" n="768">
+        <STRUCTURE>
+          <DATAOBJ oid="43CAA3A5DD1F424eB85D737CC756A15B" temploid="A203A2804CB94b58AD3D8D3672945FED" spec="no" def="0" dtref="_000001B1ADCA7750">
+            <QUAL>IO_State</QUAL>
+          </DATAOBJ>
+          <DATAOBJ oid="7D3DF383AFAC429091D09787172BD455" spec="no" def="0" dtref="_000001B1ADB61A40">
+            <QUAL>Pin_ID</QUAL>
+          </DATAOBJ>
+        </STRUCTURE>
+      </DID>
+    </DIDS>
+    <PROTOCOLSERVICES>
+      <PROTOCOLSERVICE id="_000001B1ABFA4070" oid="E18D2B2C68914b47809F5EF06A26B8A3" temploid="{8AE31B71-849A-40bb-8688-A3219992C49B}" func="1" phys="1" mresp="0" respOnPhys="1" respOnFunc="1" maycombcont="1">
+        <REQ oid="79981EB418914ba69EE27D49E7C9FC64" temploid="{43DDF7D8-4F83-4b6e-BB3C-639960881D5D}">
+          <CONSTCOMP id="_000001B1ADD5AB50" oid="1E43201E45D0406aB691A8B5EDCA2021" temploid="{A15219A0-6A9F-43a4-BB70-E2E1FBD69CBA}" must="1" spec="sid" bl="8" v="34"/>
+        </REQ>
+        <POS oid="7DDEB723CE51495f8F7317E1B36EC8F8" temploid="{1D7B0B97-456B-4869-B822-7DF6A53C603A}">
+          <STATICCOMP id="_000001B1AD93CB10" oid="E0BC58384D3F4e4f962C1D384951C5D0" temploid="{07A3E62B-9848-4a7c-BBDF-DFA1214E33CC}" must="1" spec="id" dtref="_000001B1ADB65370"/>
+          <SIMPLEPROXYCOMP id="_000001B1ADD57710" oid="1316AC7CABE04c1aB7C898F241073910" temploid="{4C8B75DD-3BCB-4e4a-A9E0-1A4D5EB9EBFC}" must="1" dest="data" minbl="8"/>
+        </POS>
+      </PROTOCOLSERVICE>
+    </PROTOCOLSERVICES>
+    <DCLTMPLS>
+      <DCLTMPL id="_000001B1B000C470" oid="328DAA360070443e9F0A6169D471199B" temploid="{E67C5940-EED8-46d2-B95B-83F60296C067}" cls="ctl" single="0" isRelevantForReq="1">
+        <DCLSRVTMPL id="_000001B1ADF7C050" oid="D90987A152504746B1F82B0E8A262A37" temploid="{5AE50C13-AB34-440b-A793-E6AAF18EC7E6}" tmplref="_000001B1ABFA4070" dtref="_000001B1ADB65370" conv="req"/>
+        <SHSTATIC id="_000001B1AFFE65A0" oid="FC903BD73A6E4d9fB6B3797F7E75A1F4" temploid="{F2101F93-EC40-456a-B3E8-6931FC469114}" spec="id">
+          <STATICCOMPREF idref="_000001B1AD93CB10"/>
+        </SHSTATIC>
+        <SHPROXY id="_000001B1B000C870" oid="542F7CCBF3E84bceBD3F251F31A4A534" temploid="{ECF53028-32E3-4915-98FD-6D975B4CB2E4}" dest="data" spec="didDataReference">
+          <PROXYCOMPREF idref="_000001B1ADD57710"/>
+        </SHPROXY>
+      </DCLTMPL>
+    </DCLTMPLS>
+    <ECU id="_000001B1AD93A5E0" oid="FE136D38FDA548698D72E65625021765" temploid="{A120ED60-20AB-4660-97EA-CD85CDFA5B23}" maxCombinedServiceIds="5" maxEcuSchedulerIds="5">
+      <VAR id="_000001B1AD923900" oid="65E0A5882CD142cfA63A6C8BDAD7AAAE" temploid="{8E93F445-4173-4bff-9D7C-852EFDF68146}" base="1">
+        <DIAGCLASS id="_000001B1B012CD70" oid="F1C3BE92D67243849C836903BC2152B5" temploid="351A4D8B0AEE4bc7BA9958481AD328CF" tmplref="_000001B1B000C470">
+          <DIAGINST id="_000001B1B0127AF0" oid="6DAF8941CA1E4c1aB806E41803276337" temploid="6625E9EC0EB2440bBF0C6B2F8C8C3398" tmplref="_000001B1B000C470" req="notReq">
+            <QUAL>Control_Digital_IO</QUAL>
+            <SERVICE id="_000001B1B0153430" oid="9FC825269264459cBCEF6CDD895BD744" temploid="29C65C549C6D43eaB70200D5A4F38CFF" tmplref="_000001B1ADF7C050" func="1" phys="1" respOnPhys="1" respOnFunc="1" req="0"/>
+            <STATICVALUE oid="51922AE4B18C431cB3E6FE72936F3FBA" temploid="E0A0FF5AA15948e29FD1E46A6579D188" shstaticref="_000001B1AFFE65A0" v="768"/>
+            <SIMPLECOMPCONT oid="F5B2D98076A04223889DD51976F9DCA6" temploid="ED68442207934879B20DD0D84562FEB9" shproxyref="_000001B1B000C870">
+              <DIDDATAREF oid="599A789E44604c0e97A80CE75D6D6D23" temploid="534621A1FF394d558273E75C10EF7A13" didRef="_000001B1ADAB0A70"/>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+        </DIAGCLASS>
+      </VAR>
+    </ECU>
+  </ECUDOC>
+</CANDELA>
