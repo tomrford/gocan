@@ -56,7 +56,8 @@ bus, err := drivers.Open(ctx, capture, channel, drivers.Config{
 The Windows PCAN and Vector paths are qualified on physical classic and CAN FD
 adapters. SocketCAN passes the software and virtual-interface suites; its
 [physical-adapter qualification](https://github.com/tomrford/gocan/issues/10)
-remains release work. NI-XNET is deferred until hardware is available.
+is deferred until hardware is available and is outside the first release.
+NI-XNET support is also deferred until hardware is available.
 
 ## Development
 
