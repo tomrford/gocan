@@ -39,12 +39,43 @@ type DID struct {
 // Parse retains fields outside the current codec subset. Their metadata remains
 // available, and Encode or Decode reports the unsupported codec capability.
 type Record struct {
-	Length    uint32
-	MaxLength uint32
-	Fields    []Field
+	name      string
+	length    uint32
+	maxLength uint32
+	fields    []Field
+	codec     *recordCodec
+}
 
-	name  string
-	codec *recordCodec
+// Length returns the smallest data-record size in bytes.
+func (record *Record) Length() uint32 {
+	return record.length
+}
+
+// MaxLength returns the largest data-record size in bytes.
+func (record *Record) MaxLength() uint32 {
+	return record.maxLength
+}
+
+// Fields returns an independent copy of the record fields in layout order.
+func (record *Record) Fields() []Field {
+	fields := make([]Field, len(record.fields))
+	for index, field := range record.fields {
+		fields[index] = cloneField(field)
+	}
+	return fields
+}
+
+func cloneField(field Field) Field {
+	if field.Variable != nil {
+		variable := *field.Variable
+		field.Variable = &variable
+	}
+	if field.Conversion != nil {
+		conversion := *field.Conversion
+		field.Conversion = &conversion
+	}
+	field.Choices = append([]Choice(nil), field.Choices...)
+	return field
 }
 
 // Values maps DID field names to their physical values.

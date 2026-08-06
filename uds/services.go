@@ -39,7 +39,7 @@ type SessionTiming struct {
 }
 
 // SessionControlResponse reports the acknowledged session. Timing is nil when
-// the server uses the legacy response without timing parameters.
+// the server uses the legacy echo-only response.
 type SessionControlResponse struct {
 	Session Session
 	Timing  *SessionTiming
