@@ -144,16 +144,12 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 	if classTemplate == nil || classTemplate.name != "DCLTMPL" {
 		return DID{}, false, nil
 	}
-	identifiers, data, selected := resolver.didServiceComponents(instance, classTemplate)
-	if !selected {
+	bindings := resolver.didServiceComponents(instance, classTemplate)
+	if bindings.readData == nil && bindings.writeData == nil {
 		return DID{}, false, nil
 	}
 
-	identifierStatic, err := resolver.identifierStatic(classTemplate, identifiers)
-	if err != nil {
-		return DID{}, true, err
-	}
-	dataProxy, err := resolver.dataProxy(classTemplate, data)
+	identifierStatic, err := resolver.identifierStatic(classTemplate, bindings.identifiers)
 	if err != nil {
 		return DID{}, true, err
 	}
@@ -177,40 +173,32 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 		return DID{}, true, sourceError(resolver.name, "DID %q has invalid data identifier %q", name, identifierValue.attr("v"))
 	}
 
-	// A diagnostic instance carries one component container per shared proxy of
-	// its class template: the data record, and one per negative-response code.
-	// Only the container bound to the data proxy describes the payload.
-	var container *element
-	for _, candidate := range instance.childrenNamed("SIMPLECOMPCONT") {
-		if candidate.attr("shproxyref") == dataProxy.attr("id") {
-			container = candidate
-			break
+	did := DID{Name: name, Identifier: uint16(identifier64)}
+	if bindings.readData != nil {
+		did.Read, err = resolver.resolveDIDRecord(name, instance, classTemplate, bindings.readData)
+		if err != nil {
+			return DID{}, true, fmt.Errorf("DID %q read record: %w", name, err)
 		}
 	}
-	if container == nil {
-		return DID{}, true, sourceError(resolver.name, "DID %q has no component container for its data proxy", name)
+	if bindings.writeData != nil {
+		did.Write, err = resolver.resolveDIDRecord(name, instance, classTemplate, bindings.writeData)
+		if err != nil {
+			return DID{}, true, fmt.Errorf("DID %q write record: %w", name, err)
+		}
 	}
-	fields, bitLength, maxBitLength, err := resolver.resolveFields(container)
-	if err != nil {
-		return DID{}, true, fmt.Errorf("DID %q: %w", name, err)
-	}
-	return DID{
-		Name:       name,
-		Identifier: uint16(identifier64),
-		Length:     uint32((uint64(bitLength) + 7) / 8),
-		MaxLength:  uint32((uint64(maxBitLength) + 7) / 8),
-		Fields:     fields,
-	}, true, nil
+	return did, true, nil
 }
 
-// didServiceComponents returns the identifier and data components used by the
-// ReadDataByIdentifier or WriteDataByIdentifier services enabled for this
-// instance. The service identifier is the authority here; DCLTMPL@cls is an
-// authoring hint that CANdela versions spell differently.
-func (resolver *resolver) didServiceComponents(instance, classTemplate *element) (map[string]struct{}, map[string]struct{}, bool) {
-	identifiers := make(map[string]struct{})
-	data := make(map[string]struct{})
-	selected := false
+type didBindings struct {
+	identifiers map[string]struct{}
+	readData    map[string]struct{}
+	writeData   map[string]struct{}
+}
+
+// didServiceComponents retains the message direction because a read response
+// and write request may bind different proxies even when their layouts agree.
+func (resolver *resolver) didServiceComponents(instance, classTemplate *element) didBindings {
+	bindings := didBindings{identifiers: make(map[string]struct{})}
 	for _, service := range instance.childrenNamed("SERVICE") {
 		serviceTemplate := resolver.byID[service.attr("tmplref")]
 		if serviceTemplate == nil || serviceTemplate.name != "DCLSRVTMPL" || !directChild(classTemplate, serviceTemplate) {
@@ -220,12 +208,19 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 		if protocolService == nil || protocolService.name != "PROTOCOLSERVICE" {
 			continue
 		}
-		if sid, ok := requestServiceID(protocolService); ok && (sid == 0x22 || sid == 0x2e) {
-			collectServiceComponents(protocolService, identifiers, data)
-			selected = true
+		sid, ok := requestServiceID(protocolService)
+		if !ok || sid != 0x22 && sid != 0x2e {
+			continue
+		}
+		collectIdentifierComponents(protocolService, bindings.identifiers)
+		switch sid {
+		case 0x22:
+			bindings.readData = collectDataComponents(protocolService.child("POS"), bindings.readData)
+		case 0x2e:
+			bindings.writeData = collectDataComponents(protocolService.child("REQ"), bindings.writeData)
 		}
 	}
-	return identifiers, data, selected
+	return bindings
 }
 
 func directChild(parent, candidate *element) bool {
@@ -237,7 +232,7 @@ func directChild(parent, candidate *element) bool {
 	return false
 }
 
-func collectServiceComponents(protocolService *element, identifiers, data map[string]struct{}) {
+func collectIdentifierComponents(protocolService *element, identifiers map[string]struct{}) {
 	for _, messageName := range []string{"REQ", "POS"} {
 		message := protocolService.child(messageName)
 		for _, component := range message.childrenNamed("STATICCOMP") {
@@ -245,12 +240,44 @@ func collectServiceComponents(protocolService *element, identifiers, data map[st
 				identifiers[component.attr("id")] = struct{}{}
 			}
 		}
-		for _, component := range message.childrenNamed("SIMPLEPROXYCOMP") {
-			if component.attr("dest") == "data" && component.attr("id") != "" {
-				data[component.attr("id")] = struct{}{}
-			}
+	}
+}
+
+func collectDataComponents(message *element, data map[string]struct{}) map[string]struct{} {
+	if data == nil {
+		data = make(map[string]struct{})
+	}
+	for _, component := range message.childrenNamed("SIMPLEPROXYCOMP") {
+		if component.attr("dest") == "data" && component.attr("id") != "" {
+			data[component.attr("id")] = struct{}{}
 		}
 	}
+	return data
+}
+
+func (resolver *resolver) resolveDIDRecord(name string, instance, classTemplate *element, components map[string]struct{}) (*Record, error) {
+	dataProxy, err := resolver.dataProxy(classTemplate, components)
+	if err != nil {
+		return nil, err
+	}
+	for _, container := range instance.childrenNamed("SIMPLECOMPCONT") {
+		if container.attr("shproxyref") != dataProxy.attr("id") {
+			continue
+		}
+		fields, bitLength, maxBitLength, err := resolver.resolveFields(container)
+		if err != nil {
+			return nil, err
+		}
+		record := &Record{
+			length:    uint32((uint64(bitLength) + 7) / 8),
+			maxLength: uint32((uint64(maxBitLength) + 7) / 8),
+			fields:    fields,
+			name:      name,
+		}
+		record.codec = compileRecordCodec(record)
+		return record, nil
+	}
+	return nil, sourceError(resolver.name, "DID has no component container for data proxy %q", dataProxy.attr("id"))
 }
 
 func requestServiceID(protocolService *element) (uint8, bool) {
@@ -302,8 +329,8 @@ func (resolver *resolver) identifierStatic(classTemplate *element, allowed map[s
 	return identifier, nil
 }
 
-// dataProxy returns the shared proxy carrying the data record of a data
-// identifier class. Only newer CANdela versions mark it with
+// dataProxy returns the proxy carrying one operation's data record. Only newer
+// CANdela versions mark it with
 // spec="didDataReference", so the proxy is identified by the request and
 // response components it references instead.
 func (resolver *resolver) dataProxy(classTemplate *element, allowed map[string]struct{}) (*element, error) {

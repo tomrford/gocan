@@ -8,4 +8,3 @@ across multiple hardware vendors.
 - Keep designs open; compare options through review, feedback, use cases, measurements, and Go language features.
 - Keep code `TODO`s for concrete first-release work; put optional future ideas in GitHub issues.
 - Go-native scheduling and receive-loop performance appears satisfactory; do not consider provider-native cyclic transmission or receive batching without measured evidence.
-- [GOCAN_SPEC.md](GOCAN_SPEC.md) tracks only outstanding work for the first stable release.

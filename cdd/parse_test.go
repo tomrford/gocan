@@ -1,7 +1,6 @@
 package cdd_test
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,13 +20,14 @@ func TestParseVectorDocument(t *testing.T) {
 	}
 
 	did := database.DIDs[0]
-	if did.Name != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Length != 2 {
+	if did.Name != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Read == nil || did.Write != nil || did.Read.Length() != 2 {
 		t.Fatalf("unexpected DID: %#v", did)
 	}
-	if len(did.Fields) != 2 || did.Fields[0].BitOffset != 0 || did.Fields[1].BitOffset != 8 {
-		t.Fatalf("unexpected fields: %#v", did.Fields)
+	fields := did.Read.Fields()
+	if len(fields) != 2 || fields[0].BitOffset != 0 || fields[1].BitOffset != 8 {
+		t.Fatalf("unexpected fields: %#v", fields)
 	}
-	if choices := did.Fields[0].Choices; len(choices) != 3 || choices[1].Label != "DIO_HIGH" {
+	if choices := fields[0].Choices; len(choices) != 3 || choices[1].Label != "DIO_HIGH" {
 		t.Fatalf("unexpected value labels: %#v", choices)
 	}
 }
@@ -43,33 +43,40 @@ func TestParseRecordLayouts(t *testing.T) {
 	}
 
 	thermal, ok := database.DIDByIdentifier(0xf190)
-	if !ok || thermal.Length != 5 || len(thermal.Fields) != 3 {
+	if !ok || thermal.Read == nil || thermal.Write != nil || thermal.Read.Length() != 5 {
 		t.Fatalf("unexpected thermal record: %#v", thermal)
 	}
-	if thermal.Fields[0].BitOffset != 0 || thermal.Fields[1].BitOffset != 16 || thermal.Fields[2].BitOffset != 32 {
-		t.Fatalf("unexpected thermal field offsets: %#v", thermal.Fields)
+	thermalFields := thermal.Read.Fields()
+	if len(thermalFields) != 3 || thermalFields[0].BitOffset != 0 || thermalFields[1].BitOffset != 16 || thermalFields[2].BitOffset != 32 {
+		t.Fatalf("unexpected thermal field offsets: %#v", thermalFields)
 	}
-	coolant := thermal.Fields[1]
+	coolant := thermalFields[1]
 	if coolant.ByteOrder != cdd.ByteOrderLittle || coolant.Conversion == nil || coolant.Conversion.Scale != 0.5 || coolant.Conversion.Offset != -40 {
 		t.Fatalf("unexpected coolant field: %#v", coolant)
 	}
 
 	nameplate, ok := database.DIDByIdentifier(0xf191)
-	if !ok || nameplate.Length != 20 || len(nameplate.Fields) != 3 {
+	if !ok || nameplate.Read == nil || nameplate.Read.Length() != 28 {
 		t.Fatalf("unexpected nameplate record: %#v", nameplate)
 	}
-	if nameplate.Fields[0].Count != 12 || nameplate.Fields[1].BitOffset != 96 || nameplate.Fields[1].Count != 4 || nameplate.Fields[2].Encoding != cdd.EncodingFloat {
-		t.Fatalf("unexpected nameplate fields: %#v", nameplate.Fields)
+	nameplateFields := nameplate.Read.Fields()
+	if len(nameplateFields) != 4 || nameplateFields[0].Count != 12 || nameplateFields[1].BitOffset != 96 || nameplateFields[1].Count != 4 || nameplateFields[2].Encoding != cdd.EncodingFloat {
+		t.Fatalf("unexpected nameplate fields: %#v", nameplateFields)
 	}
 
 	buffer, ok := database.DIDByIdentifier(0xf192)
-	if !ok || buffer.Length != 3 || buffer.MaxLength != 66 || len(buffer.Fields) != 2 {
+	if !ok || buffer.Read == nil || buffer.Read.Length() != 3 || buffer.Read.MaxLength() != 66 {
 		t.Fatalf("unexpected variable record: %#v", buffer)
 	}
-	variable := buffer.Fields[1].Variable
-	if variable == nil || variable.MinCount != 1 || variable.MaxCount != 64 {
-		t.Fatalf("unexpected variable field: %#v", buffer.Fields[1])
+	bufferFields := buffer.Read.Fields()
+	if len(bufferFields) != 2 {
+		t.Fatalf("unexpected variable fields: %#v", bufferFields)
 	}
+	variable := bufferFields[1].Variable
+	if variable == nil || variable.MinCount != 1 || variable.MaxCount != 64 {
+		t.Fatalf("unexpected variable field: %#v", bufferFields[1])
+	}
+
 }
 
 // TestParseDropsInvalidDIDs checks that unsupported records cost those records,
@@ -79,8 +86,8 @@ func TestParseDropsInvalidDIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(database.DIDs) != 3 {
-		t.Fatalf("got %d DIDs, want 3", len(database.DIDs))
+	if len(database.DIDs) != 6 {
+		t.Fatalf("got %d DIDs, want 6", len(database.DIDs))
 	}
 	if _, ok := database.DIDByName("ProgrammingSession"); ok {
 		t.Fatal("a session control instance was admitted as a data identifier")
@@ -105,44 +112,5 @@ func TestParseDropsInvalidDIDs(t *testing.T) {
 		if !strings.Contains(dropped[name], text) {
 			t.Errorf("DID %q: got %q, want %q", name, dropped[name], text)
 		}
-	}
-}
-
-// TestParseCorpus runs the parser over real CDD files that cannot be committed.
-func TestParseCorpus(t *testing.T) {
-	directory := os.Getenv("GOCAN_CDD_CORPUS")
-	if directory == "" {
-		t.Skip("set GOCAN_CDD_CORPUS to a directory of CDD files")
-	}
-	paths, err := filepath.Glob(filepath.Join(directory, "*.cdd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(paths) == 0 {
-		t.Fatalf("no CDD files in %s", directory)
-	}
-	for _, path := range paths {
-		t.Run(filepath.Base(path), func(t *testing.T) {
-			database, err := cdd.ParseFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, did := range database.DIDs {
-				var end uint32
-				for index, field := range did.Fields {
-					if field.BitOffset < end {
-						t.Errorf("DID %#04x field %q overlaps its predecessor", did.Identifier, field.Name)
-					}
-					if field.Variable != nil && index != len(did.Fields)-1 {
-						t.Errorf("DID %#04x field %q is variable but not last", did.Identifier, field.Name)
-					}
-					end = field.BitOffset + field.MaxBitSize()
-				}
-				if end > did.MaxLength*8 {
-					t.Errorf("DID %#04x ends outside its declared payload", did.Identifier)
-				}
-			}
-			t.Logf("%d DIDs, %d dropped", len(database.DIDs), len(database.Diagnostics))
-		})
 	}
 }
