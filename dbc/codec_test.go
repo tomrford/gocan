@@ -31,7 +31,7 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 
 	assertDecoded(t, command, frame, "Enable", uint64(1))
-	assertDecoded(t, command, frame, "Mode", uint64(1))
+	assertDecoded(t, command, frame, "Mode", "Torque")
 	assertDecoded(t, command, frame, "Temperature", 25.5)
 	assertDecoded(t, command, frame, "BigEndian", uint64(0xabcd))
 	assertDecoded(t, command, frame, "SignedCounter", int64(-2))
@@ -43,11 +43,24 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	assertDecoded(t, command, frame, "Temperature", 50.0)
 
+	// An off-grid physical value is quantized to the nearest raw value.
+	if err := command.Patch(&frame, Values{"Temperature": 50.03}); err != nil {
+		t.Fatalf("Patch off-grid Temperature: %v", err)
+	}
+	assertDecoded(t, command, frame, "Temperature", 50.0)
+
+	// A value description encodes even when its raw value lies outside the
+	// physical range, matching the not-available idiom.
+	if err := command.Patch(&frame, Values{"SignedCounter": "SNA"}); err != nil {
+		t.Fatalf("Patch SNA: %v", err)
+	}
+	assertDecoded(t, command, frame, "SignedCounter", "SNA")
+
 	if _, err := command.Encode(Values{"Enable": true}); err == nil || !strings.Contains(err.Error(), "requires signal") {
 		t.Fatalf("incomplete Encode error = %v", err)
 	}
 	beforeInvalidPatch := frame
-	if err := command.Patch(&frame, Values{"Mode": "Unknown"}); err == nil || !strings.Contains(err.Error(), "unknown value description") {
+	if err := command.Patch(&frame, Values{"Mode": "Unknown"}); err == nil || !strings.Contains(err.Error(), "unknown label") {
 		t.Fatalf("unknown value description error = %v", err)
 	}
 	if err := command.Patch(&frame, Values{"Temperature": 300.0}); err == nil || !strings.Contains(err.Error(), "outside") {

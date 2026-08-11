@@ -2,6 +2,8 @@
 // encodes or lazily decodes raw CAN frames.
 package dbc
 
+import "github.com/tomrford/gocan/internal/scalar"
+
 // Database is one resolved DBC file.
 //
 // Slices retain declaration order. Maps contain explicit attributes; defaults
@@ -105,11 +107,10 @@ type MultiplexRange struct {
 	Last  uint64
 }
 
-// ValueDescription assigns a label to one raw integer value.
-type ValueDescription struct {
-	Value int64
-	Label string
-}
+// ValueDescription assigns a label to one raw integer value. It shares its
+// identity with the CDD choice type, so label metadata moves between the two
+// catalogs without conversion.
+type ValueDescription = scalar.Choice
 
 // ValueTable is one global VAL_TABLE_ declaration.
 type ValueTable struct {

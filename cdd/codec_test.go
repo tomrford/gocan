@@ -34,8 +34,22 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode ThermalStatus: %v", err)
 	}
-	if values["Heater"] != uint64(1) || values["Coolant"] != 25.0 || values["Cycles"] != uint64(7) {
+	if values["Heater"] != "On" || values["Coolant"] != 25.0 || values["Cycles"] != uint64(7) {
 		t.Fatalf("thermal values = %#v", values)
+	}
+
+	// An off-grid physical value is quantized to the nearest raw value.
+	payload, err = thermal.Read.Encode(cdd.Values{
+		"Heater":  "On",
+		"Coolant": 25.3,
+		"Cycles":  uint8(7),
+	})
+	if err != nil {
+		t.Fatalf("Encode off-grid Coolant: %v", err)
+	}
+	values, err = thermal.Read.Decode(payload)
+	if err != nil || values["Coolant"] != 25.5 {
+		t.Fatalf("quantized Coolant = %#v, %v", values["Coolant"], err)
 	}
 
 	nameplate, ok := database.DIDByName("Nameplate")

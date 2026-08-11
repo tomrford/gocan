@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+
+	"github.com/tomrford/gocan/internal/scalar"
 )
 
 type recordCodec struct {
@@ -13,8 +15,8 @@ type recordCodec struct {
 }
 
 // Encode encodes one complete DID data record. Every field requires a value.
-// A linearly converted value must map exactly to a raw integer; off-grid
-// physical values are rejected rather than rounded.
+// A linearly converted physical value is quantized to the nearest raw value,
+// so Decode can differ from the encoded input by up to half a scale step.
 func (record *Record) Encode(values Values) ([]byte, error) {
 	codec, err := record.usableCodec()
 	if err != nil {
@@ -49,7 +51,9 @@ func (record *Record) Encode(values Values) ([]byte, error) {
 	return payload, nil
 }
 
-// Decode decodes one complete DID data record into physical field values.
+// Decode decodes one complete DID data record into physical field values. A
+// scalar value carrying a choice label decodes to its label; other values
+// decode numerically.
 func (record *Record) Decode(payload []byte) (Values, error) {
 	if _, err := record.usableCodec(); err != nil {
 		return nil, err
@@ -169,7 +173,7 @@ func (record *Record) validatePayloadLength(length int) error {
 
 func encodeField(field Field, value any) ([]byte, error) {
 	if field.Encoding == EncodingASCII {
-		text, ok := value.(string)
+		text, ok := scalar.StringValue(value)
 		if !ok {
 			return nil, fmt.Errorf("ASCII value has type %T, want string", value)
 		}
@@ -229,25 +233,25 @@ func decodeField(field Field, encoded []byte) (any, error) {
 	elementBytes := int(field.BitLength / 8)
 	count := len(encoded) / elementBytes
 	if field.Count == 1 && field.Variable == nil {
-		return decodeScalar(field, readRaw(encoded, field.ByteOrder)), nil
+		return decodeScalar(field, readRaw(encoded, field.ByteOrder), true), nil
 	}
 	switch fieldScalarKind(field) {
 	case reflect.Uint64:
 		values := make([]uint64, count)
 		for index := range count {
-			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder)).(uint64)
+			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(uint64)
 		}
 		return values, nil
 	case reflect.Int64:
 		values := make([]int64, count)
 		for index := range count {
-			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder)).(int64)
+			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(int64)
 		}
 		return values, nil
 	default:
 		values := make([]float64, count)
 		for index := range count {
-			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder)).(float64)
+			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(float64)
 		}
 		return values, nil
 	}
@@ -266,14 +270,14 @@ func validateElementCount(field Field, count int) error {
 }
 
 func encodeScalar(field Field, value any, allowLabel bool) (uint64, error) {
-	if label, ok := value.(string); ok {
+	if label, ok := scalar.StringValue(value); ok {
 		if !allowLabel {
 			return 0, fmt.Errorf("choice labels are supported only for scalar fields")
 		}
-		return rawChoice(field, label)
+		return scalar.RawForLabel(field.Choices, label, field.BitLength, field.Encoding == EncodingSigned)
 	}
 	if field.Encoding == EncodingFloat || field.Encoding == EncodingDouble {
-		floating, err := numericFloat(value)
+		floating, err := scalar.NumericFloat(value)
 		if err != nil {
 			return 0, err
 		}
@@ -292,92 +296,53 @@ func encodeScalar(field Field, value any, allowLabel bool) (uint64, error) {
 	if field.Conversion != nil {
 		if field.Conversion.Scale == 1 && field.Conversion.Offset == 0 {
 			if field.Encoding == EncodingSigned {
-				integer, err := exactSigned(value)
+				integer, err := scalar.ExactSigned(value)
 				if err != nil {
 					return 0, err
 				}
-				return encodeSigned(field.BitLength, integer)
+				return scalar.EncodeSigned(field.BitLength, integer)
 			}
-			integer, err := exactUnsigned(value)
+			integer, err := scalar.ExactUnsigned(value)
 			if err != nil {
 				return 0, err
 			}
-			return encodeUnsigned(field.BitLength, integer)
+			return scalar.EncodeUnsigned(field.BitLength, integer)
 		}
-		physical, err := numericFloat(value)
+		physical, err := scalar.NumericFloat(value)
 		if err != nil {
 			return 0, err
 		}
-		if math.IsNaN(physical) || math.IsInf(physical, 0) {
-			return 0, fmt.Errorf("physical value must be a finite number")
-		}
-		raw := (physical - field.Conversion.Offset) / field.Conversion.Scale
-		rounded := math.Round(raw)
-		reconstructed := rounded*field.Conversion.Scale + field.Conversion.Offset
-		if math.IsNaN(raw) || math.IsInf(raw, 0) || !sameRepresentableFloat(physical, reconstructed) {
-			return 0, fmt.Errorf("physical value %v does not map to an integer raw value", physical)
-		}
-		if math.Abs(rounded) > 1<<53 {
-			return 0, fmt.Errorf("raw value %v cannot be represented exactly during linear conversion", rounded)
-		}
-		if field.Encoding == EncodingSigned {
-			if rounded < -math.Exp2(63) || rounded >= math.Exp2(63) {
-				return 0, fmt.Errorf("raw value %v exceeds int64", rounded)
-			}
-			return encodeSigned(field.BitLength, int64(rounded))
-		}
-		if rounded < 0 || rounded >= math.Exp2(64) {
-			return 0, fmt.Errorf("raw value %v exceeds uint64", rounded)
-		}
-		return encodeUnsigned(field.BitLength, uint64(rounded))
+		return scalar.LinearRaw(field.BitLength, field.Encoding == EncodingSigned, physical, field.Conversion.Scale, field.Conversion.Offset)
 	}
 	if field.Encoding == EncodingSigned {
-		integer, err := exactSigned(value)
+		integer, err := scalar.ExactSigned(value)
 		if err != nil {
 			return 0, err
 		}
-		return encodeSigned(field.BitLength, integer)
+		return scalar.EncodeSigned(field.BitLength, integer)
 	}
-	integer, err := exactUnsigned(value)
+	integer, err := scalar.ExactUnsigned(value)
 	if err != nil {
 		return 0, err
 	}
-	return encodeUnsigned(field.BitLength, integer)
+	return scalar.EncodeUnsigned(field.BitLength, integer)
 }
 
-func sameRepresentableFloat(left, right float64) bool {
-	if left == right {
-		return true
-	}
-	leftULP := math.Abs(math.Nextafter(left, math.Inf(1)) - left)
-	rightULP := math.Abs(math.Nextafter(right, math.Inf(1)) - right)
-	return math.Abs(left-right) <= max(leftULP, rightULP)
-}
-
-func decodeScalar(field Field, raw uint64) any {
+// decodeScalar decodes one raw element. Labels mirror encodeScalar: only a
+// scalar field decodes to its choice label, so array elements keep the numeric
+// type their slice declares.
+func decodeScalar(field Field, raw uint64, allowLabel bool) any {
 	if field.Encoding == EncodingFloat {
 		return float64(math.Float32frombits(uint32(raw)))
 	}
 	if field.Encoding == EncodingDouble {
 		return math.Float64frombits(raw)
 	}
-	if field.Encoding == EncodingSigned {
-		value := decodeSigned(field.BitLength, raw)
-		if field.Conversion != nil {
-			if field.Conversion.Scale == 1 && field.Conversion.Offset == 0 {
-				return value
-			}
-			return float64(value)*field.Conversion.Scale + field.Conversion.Offset
-		}
-		return value
-	}
+	scale, offset := 1.0, 0.0
 	if field.Conversion != nil {
-		if field.Conversion.Scale == 1 && field.Conversion.Offset == 0 {
-			return raw
-		}
-		return float64(raw)*field.Conversion.Scale + field.Conversion.Offset
+		scale, offset = field.Conversion.Scale, field.Conversion.Offset
 	}
-	return raw
+	return scalar.DecodeLinear(field.BitLength, field.Encoding == EncodingSigned, raw, scale, offset, field.Choices, allowLabel)
 }
 
 func fieldScalarKind(field Field) reflect.Kind {
@@ -391,31 +356,6 @@ func fieldScalarKind(field Field) reflect.Kind {
 		return reflect.Int64
 	}
 	return reflect.Uint64
-}
-
-func rawChoice(field Field, label string) (uint64, error) {
-	found := false
-	var value int64
-	for _, choice := range field.Choices {
-		if choice.Label != label {
-			continue
-		}
-		if found && value != choice.Value {
-			return 0, fmt.Errorf("choice label %q is ambiguous", label)
-		}
-		found = true
-		value = choice.Value
-	}
-	if !found {
-		return 0, fmt.Errorf("unknown choice label %q", label)
-	}
-	if field.Encoding == EncodingSigned {
-		return encodeSigned(field.BitLength, value)
-	}
-	if value < 0 {
-		return 0, fmt.Errorf("negative choice %d for unsigned field", value)
-	}
-	return encodeUnsigned(field.BitLength, uint64(value))
 }
 
 func writeRaw(destination []byte, raw uint64, order ByteOrder) {
@@ -437,110 +377,4 @@ func readRaw(source []byte, order ByteOrder) uint64 {
 	}
 	copy(bytes[len(bytes)-len(source):], source)
 	return binary.BigEndian.Uint64(bytes[:])
-}
-
-func encodeSigned(bits uint32, value int64) (uint64, error) {
-	if bits == 64 {
-		return uint64(value), nil
-	}
-	minimum := -(int64(1) << (bits - 1))
-	maximum := (int64(1) << (bits - 1)) - 1
-	if value < minimum || value > maximum {
-		return 0, fmt.Errorf("signed value %d does not fit %d bits", value, bits)
-	}
-	return uint64(value) & (uint64(1)<<bits - 1), nil
-}
-
-func encodeUnsigned(bits uint32, value uint64) (uint64, error) {
-	if bits < 64 && value >= uint64(1)<<bits {
-		return 0, fmt.Errorf("unsigned value %d does not fit %d bits", value, bits)
-	}
-	return value, nil
-}
-
-func decodeSigned(bits uint32, raw uint64) int64 {
-	if bits == 64 {
-		return int64(raw)
-	}
-	mask := uint64(1)<<bits - 1
-	raw &= mask
-	if raw&(uint64(1)<<(bits-1)) != 0 {
-		raw |= ^mask
-	}
-	return int64(raw)
-}
-
-func exactSigned(value any) (int64, error) {
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return reflected.Int(), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if reflected.Uint() > math.MaxInt64 {
-			return 0, fmt.Errorf("unsigned value %d exceeds int64", reflected.Uint())
-		}
-		return int64(reflected.Uint()), nil
-	case reflect.Float32, reflect.Float64:
-		floating := reflected.Float()
-		if math.IsNaN(floating) || math.IsInf(floating, 0) || floating != math.Trunc(floating) || floating < -math.Exp2(63) || floating >= math.Exp2(63) {
-			return 0, fmt.Errorf("value %v is not an exact int64", floating)
-		}
-		return int64(floating), nil
-	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
-	}
-}
-
-func exactUnsigned(value any) (uint64, error) {
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if reflected.Int() < 0 {
-			return 0, fmt.Errorf("negative value %d for unsigned field", reflected.Int())
-		}
-		return uint64(reflected.Int()), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return reflected.Uint(), nil
-	case reflect.Float32, reflect.Float64:
-		floating := reflected.Float()
-		if math.IsNaN(floating) || math.IsInf(floating, 0) || floating != math.Trunc(floating) || floating < 0 || floating >= math.Exp2(64) {
-			return 0, fmt.Errorf("value %v is not an exact uint64", floating)
-		}
-		return uint64(floating), nil
-	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
-	}
-}
-
-func numericFloat(value any) (float64, error) {
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		integer := reflected.Int()
-		floating := float64(integer)
-		if floating >= math.Exp2(63) || int64(floating) != integer {
-			return 0, fmt.Errorf("integer value %d cannot be represented exactly as float64", integer)
-		}
-		return floating, nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		integer := reflected.Uint()
-		floating := float64(integer)
-		if floating >= math.Exp2(64) || uint64(floating) != integer {
-			return 0, fmt.Errorf("integer value %d cannot be represented exactly as float64", integer)
-		}
-		return floating, nil
-	case reflect.Float32, reflect.Float64:
-		return reflected.Float(), nil
-	default:
-		return 0, fmt.Errorf("value has type %T, want a number", value)
-	}
 }

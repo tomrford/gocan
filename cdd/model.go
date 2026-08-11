@@ -2,6 +2,8 @@
 // a resolved data-identifier catalog and encodes or decodes DID data records.
 package cdd
 
+import "github.com/tomrford/gocan/internal/scalar"
+
 // Database is the resolved catalog from the first ECU and its first variant in
 // a CDD document. DIDs remain in source order.
 type Database struct {
@@ -51,7 +53,8 @@ type Record struct {
 	codec *recordCodec
 }
 
-// Values maps DID field names to their physical values.
+// Values maps DID field names to their physical values. Encoding accepts Go
+// numeric values, strings for ASCII fields, and choice labels.
 type Values map[string]any
 
 // ByteOrder describes the byte order of one coded field.
@@ -83,11 +86,10 @@ type LinearConversion struct {
 	Offset float64
 }
 
-// Choice assigns a label to one exact coded integer value.
-type Choice struct {
-	Value int64
-	Label string
-}
+// Choice assigns a label to one exact coded integer value. It shares its
+// identity with the DBC value-description type, so label metadata moves
+// between the two catalogs without conversion.
+type Choice = scalar.Choice
 
 // Field describes one fixed-size coded field. BitOffset is a linear offset
 // from the start of the DID data record; it does not use DBC bit numbering.
