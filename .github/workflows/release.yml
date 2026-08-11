@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(
+            "$GITHUB_REF_NAME"
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --generate-notes
+          )
+          version="${GITHUB_REF_NAME%%+*}"
+          if [[ "$version" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"
