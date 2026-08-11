@@ -28,7 +28,7 @@ func benchVectorToPCAN(b *testing.B, frameID uint32) (*gocan.Capture, gocan.Bus,
 	}
 	b.Cleanup(func() { _ = sender.Close() })
 	receiver, err := pcan.Open(ctx, capture, pcan.Config{
-		ID: 2, Name: "bench-pcan-rx", Channel: pcanChannel, Bitrate: pcan.Bitrate500K,
+		ID: 2, Name: "bench-pcan-rx", Channel: pcanChannel, Bitrate: 500_000,
 	})
 	if err != nil {
 		b.Fatalf("Open PCAN receiver: %v", err)

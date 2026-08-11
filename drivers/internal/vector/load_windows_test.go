@@ -32,7 +32,7 @@ func TestVectorTransmitQueueFull(t *testing.T) {
 		},
 		openPeer: func(capture *gocan.Capture) (gocan.Bus, error) {
 			return pcan.Open(context.Background(), capture, pcan.Config{
-				ID: 1, Name: "pcan-peer", Channel: pcanChannel, Bitrate: pcan.Bitrate500K,
+				ID: 1, Name: "pcan-peer", Channel: pcanChannel, Bitrate: 500_000,
 			})
 		},
 		frame: frame,
@@ -135,7 +135,7 @@ func TestVectorThreeAdapterLoad(t *testing.T) {
 		ID:      1,
 		Name:    "pcan",
 		Channel: pcanChannel,
-		Bitrate: pcan.Bitrate500K,
+		Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open PCAN: %v", err)
@@ -197,14 +197,14 @@ func TestTwoPCANVectorLoad(t *testing.T) {
 
 	capture := gocan.NewCapture()
 	pcanA, err := pcan.Open(context.Background(), capture, pcan.Config{
-		ID: 1, Name: "pcan-a", Channel: pcanAChannel, Bitrate: pcan.Bitrate500K,
+		ID: 1, Name: "pcan-a", Channel: pcanAChannel, Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open first PCAN: %v", err)
 	}
 	t.Cleanup(func() { _ = pcanA.Close() })
 	pcanB, err := pcan.Open(context.Background(), capture, pcan.Config{
-		ID: 2, Name: "pcan-b", Channel: pcanBChannel, Bitrate: pcan.Bitrate500K,
+		ID: 2, Name: "pcan-b", Channel: pcanBChannel, Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open second PCAN: %v", err)

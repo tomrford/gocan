@@ -74,6 +74,15 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	fd := config.FDBitrate != ""
+	var bitrateCode uint16
+	if !fd {
+		code, ok := classicalBitrates[config.Bitrate]
+		if !ok {
+			return nil, fmt.Errorf("PCAN classical bitrate %d is not a PCAN-Basic predefined rate", config.Bitrate)
+		}
+		bitrateCode = code
+	}
 	api, err := loadPCANAPI()
 	if err != nil {
 		return nil, err
@@ -91,7 +100,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		}
 	}()
 
-	fd := config.FDBitrate != ""
 	var (
 		result uintptr
 		status pcanStatus
@@ -106,7 +114,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	} else {
 		result, _, _ = api.initialize.Call(
 			uintptr(config.Channel),
-			uintptr(config.Bitrate),
+			uintptr(bitrateCode),
 			0,
 			0,
 			0,

@@ -3,6 +3,7 @@ package pcan
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,21 @@ import (
 
 	"github.com/tomrford/gocan"
 )
+
+// TestClassicalBitrateTable checks every predefined code against the SJA1000
+// timing it encodes: the bit rate is 8 MHz / ((BRP+1) * (3 + TSEG1 + TSEG2)),
+// and the table key is that rate rounded to the nearest bit per second.
+func TestClassicalBitrateTable(t *testing.T) {
+	for bitsPerSecond, code := range classicalBitrates {
+		brp := (uint32(code>>8) & 0x3f) + 1
+		tseg1 := uint32(code) & 0x0f
+		tseg2 := uint32(code>>4) & 0x07
+		encoded := 8_000_000 / float64(brp*(3+tseg1+tseg2))
+		if got := uint32(math.Round(encoded)); got != bitsPerSecond {
+			t.Errorf("BTR0BTR1 %#04x encodes %d bit/s but is keyed as %d", code, got, bitsPerSecond)
+		}
+	}
+}
 
 func TestNativeLayouts(t *testing.T) {
 	if got := unsafe.Sizeof(pcanMsg{}); got != 16 {

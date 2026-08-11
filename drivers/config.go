@@ -15,7 +15,9 @@ type Config struct {
 	ID gocan.BusID
 	// Name is the human-readable bus name.
 	Name string
-	// Bitrate selects programmable classical CAN in bits per second.
+	// Bitrate selects programmable classical CAN in bits per second. PCAN
+	// accepts only the PCAN-Basic predefined rates, with PEAK's fractional
+	// rates rounded to the nearest bit per second (for example 83_333).
 	Bitrate uint32
 	// FDTiming selects programmable CAN FD with exact bit timing.
 	FDTiming FDTiming

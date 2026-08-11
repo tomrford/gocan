@@ -21,13 +21,27 @@ const (
 	ChannelUSB2 Channel = 0x52
 )
 
-// Bitrate is a PCAN-Basic classical CAN BTR0BTR1 value.
-type Bitrate uint16
-
-const (
-	// Bitrate500K selects 500 kbit/s classical CAN.
-	Bitrate500K Bitrate = 0x001c
-)
+// classicalBitrates maps a classical bitrate in bits per second to the
+// PCAN-Basic predefined BTR0BTR1 code (PCANBasic.h PCAN_BAUD_*). BTR0BTR1
+// divides the SJA1000's 8 MHz quantum clock, so four PEAK rates are not
+// whole numbers; they are keyed by the exact rate rounded to the nearest
+// bit per second (for example 8 MHz / 84 becomes 95_238).
+var classicalBitrates = map[uint32]uint16{
+	5_000:     0x7f7f,
+	10_000:    0x672f,
+	20_000:    0x532f,
+	33_333:    0x8b2f,
+	47_619:    0x1414,
+	50_000:    0x472f,
+	83_333:    0x852b,
+	95_238:    0xc34e,
+	100_000:   0x432f,
+	125_000:   0x031c,
+	250_000:   0x011c,
+	500_000:   0x001c,
+	800_000:   0x0016,
+	1_000_000: 0x0014,
+}
 
 // Config selects and configures one PCAN-Basic channel. Package drivers
 // constructs and validates it.
@@ -38,8 +52,9 @@ type Config struct {
 	Name string
 	// Channel is the PCAN-Basic hardware channel handle.
 	Channel Channel
-	// Bitrate selects classical CAN. Set exactly one of Bitrate and FDBitrate.
-	Bitrate Bitrate
+	// Bitrate selects one of the PCAN-Basic predefined classical rates in
+	// bits per second. Set exactly one of Bitrate and FDBitrate.
+	Bitrate uint32
 	// FDBitrate is the vendor-native CAN FD timing string.
 	FDBitrate string
 }

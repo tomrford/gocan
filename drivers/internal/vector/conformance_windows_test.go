@@ -20,7 +20,7 @@ func TestVectorConformance(t *testing.T) {
 			ID:      1,
 			Name:    "pcan-peer",
 			Channel: pcanChannel,
-			Bitrate: pcan.Bitrate500K,
+			Bitrate: 500_000,
 		})
 		if err != nil {
 			t.Fatalf("Open PCAN peer: %v", err)
