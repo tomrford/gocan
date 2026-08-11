@@ -463,11 +463,10 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		if signal.ValueType != ValueTypeInteger {
 			return 0, fmt.Errorf("value descriptions require an integer signal")
 		}
-		raw, err := scalar.RawForLabel(signal.Values, label, signal.BitLength, signal.Signed)
-		if err != nil {
-			return 0, err
-		}
-		return validateIntegerRaw(signal, raw)
+		// A value description is an exact raw value sanctioned by the catalog,
+		// so it bypasses the physical range like the not-available idiom
+		// requires. Decode returns the same label back.
+		return scalar.RawForLabel(signal.Values, label, signal.BitLength, signal.Signed)
 	}
 	if boolean, ok := boolValue(value); ok {
 		if signal.ValueType != ValueTypeInteger || signal.BitLength != 1 || signal.Factor != 1 || signal.Offset != 0 {
@@ -532,7 +531,13 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 	if err := validatePhysical(signal, physical); err != nil {
 		return 0, err
 	}
-	return scalar.LinearRaw(signal.BitLength, signal.Signed, physical, signal.Factor, signal.Offset)
+	raw, err := scalar.LinearRaw(signal.BitLength, signal.Signed, physical, signal.Factor, signal.Offset)
+	if err != nil {
+		return 0, err
+	}
+	// Quantization can move a boundary value across the declared range, so the
+	// value that reaches the wire is validated again.
+	return validateIntegerRaw(signal, raw)
 }
 
 func decodeSignalValue(signal Signal, raw uint64) any {

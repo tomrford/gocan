@@ -49,6 +49,13 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	assertDecoded(t, command, frame, "Temperature", 50.0)
 
+	// A value description encodes even when its raw value lies outside the
+	// physical range, matching the not-available idiom.
+	if err := command.Patch(&frame, Values{"SignedCounter": "SNA"}); err != nil {
+		t.Fatalf("Patch SNA: %v", err)
+	}
+	assertDecoded(t, command, frame, "SignedCounter", "SNA")
+
 	if _, err := command.Encode(Values{"Enable": true}); err == nil || !strings.Contains(err.Error(), "requires signal") {
 		t.Fatalf("incomplete Encode error = %v", err)
 	}

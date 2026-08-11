@@ -15,7 +15,7 @@ BO_ 291 Command: 8 ECU
  SG_ Mode : 1|3@1+ (1,0) [0|7] "" ECU
  SG_ Temperature : 8|16@1- (0.1,-40) [-40|215.5] "degC" ECU
  SG_ BigEndian : 31|16@0+ (1,0) [0|65535] "" ECU
- SG_ SignedCounter : 40|8@1- (1,0) [-128|127] "" ECU
+ SG_ SignedCounter : 40|8@1- (1,0) [-100|100] "" ECU
 
 BO_ 292 FloatStatus: 4 ECU
  SG_ Ratio : 0|32@1+ (1,0) [0|1] "" ECU
@@ -28,6 +28,7 @@ BO_ 2149235935 WideData: 16 ECU
  SG_ Payload : 0|128@1+ (1,0) [0|0] "" ECU
 
 VAL_ 291 Mode 0 "Off" 1 "Torque";
+VAL_ 291 SignedCounter -128 "SNA";
 SIG_VALTYPE_ 292 Ratio : 1;
 
 BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
