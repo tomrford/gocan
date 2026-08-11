@@ -26,26 +26,14 @@ const (
 // The zero Capture is not usable; create captures with NewCapture.
 //
 // Capture is safe for concurrent append and read operations. Frame payloads
-// are stored compactly in chunk-owned buffers; values returned to callers own
-// their payload storage.
+// returned to callers own their payload storage. Each read observes the
+// capture as it was at call time; later appends are not included. A read that
+// starts before Clear continues against the records it observed.
 //
 // Capture is a low-level building block with no retention policy: it retains
 // every record until Clear is called and memory grows without bound. Layers
 // that need bounded retention, rotation, or persistence must provide it on
 // top of Capture.
-//
-// Appends serialise on one mutex. Reads hold it only long enough to capture
-// a few slice headers and index entries, then copy frames without blocking
-// appends: records are write-once, sealed chunks are immutable, and Clear
-// replaces storage instead of resetting it, so a reader's captured state
-// stays valid however far acquisition has moved on. Each read observes the
-// capture as it was at call time; records appended afterwards are not
-// included.
-//
-// Benchmarked 2026-07 (capture_bench_test.go): contended appends cost ~155 ns
-// on Apple silicon and ~320 ns on a Raspberry Pi 5; with aggressive consumers
-// attached the Pi's worst case is ~2 µs per append, still ~5x the ~100k
-// appends/s of a saturated eight-bus CAN FD rig.
 type Capture struct {
 	mu sync.RWMutex
 
@@ -1027,13 +1015,8 @@ func (capture *Capture) Len() int {
 	return capture.length
 }
 
-// Clear discards all retained records and indexes.
-//
-// Clear replaces the active storage rather than resetting it: the prepared
-// next chunk (or a fresh allocation) becomes the new active chunk and every
-// previous chunk is released. Readers that started before Clear finish
-// against the replaced storage, which becomes eligible for garbage collection
-// once they are done.
+// Clear discards all retained records and indexes. Readers already in progress
+// finish against their existing snapshot.
 func (capture *Capture) Clear() {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
