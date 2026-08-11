@@ -31,6 +31,15 @@ Physical channels are discovered and opened through `drivers`. SocketCAN uses
 link timing configured by Linux. PCAN and Vector accept shared exact CAN FD bit
 timing through the same public configuration.
 
+## Driver restrictions
+
+The PCAN classical API cannot transmit classical DLC values 9–15. PCAN-Basic
+cannot select ISO or non-ISO CAN FD framing, so the adapter's stored mode must
+match its peers.
+
+Vector CAN FD uses an 80 MHz clock and ISO framing. Transmitting the error-state
+indicator is not supported.
+
 ## Development
 
 The module requires Go 1.25 or newer:
