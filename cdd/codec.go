@@ -173,7 +173,7 @@ func (record *Record) validatePayloadLength(length int) error {
 
 func encodeField(field Field, value any) ([]byte, error) {
 	if field.Encoding == EncodingASCII {
-		text, ok := value.(string)
+		text, ok := scalar.StringValue(value)
 		if !ok {
 			return nil, fmt.Errorf("ASCII value has type %T, want string", value)
 		}
@@ -270,7 +270,7 @@ func validateElementCount(field Field, count int) error {
 }
 
 func encodeScalar(field Field, value any, allowLabel bool) (uint64, error) {
-	if label, ok := value.(string); ok {
+	if label, ok := scalar.StringValue(value); ok {
 		if !allowLabel {
 			return 0, fmt.Errorf("choice labels are supported only for scalar fields")
 		}
@@ -312,9 +312,6 @@ func encodeScalar(field Field, value any, allowLabel bool) (uint64, error) {
 		if err != nil {
 			return 0, err
 		}
-		if math.IsNaN(physical) || math.IsInf(physical, 0) {
-			return 0, fmt.Errorf("physical value must be a finite number")
-		}
 		return scalar.LinearRaw(field.BitLength, field.Encoding == EncodingSigned, physical, field.Conversion.Scale, field.Conversion.Offset)
 	}
 	if field.Encoding == EncodingSigned {
@@ -341,33 +338,11 @@ func decodeScalar(field Field, raw uint64, allowLabel bool) any {
 	if field.Encoding == EncodingDouble {
 		return math.Float64frombits(raw)
 	}
-	if field.Encoding == EncodingSigned {
-		value := scalar.DecodeSigned(field.BitLength, raw)
-		if allowLabel {
-			if label, ok := scalar.Label(field.Choices, value); ok {
-				return label
-			}
-		}
-		if field.Conversion != nil {
-			if field.Conversion.Scale == 1 && field.Conversion.Offset == 0 {
-				return value
-			}
-			return float64(value)*field.Conversion.Scale + field.Conversion.Offset
-		}
-		return value
-	}
-	if allowLabel && raw <= math.MaxInt64 {
-		if label, ok := scalar.Label(field.Choices, int64(raw)); ok {
-			return label
-		}
-	}
+	scale, offset := 1.0, 0.0
 	if field.Conversion != nil {
-		if field.Conversion.Scale == 1 && field.Conversion.Offset == 0 {
-			return raw
-		}
-		return float64(raw)*field.Conversion.Scale + field.Conversion.Offset
+		scale, offset = field.Conversion.Scale, field.Conversion.Offset
 	}
-	return raw
+	return scalar.DecodeLinear(field.BitLength, field.Encoding == EncodingSigned, raw, scale, offset, field.Choices, allowLabel)
 }
 
 func fieldScalarKind(field Field) reflect.Kind {

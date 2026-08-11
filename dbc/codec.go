@@ -207,8 +207,9 @@ func compileMessageCodec(message *Message) *messageCodec {
 		}
 		codec.signalsByName[signal.Name] = index
 		codec.selectors[index] = signal.IsMultiplexer
-		if signal.Factor == 0 && codec.writeErr == nil {
-			codec.writeErr = fmt.Errorf("signal %q has a zero factor", signal.Name)
+		if codec.writeErr == nil && (signal.Factor == 0 || math.IsNaN(signal.Factor) || math.IsInf(signal.Factor, 0) ||
+			math.IsNaN(signal.Offset) || math.IsInf(signal.Offset, 0)) {
+			codec.writeErr = fmt.Errorf("signal %q must have a finite nonzero factor and finite offset", signal.Name)
 		}
 		if signal.Minimum > signal.Maximum && codec.writeErr == nil {
 			codec.writeErr = fmt.Errorf("signal %q has minimum greater than maximum", signal.Name)
@@ -459,7 +460,7 @@ func legalFDLength(length int) int {
 }
 
 func encodeSignalValue(signal Signal, value any) (uint64, error) {
-	if label, ok := stringValue(value); ok {
+	if label, ok := scalar.StringValue(value); ok {
 		if signal.ValueType != ValueTypeInteger {
 			return 0, fmt.Errorf("value descriptions require an integer signal")
 		}
@@ -547,25 +548,7 @@ func decodeSignalValue(signal Signal, raw uint64) any {
 	if signal.ValueType == ValueTypeFloat64 {
 		return math.Float64frombits(raw)*signal.Factor + signal.Offset
 	}
-	if signal.Signed {
-		value := scalar.DecodeSigned(signal.BitLength, raw)
-		if label, ok := scalar.Label(signal.Values, value); ok {
-			return label
-		}
-		if signal.Factor == 1 && signal.Offset == 0 {
-			return value
-		}
-		return float64(value)*signal.Factor + signal.Offset
-	}
-	if raw <= math.MaxInt64 {
-		if label, ok := scalar.Label(signal.Values, int64(raw)); ok {
-			return label
-		}
-	}
-	if signal.Factor == 1 && signal.Offset == 0 {
-		return raw
-	}
-	return float64(raw)*signal.Factor + signal.Offset
+	return scalar.DecodeLinear(signal.BitLength, signal.Signed, raw, signal.Factor, signal.Offset, signal.Values, true)
 }
 
 func validateIntegerRaw(signal Signal, raw uint64) (uint64, error) {
@@ -591,14 +574,6 @@ func validatePhysical(signal Signal, value float64) error {
 		return fmt.Errorf("physical value %v is outside [%v, %v]", value, signal.Minimum, signal.Maximum)
 	}
 	return nil
-}
-
-func stringValue(value any) (string, bool) {
-	reflected := reflect.ValueOf(value)
-	if reflected.IsValid() && reflected.Kind() == reflect.String {
-		return reflected.String(), true
-	}
-	return "", false
 }
 
 func boolValue(value any) (bool, bool) {

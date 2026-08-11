@@ -53,7 +53,8 @@ type Record struct {
 	codec *recordCodec
 }
 
-// Values maps DID field names to their physical values.
+// Values maps DID field names to their physical values. Encoding accepts Go
+// numeric values, strings for ASCII fields, and choice labels.
 type Values map[string]any
 
 // ByteOrder describes the byte order of one coded field.

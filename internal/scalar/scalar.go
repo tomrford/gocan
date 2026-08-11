@@ -16,6 +16,45 @@ type Choice struct {
 	Label string
 }
 
+// StringValue matches values of string kind, so a named string type carries a
+// label or text the same way a plain string does. It mirrors how the numeric
+// conversions accept any value of the right kind.
+func StringValue(value any) (string, bool) {
+	reflected := reflect.ValueOf(value)
+	if reflected.IsValid() && reflected.Kind() == reflect.String {
+		return reflected.String(), true
+	}
+	return "", false
+}
+
+// DecodeLinear decodes one raw integer element to its physical value under
+// physical = raw*scale + offset, or to its label when allowLabel is set and
+// the raw value carries one. A scale of 1 with offset 0 preserves the integer
+// type instead of producing a float64.
+func DecodeLinear(bits uint32, signed bool, raw uint64, scale, offset float64, choices []Choice, allowLabel bool) any {
+	if signed {
+		value := DecodeSigned(bits, raw)
+		if allowLabel {
+			if label, ok := Label(choices, value); ok {
+				return label
+			}
+		}
+		if scale == 1 && offset == 0 {
+			return value
+		}
+		return float64(value)*scale + offset
+	}
+	if allowLabel && raw <= math.MaxInt64 {
+		if label, ok := Label(choices, int64(raw)); ok {
+			return label
+		}
+	}
+	if scale == 1 && offset == 0 {
+		return raw
+	}
+	return float64(raw)*scale + offset
+}
+
 // Label returns the label of the first choice with value.
 func Label(choices []Choice, value int64) (string, bool) {
 	for _, choice := range choices {
