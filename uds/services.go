@@ -46,7 +46,9 @@ type SessionControlResponse struct {
 }
 
 // ApplySessionTiming uses timing for subsequent exchanges. Callers can clamp
-// values or add transport margin before applying server timing.
+// values or add transport margin before applying server timing. It must not be
+// called concurrently with Do; Send never reads the timeouts, so a background
+// keep-alive using SendTesterPresent remains safe.
 func (client *Client) ApplySessionTiming(timing SessionTiming) error {
 	if timing.P2ServerMax <= 0 {
 		return fmt.Errorf("UDS P2 server maximum must be positive")
@@ -54,10 +56,8 @@ func (client *Client) ApplySessionTiming(timing SessionTiming) error {
 	if timing.P2StarServerMax <= 0 {
 		return fmt.Errorf("UDS P2* server maximum must be positive")
 	}
-	client.timingMu.Lock()
 	client.p2Timeout = timing.P2ServerMax
 	client.p2StarTimeout = timing.P2StarServerMax
-	client.timingMu.Unlock()
 	return nil
 }
 
