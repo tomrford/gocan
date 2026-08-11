@@ -20,10 +20,10 @@ func TestParseVectorDocument(t *testing.T) {
 	}
 
 	did := database.DIDs[0]
-	if did.Name != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Read == nil || did.Write != nil || did.Read.Length() != 2 {
+	if did.Name != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Read == nil || did.Write != nil || did.Read.Length != 2 {
 		t.Fatalf("unexpected DID: %#v", did)
 	}
-	fields := did.Read.Fields()
+	fields := did.Read.Fields
 	if len(fields) != 2 || fields[0].BitOffset != 0 || fields[1].BitOffset != 8 {
 		t.Fatalf("unexpected fields: %#v", fields)
 	}
@@ -43,10 +43,10 @@ func TestParseRecordLayouts(t *testing.T) {
 	}
 
 	thermal, ok := database.DIDByIdentifier(0xf190)
-	if !ok || thermal.Read == nil || thermal.Write != nil || thermal.Read.Length() != 5 {
+	if !ok || thermal.Read == nil || thermal.Write != nil || thermal.Read.Length != 5 {
 		t.Fatalf("unexpected thermal record: %#v", thermal)
 	}
-	thermalFields := thermal.Read.Fields()
+	thermalFields := thermal.Read.Fields
 	if len(thermalFields) != 3 || thermalFields[0].BitOffset != 0 || thermalFields[1].BitOffset != 16 || thermalFields[2].BitOffset != 32 {
 		t.Fatalf("unexpected thermal field offsets: %#v", thermalFields)
 	}
@@ -56,19 +56,19 @@ func TestParseRecordLayouts(t *testing.T) {
 	}
 
 	nameplate, ok := database.DIDByIdentifier(0xf191)
-	if !ok || nameplate.Read == nil || nameplate.Read.Length() != 28 {
+	if !ok || nameplate.Read == nil || nameplate.Read.Length != 28 {
 		t.Fatalf("unexpected nameplate record: %#v", nameplate)
 	}
-	nameplateFields := nameplate.Read.Fields()
+	nameplateFields := nameplate.Read.Fields
 	if len(nameplateFields) != 4 || nameplateFields[0].Count != 12 || nameplateFields[1].BitOffset != 96 || nameplateFields[1].Count != 4 || nameplateFields[2].Encoding != cdd.EncodingFloat {
 		t.Fatalf("unexpected nameplate fields: %#v", nameplateFields)
 	}
 
 	buffer, ok := database.DIDByIdentifier(0xf192)
-	if !ok || buffer.Read == nil || buffer.Read.Length() != 3 || buffer.Read.MaxLength() != 66 {
+	if !ok || buffer.Read == nil || buffer.Read.Length != 3 || buffer.Read.MaxLength != 66 {
 		t.Fatalf("unexpected variable record: %#v", buffer)
 	}
-	bufferFields := buffer.Read.Fields()
+	bufferFields := buffer.Read.Fields
 	if len(bufferFields) != 2 {
 		t.Fatalf("unexpected variable fields: %#v", bufferFields)
 	}

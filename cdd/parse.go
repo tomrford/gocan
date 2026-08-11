@@ -269,10 +269,10 @@ func (resolver *resolver) resolveDIDRecord(name string, instance, classTemplate 
 			return nil, err
 		}
 		record := &Record{
-			length:    uint32((uint64(bitLength) + 7) / 8),
-			maxLength: uint32((uint64(maxBitLength) + 7) / 8),
-			fields:    fields,
-			name:      name,
+			Name:      name,
+			Length:    uint32((uint64(bitLength) + 7) / 8),
+			MaxLength: uint32((uint64(maxBitLength) + 7) / 8),
+			Fields:    fields,
 		}
 		record.codec = compileRecordCodec(record)
 		return record, nil

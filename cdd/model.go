@@ -30,52 +30,25 @@ type DID struct {
 	Write      *Record
 }
 
-// Record describes the payload layout for one DID operation.
+// Record describes the payload layout for one DID operation. Fields are in
+// layout order.
 //
-// Length is the data-record size in bytes. MaxLength exceeds it only when the
-// last field is variable length, in which case Length is the smallest record
-// and MaxLength the largest.
+// Length is the smallest data-record size in bytes. MaxLength exceeds it only
+// when the last field is variable length, in which case MaxLength is the
+// largest record.
 //
 // Parse retains fields outside the current codec subset. Their metadata remains
 // available, and Encode or Decode reports the unsupported codec capability.
+//
+// Treat a Record and its Fields as read-only: Encode and Decode trust the
+// layout that Parse resolved, and modifications are not revalidated.
 type Record struct {
-	name      string
-	length    uint32
-	maxLength uint32
-	fields    []Field
-	codec     *recordCodec
-}
+	Name      string
+	Length    uint32
+	MaxLength uint32
+	Fields    []Field
 
-// Length returns the smallest data-record size in bytes.
-func (record *Record) Length() uint32 {
-	return record.length
-}
-
-// MaxLength returns the largest data-record size in bytes.
-func (record *Record) MaxLength() uint32 {
-	return record.maxLength
-}
-
-// Fields returns an independent copy of the record fields in layout order.
-func (record *Record) Fields() []Field {
-	fields := make([]Field, len(record.fields))
-	for index, field := range record.fields {
-		fields[index] = cloneField(field)
-	}
-	return fields
-}
-
-func cloneField(field Field) Field {
-	if field.Variable != nil {
-		variable := *field.Variable
-		field.Variable = &variable
-	}
-	if field.Conversion != nil {
-		conversion := *field.Conversion
-		field.Conversion = &conversion
-	}
-	field.Choices = append([]Choice(nil), field.Choices...)
-	return field
+	codec *recordCodec
 }
 
 // Values maps DID field names to their physical values.

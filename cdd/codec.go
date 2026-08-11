@@ -13,29 +13,24 @@ type recordCodec struct {
 }
 
 // Encode encodes one complete DID data record. Every field requires a value.
+// A linearly converted value must map exactly to a raw integer; off-grid
+// physical values are rejected rather than rounded.
 func (record *Record) Encode(values Values) ([]byte, error) {
 	codec, err := record.usableCodec()
 	if err != nil {
 		return nil, err
 	}
-	if len(values) != len(record.fields) {
-		for _, field := range record.fields {
-			if _, ok := values[field.Name]; !ok {
-				return nil, fmt.Errorf("CDD DID %q requires field %q", record.name, field.Name)
-			}
-		}
-		for name := range values {
-			if _, ok := codec.fieldsByName[name]; !ok {
-				return nil, fmt.Errorf("CDD DID %q has no field %q", record.name, name)
-			}
+	for name := range values {
+		if _, ok := codec.fieldsByName[name]; !ok {
+			return nil, fmt.Errorf("CDD DID %q has no field %q", record.Name, name)
 		}
 	}
 
-	payload := make([]byte, record.length)
-	for _, field := range record.fields {
+	payload := make([]byte, record.Length)
+	for _, field := range record.Fields {
 		value, ok := values[field.Name]
 		if !ok {
-			return nil, fmt.Errorf("CDD DID %q requires field %q", record.name, field.Name)
+			return nil, fmt.Errorf("CDD DID %q requires field %q", record.Name, field.Name)
 		}
 		encoded, err := encodeField(field, value)
 		if err != nil {
@@ -44,7 +39,7 @@ func (record *Record) Encode(values Values) ([]byte, error) {
 		start := int(field.BitOffset / 8)
 		end := start + len(encoded)
 		if end > len(payload) {
-			if field.Variable == nil || end > int(record.maxLength) {
+			if field.Variable == nil || end > int(record.MaxLength) {
 				return nil, fmt.Errorf("encode CDD field %q: encoded data exceeds DID length", field.Name)
 			}
 			payload = append(payload, make([]byte, end-len(payload))...)
@@ -62,8 +57,8 @@ func (record *Record) Decode(payload []byte) (Values, error) {
 	if err := record.validatePayloadLength(len(payload)); err != nil {
 		return nil, err
 	}
-	values := make(Values, len(record.fields))
-	for _, field := range record.fields {
+	values := make(Values, len(record.Fields))
+	for _, field := range record.Fields {
 		start := int(field.BitOffset / 8)
 		end := start + int(field.BitSize()/8)
 		if field.Variable != nil {
@@ -83,17 +78,17 @@ func (record *Record) usableCodec() (*recordCodec, error) {
 		return nil, fmt.Errorf("CDD record is nil")
 	}
 	if record.codec == nil {
-		return nil, fmt.Errorf("CDD DID %q record has no resolved codec; obtain records from Parse", record.name)
+		return nil, fmt.Errorf("CDD DID %q record has no resolved codec; obtain records from Parse", record.Name)
 	}
 	if record.codec.err != nil {
-		return nil, fmt.Errorf("CDD DID %q codec: %w", record.name, record.codec.err)
+		return nil, fmt.Errorf("CDD DID %q codec: %w", record.Name, record.codec.err)
 	}
 	return record.codec, nil
 }
 
 func compileRecordCodec(record *Record) *recordCodec {
-	codec := &recordCodec{fieldsByName: make(map[string]struct{}, len(record.fields))}
-	for _, field := range record.fields {
+	codec := &recordCodec{fieldsByName: make(map[string]struct{}, len(record.Fields))}
+	for _, field := range record.Fields {
 		if _, exists := codec.fieldsByName[field.Name]; exists {
 			codec.err = fmt.Errorf("field name %q is repeated", field.Name)
 			return codec
@@ -151,24 +146,23 @@ func validateFieldEncoding(field Field) error {
 }
 
 func (record *Record) validatePayloadLength(length int) error {
-	if length < int(record.length) || length > int(record.maxLength) {
-		return fmt.Errorf("CDD DID %q payload length %d is outside %d through %d", record.name, length, record.length, record.maxLength)
+	if length < int(record.Length) || length > int(record.MaxLength) {
+		return fmt.Errorf("CDD DID %q payload length %d is outside %d through %d", record.Name, length, record.Length, record.MaxLength)
 	}
-	if record.length == record.maxLength {
-		if length != int(record.length) {
-			return fmt.Errorf("CDD DID %q payload length %d, want %d", record.name, length, record.length)
-		}
+	if record.Length == record.MaxLength {
 		return nil
 	}
-	last := record.fields[len(record.fields)-1]
+	// resolveFields guarantees that the lengths differ only when the record
+	// ends in a variable-length field, so last.Variable is non-nil here.
+	last := record.Fields[len(record.Fields)-1]
 	elementBytes := int(last.BitLength / 8)
 	start := int(last.BitOffset / 8)
 	if length < start || (length-start)%elementBytes != 0 {
-		return fmt.Errorf("CDD DID %q payload length %d does not contain whole %d-byte elements for field %q", record.name, length, elementBytes, last.Name)
+		return fmt.Errorf("CDD DID %q payload length %d does not contain whole %d-byte elements for field %q", record.Name, length, elementBytes, last.Name)
 	}
 	count := (length - start) / elementBytes
 	if count < int(last.Variable.MinCount) || count > int(last.Variable.MaxCount) {
-		return fmt.Errorf("CDD DID %q field %q has %d elements, want %d through %d", record.name, last.Name, count, last.Variable.MinCount, last.Variable.MaxCount)
+		return fmt.Errorf("CDD DID %q field %q has %d elements, want %d through %d", record.Name, last.Name, count, last.Variable.MinCount, last.Variable.MaxCount)
 	}
 	return nil
 }

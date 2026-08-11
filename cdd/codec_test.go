@@ -37,14 +37,6 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if values["Heater"] != uint64(1) || values["Coolant"] != 25.0 || values["Cycles"] != uint64(7) {
 		t.Fatalf("thermal values = %#v", values)
 	}
-	fields := thermal.Read.Fields()
-	fields[0].Name = "Changed"
-	fields[0].Choices[0].Label = "Changed"
-	fields[1].Conversion.Scale = 99
-	unchanged := thermal.Read.Fields()
-	if unchanged[0].Name != "Heater" || unchanged[0].Choices[0].Label != "Off" || unchanged[1].Conversion.Scale != 0.5 {
-		t.Fatalf("record fields changed through returned metadata: %#v", unchanged)
-	}
 
 	nameplate, ok := database.DIDByName("Nameplate")
 	if !ok {
@@ -98,11 +90,6 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	}
 	if values["BlockNumber"] != uint64(0x1234) || !reflect.DeepEqual(values["Buffer"], []uint64{0xaa, 0xbb, 0xcc}) {
 		t.Fatalf("buffer values = %#v", values)
-	}
-	fields = buffer.Read.Fields()
-	fields[1].Variable.MaxCount = 1
-	if got := buffer.Read.Fields()[1].Variable.MaxCount; got != 64 {
-		t.Fatalf("record extent changed through returned metadata: %d", got)
 	}
 
 	writable, ok := database.DIDByName("WritableSettings")
