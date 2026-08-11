@@ -18,14 +18,14 @@ func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
 	}
 	capture := gocan.NewCapture()
 	a, err := Open(context.Background(), capture, Config{
-		ID: 1, Name: "pcan-classic-dlc-a", Channel: channelA, Bitrate: Bitrate500K,
+		ID: 1, Name: "pcan-classic-dlc-a", Channel: channelA, Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("open PCAN A: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Close() })
 	b, err := Open(context.Background(), capture, Config{
-		ID: 2, Name: "pcan-classic-dlc-b", Channel: channelB, Bitrate: Bitrate500K,
+		ID: 2, Name: "pcan-classic-dlc-b", Channel: channelB, Bitrate: 500_000,
 	})
 	if err != nil {
 		_ = a.Close()

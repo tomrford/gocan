@@ -49,7 +49,7 @@ func TestVectorToPCANClassicalDLCAboveEightHardware(t *testing.T) {
 		ID:      2,
 		Name:    "pcan-classic-dlc-receiver",
 		Channel: pcanChannel,
-		Bitrate: pcan.Bitrate500K,
+		Bitrate: 500_000,
 	})
 	if err != nil {
 		_ = sender.Close()

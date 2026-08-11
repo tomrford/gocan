@@ -19,11 +19,7 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 	}
 	switch channel.driver {
 	case driverPCAN:
-		native, err := nativePCANConfig(channel, config, fd)
-		if err != nil {
-			return nil, err
-		}
-		return pcan.Open(ctx, capture, native)
+		return pcan.Open(ctx, capture, nativePCANConfig(channel, config, fd))
 	case driverVector:
 		return openVector(ctx, capture, channel, config, fd)
 	default:
@@ -31,7 +27,7 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 	}
 }
 
-func nativePCANConfig(channel Channel, config Config, fd bool) (pcan.Config, error) {
+func nativePCANConfig(channel Channel, config Config, fd bool) pcan.Config {
 	native := pcan.Config{
 		ID:      config.ID,
 		Name:    config.Name,
@@ -39,13 +35,10 @@ func nativePCANConfig(channel Channel, config Config, fd bool) (pcan.Config, err
 	}
 	if fd {
 		native.FDBitrate = pcanFDBitrate(config.FDTiming)
-		return native, nil
+	} else {
+		native.Bitrate = config.Bitrate
 	}
-	if config.Bitrate != 500_000 {
-		return pcan.Config{}, fmt.Errorf("PCAN classical bitrate %d is unsupported", config.Bitrate)
-	}
-	native.Bitrate = pcan.Bitrate500K
-	return native, nil
+	return native
 }
 
 func pcanFDBitrate(timing FDTiming) string {

@@ -16,14 +16,14 @@ func TestPCANTransmitQueueFull(t *testing.T) {
 	channelB := testChannel(t, "GOCAN_PCAN_CHANNEL_B")
 	capture := gocan.NewCapture()
 	target, err := Open(context.Background(), capture, Config{
-		ID: 1, Name: "pcan-target", Channel: channelA, Bitrate: Bitrate500K,
+		ID: 1, Name: "pcan-target", Channel: channelA, Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("Open PCAN target: %v", err)
 	}
 	t.Cleanup(func() { _ = target.Close() })
 	peer, err := Open(context.Background(), capture, Config{
-		ID: 2, Name: "pcan-peer", Channel: channelB, Bitrate: Bitrate500K,
+		ID: 2, Name: "pcan-peer", Channel: channelB, Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("Open PCAN peer: %v", err)
@@ -83,7 +83,7 @@ func TestPCANClassicEvents(t *testing.T) {
 		ID:      1,
 		Name:    "pcan-event-target",
 		Channel: channelA,
-		Bitrate: Bitrate500K,
+		Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("Open PCAN target: %v", err)
@@ -128,7 +128,7 @@ func TestPCANClassicEvents(t *testing.T) {
 		ID:      2,
 		Name:    "pcan-recovery-peer",
 		Channel: channelB,
-		Bitrate: Bitrate500K,
+		Bitrate: 500_000,
 	})
 	if err != nil {
 		t.Fatalf("Open PCAN recovery peer: %v", err)

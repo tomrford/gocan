@@ -20,8 +20,8 @@ func TestPCANConformance(t *testing.T) {
 		configA := Config{ID: 1, Name: "pcan-a", Channel: channelA}
 		configB := Config{ID: 2, Name: "pcan-b", Channel: channelB}
 		if fdBitrate == "" {
-			configA.Bitrate = Bitrate500K
-			configB.Bitrate = Bitrate500K
+			configA.Bitrate = 500_000
+			configB.Bitrate = 500_000
 		} else {
 			configA.FDBitrate = fdBitrate
 			configB.FDBitrate = fdBitrate

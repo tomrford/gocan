@@ -17,12 +17,12 @@ func benchPCANBuses(b *testing.B, frameID uint32) (*gocan.Capture, gocan.Bus, go
 	ctx := context.Background()
 	capture := gocan.NewCapture()
 
-	sender, err := Open(ctx, capture, Config{ID: 1, Name: "bench-tx", Channel: channelA, Bitrate: Bitrate500K})
+	sender, err := Open(ctx, capture, Config{ID: 1, Name: "bench-tx", Channel: channelA, Bitrate: 500_000})
 	if err != nil {
 		b.Fatalf("Open sender: %v", err)
 	}
 	b.Cleanup(func() { _ = sender.Close() })
-	receiver, err := Open(ctx, capture, Config{ID: 2, Name: "bench-rx", Channel: channelB, Bitrate: Bitrate500K})
+	receiver, err := Open(ctx, capture, Config{ID: 2, Name: "bench-rx", Channel: channelB, Bitrate: 500_000})
 	if err != nil {
 		b.Fatalf("Open receiver: %v", err)
 	}

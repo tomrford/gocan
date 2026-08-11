@@ -51,7 +51,7 @@ func TestVectorClassicEvents(t *testing.T) {
 				ID:      2,
 				Name:    "pcan-recovery-peer",
 				Channel: pcanChannel,
-				Bitrate: pcan.Bitrate500K,
+				Bitrate: 500_000,
 			})
 		},
 		faultID:     0x5a1,
