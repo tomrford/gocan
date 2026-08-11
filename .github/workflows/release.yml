@@ -26,7 +26,8 @@ jobs:
             --verify-tag
             --generate-notes
           )
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          version="${GITHUB_REF_NAME%%+*}"
+          if [[ "$version" == *-* ]]; then
             args+=(--prerelease)
           fi
           gh release create "${args[@]}"
