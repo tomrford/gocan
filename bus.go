@@ -10,9 +10,7 @@ var (
 	ErrBusClosed = errors.New("CAN bus is closed")
 	// ErrReceiveOverrun indicates that a driver could not retain incoming
 	// traffic before its bounded receive queue filled. A driver stops its bus
-	// with this error instead of dropping frames, so a shared capture never
-	// holds a silent gap. A configurable drop-and-continue policy can be added
-	// per driver once captures can represent gaps explicitly.
+	// with this error instead of silently dropping frames.
 	ErrReceiveOverrun = errors.New("CAN receive queue overrun")
 	// ErrBusOff indicates that a controller stopped participating on the bus
 	// after its transmit error counter exceeded the bus-off threshold.

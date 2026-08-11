@@ -74,9 +74,8 @@ type Config struct {
 	ConsecutiveFrameTimeout  time.Duration
 
 	// WaitFrameLimit is how many consecutive Flow Control Wait frames a peer may
-	// send before a transmission fails. Zero selects 10, because real ECUs send
-	// Wait frames while erasing or programming memory. There is deliberately no
-	// way to reject every Wait frame; no consumer has needed one.
+	// send before a transmission fails. Zero selects 10 to tolerate peers that
+	// wait while erasing or programming memory.
 	WaitFrameLimit uint8
 }
 

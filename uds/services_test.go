@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/cdd"
 	"github.com/tomrford/gocan/drivers/virtual"
 	"github.com/tomrford/gocan/isotp"
 	"github.com/tomrford/gocan/uds"
@@ -122,6 +124,63 @@ func serveSemanticLifecycle(ctx context.Context, link *isotp.Link) error {
 		return fmt.Errorf("send reset: %w", err)
 	}
 	return nil
+}
+
+func TestCDDDataIdentifierLifecycle(t *testing.T) {
+	database, err := cdd.ParseFile(filepath.Join("..", "cdd", "testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thermal, ok := database.DIDByName("ThermalStatus")
+	if !ok || thermal.Read == nil {
+		t.Fatalf("unexpected ThermalStatus DID: %#v", thermal)
+	}
+	writable, ok := database.DIDByName("WritableSettings")
+	if !ok || writable.Write == nil {
+		t.Fatalf("unexpected WritableSettings DID: %#v", writable)
+	}
+
+	client, server, ctx := newSemanticPair(t)
+	serverResult := make(chan error, 1)
+	go func() {
+		serverResult <- serveCDDDataIdentifierLifecycle(ctx, server)
+	}()
+
+	payload, err := client.ReadDataByIdentifier(ctx, thermal.Identifier)
+	if err != nil {
+		t.Fatalf("ReadDataByIdentifier: %v", err)
+	}
+	values, err := thermal.Read.Decode(payload)
+	if err != nil {
+		t.Fatalf("decode ThermalStatus: %v", err)
+	}
+	if values["Heater"] != "On" || values["Coolant"] != 25.0 || values["Cycles"] != uint64(7) {
+		t.Fatalf("ThermalStatus values = %#v", values)
+	}
+
+	payload, err = writable.Write.Encode(cdd.Values{"Setting": uint8(0x2a)})
+	if err != nil {
+		t.Fatalf("encode WritableSettings: %v", err)
+	}
+	if err := client.WriteDataByIdentifier(ctx, writable.Identifier, payload); err != nil {
+		t.Fatalf("WriteDataByIdentifier: %v", err)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatalf("server: %v", err)
+	}
+}
+
+func serveCDDDataIdentifierLifecycle(ctx context.Context, link *isotp.Link) error {
+	if err := receiveRequest(ctx, link, []byte{0x22, 0xf1, 0x90}); err != nil {
+		return err
+	}
+	if err := link.Send(ctx, []byte{0x62, 0xf1, 0x90, 0x01, 0x00, 0x82, 0x00, 0x07}); err != nil {
+		return err
+	}
+	if err := receiveRequest(ctx, link, []byte{0x2e, 0xf1, 0x93, 0x2a}); err != nil {
+		return err
+	}
+	return link.Send(ctx, []byte{0x6e, 0xf1, 0x93})
 }
 
 func TestSemanticClientRejectsInvalidInputs(t *testing.T) {

@@ -1,5 +1,10 @@
 // Package cdd parses the supported CANdela diagnostic description subset into
 // a resolved data-identifier catalog and encodes or decodes DID data records.
+//
+// The record codec supports byte-aligned integer elements up to 64 bits,
+// 32- and 64-bit floating-point elements, 8-bit ASCII, fixed arrays, and a
+// variable array in final position. Parsed fields outside this set remain in
+// the model, but Record.Encode and Record.Decode report an error.
 package cdd
 
 import "github.com/tomrford/gocan/internal/scalar"
@@ -38,9 +43,6 @@ type DID struct {
 // Length is the smallest data-record size in bytes. MaxLength exceeds it only
 // when the last field is variable length, in which case MaxLength is the
 // largest record.
-//
-// Parse retains fields outside the current codec subset. Their metadata remains
-// available, and Encode or Decode reports the unsupported codec capability.
 //
 // Treat a Record and its Fields as read-only: Encode and Decode trust the
 // layout that Parse resolved, and modifications are not revalidated.

@@ -192,8 +192,7 @@ func LengthToDLC(length int, fd bool) (uint8, error) {
 // exported trace files. Multiple buses may deliberately use the same ID to
 // merge their records into one logical channel; the caller is responsible for
 // avoiding unintended collisions. Records are never deduplicated. Zero is
-// currently invalid and reserved for possible future capture-level events that
-// belong to no single channel.
+// invalid.
 type BusID uint16
 
 // Direction describes whether a frame was received or transmitted.
@@ -208,18 +207,10 @@ const (
 
 // FrameKey identifies a frame series within a multi-bus capture.
 //
-// DLC, payload, and per-occurrence CAN FD flags are deliberately not part of
-// the key. Direction is part of the key so consumers waiting for received
-// traffic cannot observe an accepted transmission on the same bus and
-// identifier. The FD flag in particular is a per-occurrence property, not
-// identity: the surveyed ecosystem agrees. SocketCAN filters and python-can
-// filters cannot express FD-ness; python-can's viewer, SavvyCAN's overwrite
-// mode, and comparable trace indexes group by identifier and extended flag
-// only; DBC keys messages by identifier and records FD-ness as the
-// VFrameFormat attribute, with one format per identifier; and PCAN-Basic and
-// Vector XL treat FD as channel configuration plus a per-frame flag.
-// Consumers that care about mixed classical/FD traffic on one identifier can
-// split a series on the FrameFD flag of each event.
+// DLC, payload, and per-occurrence CAN FD flags are not part of the key.
+// Direction keeps received traffic separate from accepted transmissions. The
+// FD flag is a property of each frame, so consumers can use it to split mixed
+// classical and CAN FD traffic within a series.
 type FrameKey struct {
 	ID        uint32
 	Bus       BusID
