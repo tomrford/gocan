@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/scalar"
 )
 
 type messageCodec struct {
@@ -29,9 +30,11 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 }
 
 // Encode constructs a complete raw frame from the values of every signal
-// active on the selected multiplexing path. Messages longer than the 64-byte
-// raw frame representation or containing a signal wider than 64 bits are not
-// supported by the codec.
+// active on the selected multiplexing path. A scaled physical value is
+// quantized to the nearest raw value, so Decode can differ from the encoded
+// input by up to half a scale step. Messages longer than the 64-byte raw frame
+// representation or containing a signal wider than 64 bits are not supported
+// by the codec.
 func (message *Message) Encode(values Values) (gocan.Frame, error) {
 	codec, err := message.writableCodec()
 	if err != nil {
@@ -133,10 +136,12 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 	return nil
 }
 
-// Decode returns the physical value of one named signal from frame. It reads
-// only that signal and the multiplexors needed to establish whether it is
-// active. Messages longer than the 64-byte raw frame representation or
-// containing a signal wider than 64 bits are not supported by the codec.
+// Decode returns the physical value of one named signal from frame. A raw
+// value carrying a value description decodes to its label; other values decode
+// numerically. It reads only that signal and the multiplexors needed to
+// establish whether it is active. Messages longer than the 64-byte raw frame
+// representation or containing a signal wider than 64 bits are not supported
+// by the codec.
 func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
 	codec, err := message.usableCodec()
 	if err != nil {
@@ -458,7 +463,7 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		if signal.ValueType != ValueTypeInteger {
 			return 0, fmt.Errorf("value descriptions require an integer signal")
 		}
-		raw, err := rawForLabel(signal, label)
+		raw, err := scalar.RawForLabel(signal.Values, label, signal.BitLength, signal.Signed)
 		if err != nil {
 			return 0, err
 		}
@@ -478,7 +483,7 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		return uint64(physical), nil
 	}
 	if signal.ValueType == ValueTypeFloat32 || signal.ValueType == ValueTypeFloat64 {
-		physical, err := numericFloat(value)
+		physical, err := scalar.NumericFloat(value)
 		if err != nil {
 			return 0, err
 		}
@@ -501,48 +506,33 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 
 	if signal.Factor == 1 && signal.Offset == 0 {
 		if signal.Signed {
-			value, err := exactSigned(value)
+			value, err := scalar.ExactSigned(value)
 			if err != nil {
 				return 0, err
 			}
 			if err := validatePhysical(signal, float64(value)); err != nil {
 				return 0, err
 			}
-			return encodeSigned(signal.BitLength, value)
+			return scalar.EncodeSigned(signal.BitLength, value)
 		}
-		value, err := exactUnsigned(value)
+		value, err := scalar.ExactUnsigned(value)
 		if err != nil {
 			return 0, err
 		}
 		if err := validatePhysical(signal, float64(value)); err != nil {
 			return 0, err
 		}
-		return encodeUnsigned(signal.BitLength, value)
+		return scalar.EncodeUnsigned(signal.BitLength, value)
 	}
 
-	physical, err := numericFloat(value)
+	physical, err := scalar.NumericFloat(value)
 	if err != nil {
 		return 0, err
 	}
 	if err := validatePhysical(signal, physical); err != nil {
 		return 0, err
 	}
-	rawFloat := (physical - signal.Offset) / signal.Factor
-	rounded := math.Round(rawFloat)
-	tolerance := math.Max(1e-9, 2*math.Abs(math.Nextafter(rawFloat, math.Inf(1))-rawFloat))
-	if math.IsNaN(rawFloat) || math.IsInf(rawFloat, 0) || math.Abs(rawFloat-rounded) > tolerance {
-		return 0, fmt.Errorf("physical value %v does not map to an integer raw value", physical)
-	}
-	if signal.Signed {
-		if rounded < -math.Exp2(63) || rounded >= math.Exp2(63) {
-			return 0, fmt.Errorf("raw value %v exceeds int64", rounded)
-		}
-		return encodeSigned(signal.BitLength, int64(rounded))
-	}
-	if rounded < 0 || rounded >= math.Exp2(64) {
-		return 0, fmt.Errorf("raw value %v exceeds uint64", rounded)
-	}
-	return encodeUnsigned(signal.BitLength, uint64(rounded))
+	return scalar.LinearRaw(signal.BitLength, signal.Signed, physical, signal.Factor, signal.Offset)
 }
 
 func decodeSignalValue(signal Signal, raw uint64) any {
@@ -553,11 +543,19 @@ func decodeSignalValue(signal Signal, raw uint64) any {
 		return math.Float64frombits(raw)*signal.Factor + signal.Offset
 	}
 	if signal.Signed {
-		value := decodeSigned(signal.BitLength, raw)
+		value := scalar.DecodeSigned(signal.BitLength, raw)
+		if label, ok := scalar.Label(signal.Values, value); ok {
+			return label
+		}
 		if signal.Factor == 1 && signal.Offset == 0 {
 			return value
 		}
 		return float64(value)*signal.Factor + signal.Offset
+	}
+	if raw <= math.MaxInt64 {
+		if label, ok := scalar.Label(signal.Values, int64(raw)); ok {
+			return label
+		}
 	}
 	if signal.Factor == 1 && signal.Offset == 0 {
 		return raw
@@ -565,35 +563,10 @@ func decodeSignalValue(signal Signal, raw uint64) any {
 	return float64(raw)*signal.Factor + signal.Offset
 }
 
-func rawForLabel(signal Signal, label string) (uint64, error) {
-	found := false
-	var value int64
-	for _, description := range signal.Values {
-		if description.Label != label {
-			continue
-		}
-		if found && value != description.Value {
-			return 0, fmt.Errorf("value description %q is ambiguous", label)
-		}
-		found = true
-		value = description.Value
-	}
-	if !found {
-		return 0, fmt.Errorf("unknown value description %q", label)
-	}
-	if signal.Signed {
-		return encodeSigned(signal.BitLength, value)
-	}
-	if value < 0 {
-		return 0, fmt.Errorf("negative value description %d for unsigned signal", value)
-	}
-	return encodeUnsigned(signal.BitLength, uint64(value))
-}
-
 func validateIntegerRaw(signal Signal, raw uint64) (uint64, error) {
 	physical := float64(raw)*signal.Factor + signal.Offset
 	if signal.Signed {
-		physical = float64(decodeSigned(signal.BitLength, raw))*signal.Factor + signal.Offset
+		physical = float64(scalar.DecodeSigned(signal.BitLength, raw))*signal.Factor + signal.Offset
 	}
 	if err := validatePhysical(signal, physical); err != nil {
 		return 0, err
@@ -613,104 +586,6 @@ func validatePhysical(signal Signal, value float64) error {
 		return fmt.Errorf("physical value %v is outside [%v, %v]", value, signal.Minimum, signal.Maximum)
 	}
 	return nil
-}
-
-func encodeSigned(bits uint32, value int64) (uint64, error) {
-	if bits == 64 {
-		return uint64(value), nil
-	}
-	minimum := -(int64(1) << (bits - 1))
-	maximum := (int64(1) << (bits - 1)) - 1
-	if value < minimum || value > maximum {
-		return 0, fmt.Errorf("signed value %d does not fit %d bits", value, bits)
-	}
-	return uint64(value) & ((uint64(1) << bits) - 1), nil
-}
-
-func encodeUnsigned(bits uint32, value uint64) (uint64, error) {
-	if bits < 64 && value >= uint64(1)<<bits {
-		return 0, fmt.Errorf("unsigned value %d does not fit %d bits", value, bits)
-	}
-	return value, nil
-}
-
-func decodeSigned(bits uint32, raw uint64) int64 {
-	if bits == 64 {
-		return int64(raw)
-	}
-	mask := (uint64(1) << bits) - 1
-	raw &= mask
-	if raw&(uint64(1)<<(bits-1)) != 0 {
-		raw |= ^mask
-	}
-	return int64(raw)
-}
-
-func exactSigned(value any) (int64, error) {
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return reflected.Int(), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		unsigned := reflected.Uint()
-		if unsigned > math.MaxInt64 {
-			return 0, fmt.Errorf("unsigned value %d exceeds int64", unsigned)
-		}
-		return int64(unsigned), nil
-	case reflect.Float32, reflect.Float64:
-		floating := reflected.Float()
-		if math.IsNaN(floating) || math.IsInf(floating, 0) || floating != math.Trunc(floating) || floating < -math.Exp2(63) || floating >= math.Exp2(63) {
-			return 0, fmt.Errorf("value %v is not an exact int64", floating)
-		}
-		return int64(floating), nil
-	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
-	}
-}
-
-func exactUnsigned(value any) (uint64, error) {
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		signed := reflected.Int()
-		if signed < 0 {
-			return 0, fmt.Errorf("negative value %d for unsigned signal", signed)
-		}
-		return uint64(signed), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return reflected.Uint(), nil
-	case reflect.Float32, reflect.Float64:
-		floating := reflected.Float()
-		if math.IsNaN(floating) || math.IsInf(floating, 0) || floating != math.Trunc(floating) || floating < 0 || floating >= math.Exp2(64) {
-			return 0, fmt.Errorf("value %v is not an exact uint64", floating)
-		}
-		return uint64(floating), nil
-	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
-	}
-}
-
-func numericFloat(value any) (float64, error) {
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(reflected.Int()), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return float64(reflected.Uint()), nil
-	case reflect.Float32, reflect.Float64:
-		return reflected.Float(), nil
-	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
-	}
 }
 
 func stringValue(value any) (string, bool) {
