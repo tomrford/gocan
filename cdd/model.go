@@ -1,5 +1,5 @@
 // Package cdd parses the supported CANdela diagnostic description subset into
-// a resolved data-identifier catalog.
+// a resolved data-identifier catalog and encodes or decodes DID data records.
 package cdd
 
 // Database is the resolved catalog from the first ECU and its first variant in
@@ -21,20 +21,38 @@ type Diagnostic struct {
 	Message string
 }
 
-// TODO: Add DID payload codecs before the first stable release.
-
-// DID describes one UDS data identifier and its payload layout.
-//
-// Length is the payload size in bytes. MaxLength exceeds it only when the last
-// field is variable length, in which case Length is the smallest payload the
-// ECU may return and MaxLength the largest.
+// DID describes one UDS data identifier. Read and Write are nil when the CDD
+// does not define that operation for the identifier.
 type DID struct {
 	Name       string
 	Identifier uint16
-	Length     uint32
-	MaxLength  uint32
-	Fields     []Field
+	Read       *Record
+	Write      *Record
 }
+
+// Record describes the payload layout for one DID operation. Fields are in
+// layout order.
+//
+// Length is the smallest data-record size in bytes. MaxLength exceeds it only
+// when the last field is variable length, in which case MaxLength is the
+// largest record.
+//
+// Parse retains fields outside the current codec subset. Their metadata remains
+// available, and Encode or Decode reports the unsupported codec capability.
+//
+// Treat a Record and its Fields as read-only: Encode and Decode trust the
+// layout that Parse resolved, and modifications are not revalidated.
+type Record struct {
+	Name      string
+	Length    uint32
+	MaxLength uint32
+	Fields    []Field
+
+	codec *recordCodec
+}
+
+// Values maps DID field names to their physical values.
+type Values map[string]any
 
 // ByteOrder describes the byte order of one coded field.
 type ByteOrder uint8

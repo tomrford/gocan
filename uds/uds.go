@@ -1,5 +1,6 @@
-// Package uds exchanges raw Unified Diagnostic Services requests and responses
-// over an ISO-TP link.
+// Package uds exchanges raw and typed Unified Diagnostic Services requests and
+// responses over an ISO-TP link. Typed operations encode one standard service;
+// callers retain session, security, and workflow policy.
 package uds
 
 import (

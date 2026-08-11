@@ -43,6 +43,12 @@
         <QUAL>Ratio</QUAL>
         <CVALUETYPE bl="32" bo="21" enc="flt" sig="6" df="flt" qty="atom" sz="no" minsz="1" maxsz="1"/>
       </IDENT>
+      <LINCOMP id="wideCounter64" bm="18446744073709551615">
+        <QUAL>Wide Counter</QUAL>
+        <CVALUETYPE bl="64" bo="21" enc="uns" sig="0" df="dec" qty="atom" sz="no" minsz="1" maxsz="1"/>
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="1" df="dec" qty="atom" sz="no" minsz="1" maxsz="1"/>
+        <COMP s="0" e="18446744073709551615" f="1" o="0"/>
+      </LINCOMP>
       <IDENT id="payload" bm="255">
         <QUAL>Payload</QUAL>
         <CVALUETYPE bl="8" bo="21" enc="uns" sig="0" df="hex" qty="field" sz="no" minsz="1" maxsz="64"/>
@@ -213,6 +219,48 @@
               <DIDDATAREF didRef="cycleA"/>
             </SIMPLECOMPCONT>
           </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>WritableSettings</QUAL>
+            <SERVICE tmplref="modernWrite" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61843"/>
+            <SIMPLECOMPCONT shproxyref="modernWriteData">
+              <DATAOBJ spec="no" dtref="counter8">
+                <QUAL>Setting</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>ReadWriteCounter</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <SERVICE tmplref="modernWrite" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61846"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" dtref="counter8">
+                <QUAL>Counter</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="modernWriteData">
+              <DATAOBJ spec="no" dtref="counter8">
+                <QUAL>Counter</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+          <DIAGINST tmplref="modernClass" req="notReq">
+            <QUAL>AsymmetricReadWrite</QUAL>
+            <SERVICE tmplref="modernRead" req="0"/>
+            <SERVICE tmplref="modernWrite" req="0"/>
+            <STATICVALUE shstaticref="modernIdentifier" v="61847"/>
+            <SIMPLECOMPCONT shproxyref="modernData">
+              <DATAOBJ spec="no" dtref="counter8">
+                <QUAL>Counter</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="modernWriteData">
+              <DATAOBJ spec="no" dtref="block4">
+                <QUAL>Counter</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
         </DIAGCLASS>
         <DIAGCLASS tmplref="legacyClass">
           <DIAGINST tmplref="legacyClass" req="notReq">
@@ -232,6 +280,9 @@
                 </DATAOBJ>
                 <DATAOBJ spec="no" dtref="ratio32">
                   <QUAL>Gain</QUAL>
+                </DATAOBJ>
+                <DATAOBJ spec="no" dtref="wideCounter64">
+                  <QUAL>ExactCounter</QUAL>
                 </DATAOBJ>
               </STRUCT>
             </SIMPLECOMPCONT>
