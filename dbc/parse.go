@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/charmap"
 )
 
 // Error reports invalid or unsupported DBC source.
@@ -27,8 +30,22 @@ func (err *Error) Error() string {
 	return fmt.Sprintf("%s: %s", location, err.Message)
 }
 
-// Parse parses source into a resolved DBC model. Source must be UTF-8 text.
+// Parse parses source into a resolved DBC model. It accepts UTF-8 text, with
+// an optional byte-order mark, and falls back to Windows-1252 for legacy
+// sources.
 func Parse(name, source string) (*Database, error) {
+	source = strings.TrimPrefix(source, "\ufeff")
+	if !utf8.ValidString(source) {
+		decoded, err := charmap.Windows1252.NewDecoder().String(source)
+		if err != nil {
+			return nil, &Error{
+				Position: Position{Source: name, Line: 1, Column: 1},
+				Message:  fmt.Sprintf("decode as Windows-1252: %v", err),
+			}
+		}
+		source = decoded
+	}
+
 	tokens, err := lex(name, source)
 	if err != nil {
 		return nil, err

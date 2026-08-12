@@ -48,6 +48,23 @@ func TestParseCoreDatabase(t *testing.T) {
 	}
 }
 
+func TestParseWindows1252(t *testing.T) {
+	source := "BU_: ECU\n" +
+		"BO_ 256 Status: 1 ECU\n" +
+		" SG_ Temperature : 0|8@1+ (1,-40) [-40|215] \"\xb0C\" ECU\n"
+
+	db, err := Parse("status.dbc", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Messages) != 1 || len(db.Messages[0].Signals) != 1 {
+		t.Fatalf("unexpected resolved model: %#v", db.Messages)
+	}
+	if unit := db.Messages[0].Signals[0].Unit; unit != "°C" {
+		t.Fatalf("unexpected transcoded unit: %q", unit)
+	}
+}
+
 func TestParseMultiplexingAndJ1939(t *testing.T) {
 	db := parseFixture(t, "testdata/multiplex_j1939.dbc")
 
