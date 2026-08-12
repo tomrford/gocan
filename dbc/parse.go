@@ -2,6 +2,7 @@ package dbc
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -55,6 +56,16 @@ func Parse(name, source string) (*Database, error) {
 		return nil, err
 	}
 	return resolve(raw)
+}
+
+// ParseFile reads and parses a DBC file. Parse documents the accepted
+// character encodings.
+func ParseFile(path string) (*Database, error) {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(path, string(source))
 }
 
 type rawDatabase struct {
