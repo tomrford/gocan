@@ -14,12 +14,14 @@ const (
 	ServiceECUReset                 ServiceID = 0x11
 	ServiceReadDataByIdentifier     ServiceID = 0x22
 	ServiceSecurityAccess           ServiceID = 0x27
+	ServiceCommunicationControl     ServiceID = 0x28
 	ServiceWriteDataByIdentifier    ServiceID = 0x2e
 	ServiceRoutineControl           ServiceID = 0x31
 	ServiceRequestDownload          ServiceID = 0x34
 	ServiceTransferData             ServiceID = 0x36
 	ServiceRequestTransferExit      ServiceID = 0x37
 	ServiceTesterPresent            ServiceID = 0x3e
+	ServiceControlDTCSetting        ServiceID = 0x85
 )
 
 // Session identifies a diagnostic session-control subfunction.
@@ -75,6 +77,36 @@ const (
 // SecurityLevel identifies an odd request-seed subfunction. SendKey uses the
 // following even subfunction.
 type SecurityLevel uint8
+
+// CommunicationControlType identifies a communication-control subfunction.
+type CommunicationControlType uint8
+
+const (
+	CommunicationEnableRxAndTx     CommunicationControlType = 0x00
+	CommunicationEnableRxDisableTx CommunicationControlType = 0x01
+	CommunicationDisableRxEnableTx CommunicationControlType = 0x02
+	CommunicationDisableRxAndTx    CommunicationControlType = 0x03
+)
+
+// CommunicationType selects the messages that CommunicationControl affects.
+// The two low bits select normal and network-management communication, and
+// the high nibble addresses a subnet: zero for the receiving network only,
+// 0xf for every network the server is connected to.
+type CommunicationType uint8
+
+const (
+	CommunicationTypeNormal                     CommunicationType = 0x01
+	CommunicationTypeNetworkManagement          CommunicationType = 0x02
+	CommunicationTypeNormalAndNetworkManagement CommunicationType = 0x03
+)
+
+// DTCSettingType identifies a control-DTC-setting subfunction.
+type DTCSettingType uint8
+
+const (
+	DTCSettingOn  DTCSettingType = 0x01
+	DTCSettingOff DTCSettingType = 0x02
+)
 
 // RoutineControlType identifies a routine-control subfunction.
 type RoutineControlType uint8
@@ -169,6 +201,29 @@ func (client *Client) SendKey(ctx context.Context, level SecurityLevel, key []by
 	subfunction := byte(level) + 1
 	request := append([]byte{subfunction}, key...)
 	_, err := client.doEchoed(ctx, ServiceSecurityAccess, request, request[:1], "security level", true)
+	return err
+}
+
+// CommunicationControl requests controlType for the messages selected by
+// communicationType and validates the subfunction echo. Control types 0x04
+// and 0x05 carry enhanced address information and are not supported.
+func (client *Client) CommunicationControl(ctx context.Context, controlType CommunicationControlType, communicationType CommunicationType) error {
+	if err := validateCommunicationControl(controlType, communicationType); err != nil {
+		return err
+	}
+	request := []byte{byte(controlType), byte(communicationType)}
+	_, err := client.doEchoed(ctx, ServiceCommunicationControl, request, request[:1], "communication control type", true)
+	return err
+}
+
+// ControlDTCSetting requests settingType with an optional control option
+// record and validates the subfunction echo.
+func (client *Client) ControlDTCSetting(ctx context.Context, settingType DTCSettingType, optionRecord []byte) error {
+	if err := validateSubfunction(byte(settingType), "DTC setting type"); err != nil {
+		return err
+	}
+	request := append([]byte{byte(settingType)}, optionRecord...)
+	_, err := client.doEchoed(ctx, ServiceControlDTCSetting, request, request[:1], "DTC setting type", true)
 	return err
 }
 
@@ -296,6 +351,25 @@ func validateSecurityLevel(level SecurityLevel) error {
 	}
 	if level&1 == 0 {
 		return fmt.Errorf("UDS security level %#02x must be an odd request-seed subfunction", level)
+	}
+	return nil
+}
+
+// validateCommunicationControl accepts control type zero, which is a valid
+// enableRxAndTx subfunction, unlike the services covered by
+// validateSubfunction.
+func validateCommunicationControl(controlType CommunicationControlType, communicationType CommunicationType) error {
+	if byte(controlType)&suppressPositiveResponse != 0 {
+		return fmt.Errorf("UDS communication control type %#02x sets suppressPositiveResponse", controlType)
+	}
+	if controlType == 0x04 || controlType == 0x05 {
+		return fmt.Errorf("UDS communication control type %#02x requires enhanced address information", controlType)
+	}
+	if controlType == 0x7f {
+		return fmt.Errorf("UDS communication control type %#02x is reserved", controlType)
+	}
+	if communicationType&0x03 == 0 {
+		return fmt.Errorf("UDS communication type %#02x selects neither normal nor network-management communication", communicationType)
 	}
 	return nil
 }

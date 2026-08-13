@@ -53,6 +53,13 @@ func TestSemanticClientLifecycle(t *testing.T) {
 		t.Fatalf("SendKey: %v", err)
 	}
 
+	if err := client.CommunicationControl(ctx, uds.CommunicationDisableRxAndTx, uds.CommunicationTypeNormalAndNetworkManagement); err != nil {
+		t.Fatalf("CommunicationControl: %v", err)
+	}
+	if err := client.ControlDTCSetting(ctx, uds.DTCSettingOff, nil); err != nil {
+		t.Fatalf("ControlDTCSetting: %v", err)
+	}
+
 	status, err := client.RoutineControl(ctx, uds.RoutineStart, 0xff00, []byte{0x01})
 	if err != nil || !bytes.Equal(status, []byte{0x80}) {
 		t.Fatalf("RoutineControl = %x, %v", status, err)
@@ -100,6 +107,8 @@ func serveSemanticLifecycle(ctx context.Context, link *isotp.Link) error {
 		{[]byte{0x10, 0x02}, []byte{0x50, 0x02, 0x00, 0x32, 0x01, 0xf4}},
 		{[]byte{0x27, 0x05, 0xaa}, []byte{0x67, 0x05, 0x12, 0x34}},
 		{[]byte{0x27, 0x06, 0xab, 0xcd}, []byte{0x67, 0x06}},
+		{[]byte{0x28, 0x03, 0x03}, []byte{0x68, 0x03}},
+		{[]byte{0x85, 0x02}, []byte{0xc5, 0x02}},
 		{[]byte{0x31, 0x01, 0xff, 0x00, 0x01}, []byte{0x71, 0x01, 0xff, 0x00, 0x80}},
 		{[]byte{0x34, 0x00, 0x24, 0x12, 0x34, 0x56, 0x78, 0x01, 0x00}, []byte{0x74, 0x20, 0x04, 0x02}},
 		{[]byte{0x36, 0x01, 0xde, 0xad}, []byte{0x76, 0x01, 0xaa}},
@@ -194,6 +203,12 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 	}
 	if err := client.ApplySessionTiming(uds.SessionTiming{}); err == nil || !strings.Contains(err.Error(), "must be positive") {
 		t.Fatalf("session timing error = %v", err)
+	}
+	if err := client.CommunicationControl(ctx, 0x04, uds.CommunicationTypeNormal); err == nil || !strings.Contains(err.Error(), "enhanced address information") {
+		t.Fatalf("enhanced communication control error = %v", err)
+	}
+	if err := client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x40); err == nil || !strings.Contains(err.Error(), "selects neither") {
+		t.Fatalf("communication type error = %v", err)
 	}
 }
 
