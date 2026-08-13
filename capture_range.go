@@ -1,24 +1,17 @@
 package gocan
 
-import "errors"
-
-// ErrInvalidCaptureRange reports a stale, foreign, out-of-bounds, or reversed
-// cursor passed to a bounded Capture read. The zero Cursor is a valid boundary
-// before the first retained record.
-var ErrInvalidCaptureRange = errors.New("invalid capture range")
-
 // WriteRecordsBetween sends every frame and event in the capture interval
 // (start, end] to writer in Capture append order. The start cursor is excluded
 // and the end cursor is included. A zero start begins at the first retained
 // record. On success it returns end. Failure behavior matches
 // WriteRecordsSince.
 //
-// Each non-zero cursor must be retained by this Capture. A stale, foreign,
-// out-of-bounds, or reversed cursor returns ErrInvalidCaptureRange.
+// An invalid start behaves like the zero Cursor. An invalid, foreign,
+// out-of-bounds, or reversed end writes no records and returns start.
 func (capture *Capture) WriteRecordsBetween(start, end Cursor, writer RecordWriter) (Cursor, error) {
-	views, skip, firstChunk, err := capture.viewsBetween(start, end)
-	if err != nil {
-		return start, err
+	views, skip, firstChunk, ok := capture.viewsBetween(start, end)
+	if !ok {
+		return start, nil
 	}
 	return writeRecords(views, skip, firstChunk, start, end, writer)
 }
@@ -27,30 +20,30 @@ func (capture *Capture) WriteRecordsBetween(start, end Cursor, writer RecordWrit
 // (start, end], in append order. The start cursor is excluded and the end
 // cursor is included. A zero start begins at the first retained record.
 //
-// Each non-zero cursor must be retained by this Capture. A stale, foreign,
-// out-of-bounds, or reversed cursor returns ErrInvalidCaptureRange. Records
-// appended after end are never included.
-func (capture *Capture) FramesBetween(start, end Cursor) ([]FrameEvent, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
-	if err != nil {
-		return nil, err
+// An invalid start behaves like the zero Cursor. An invalid, foreign,
+// out-of-bounds, or reversed end returns no records. Records appended after end
+// are never included.
+func (capture *Capture) FramesBetween(start, end Cursor) []FrameEvent {
+	views, skip, _, ok := capture.viewsBetween(start, end)
+	if !ok {
+		return nil
 	}
-	return framesFromViews(views, skip), nil
+	return framesFromViews(views, skip)
 }
 
 // EventsBetween returns every non-frame event in the capture interval
 // (start, end], in append order. The start cursor is excluded and the end
 // cursor is included. A zero start begins at the first retained record.
 //
-// Each non-zero cursor must be retained by this Capture. A stale, foreign,
-// out-of-bounds, or reversed cursor returns ErrInvalidCaptureRange. Records
-// appended after end are never included.
-func (capture *Capture) EventsBetween(start, end Cursor) ([]Event, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
-	if err != nil {
-		return nil, err
+// An invalid start behaves like the zero Cursor. An invalid, foreign,
+// out-of-bounds, or reversed end returns no records. Records appended after end
+// are never included.
+func (capture *Capture) EventsBetween(start, end Cursor) []Event {
+	views, skip, _, ok := capture.viewsBetween(start, end)
+	if !ok {
+		return nil
 	}
-	return eventsFromViews(views, skip), nil
+	return eventsFromViews(views, skip)
 }
 
 // SeriesBetween returns owned copies of every frame matching key in the
@@ -58,13 +51,13 @@ func (capture *Capture) EventsBetween(start, end Cursor) ([]Event, error) {
 // and the end cursor is included. A zero start begins at the first retained
 // record.
 //
-// Each non-zero cursor must be retained by this Capture. A stale, foreign,
-// out-of-bounds, or reversed cursor returns ErrInvalidCaptureRange. Records
-// appended after end are never included.
-func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) ([]FrameEvent, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
-	if err != nil {
-		return nil, err
+// An invalid start behaves like the zero Cursor. An invalid, foreign,
+// out-of-bounds, or reversed end returns no records. Records appended after end
+// are never included.
+func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) []FrameEvent {
+	views, skip, _, ok := capture.viewsBetween(start, end)
+	if !ok {
+		return nil
 	}
 
 	var frames []FrameEvent
@@ -83,20 +76,20 @@ func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) ([]FrameE
 			}
 		}
 	}
-	return frames, nil
+	return frames
 }
 
 // BusEventsBetween returns every event from bus in the capture interval
 // (start, end], in append order. The start cursor is excluded and the end
 // cursor is included. A zero start begins at the first retained record.
 //
-// Each non-zero cursor must be retained by this Capture. A stale, foreign,
-// out-of-bounds, or reversed cursor returns ErrInvalidCaptureRange. Records
-// appended after end are never included.
-func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) ([]Event, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
-	if err != nil {
-		return nil, err
+// An invalid start behaves like the zero Cursor. An invalid, foreign,
+// out-of-bounds, or reversed end returns no records. Records appended after end
+// are never included.
+func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) []Event {
+	views, skip, _, ok := capture.viewsBetween(start, end)
+	if !ok {
+		return nil
 	}
 
 	var events []Event
@@ -112,52 +105,38 @@ func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) ([]Event,
 			}
 		}
 	}
-	return events, nil
+	return events
 }
 
 // viewsBetween freezes the records in (start, end]. The returned views are
 // clipped at end, so readers can use the same loops as an unbounded Since
 // read. firstChunk is the capture index represented by views[0].
-func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, skip int, firstChunk uint32, err error) {
+func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, skip int, firstChunk uint32, ok bool) {
 	capture.mu.RLock()
 	chunks := capture.chunks
 	activeView := capture.active.view()
 	generation := capture.generation
 	capture.mu.RUnlock()
 
-	viewAt := func(cursor Cursor) (captureView, bool) {
-		if cursor == (Cursor{}) || cursor.generation != generation || int(cursor.chunk) >= len(chunks) {
-			return captureView{}, cursor == (Cursor{})
-		}
-		if int(cursor.chunk) == len(chunks)-1 {
-			return activeView, int(cursor.record) < len(activeView.records)
-		}
-		view := chunks[cursor.chunk].view()
-		return view, int(cursor.record) < len(view.records)
+	if end.generation != generation || int(end.chunk) >= len(chunks) {
+		return nil, 0, 0, false
 	}
 
-	if _, valid := viewAt(start); !valid {
-		return nil, 0, 0, ErrInvalidCaptureRange
+	var endView captureView
+	if int(end.chunk) == len(chunks)-1 {
+		endView = activeView
+	} else {
+		endView = chunks[end.chunk].view()
 	}
-	if _, valid := viewAt(end); !valid {
-		return nil, 0, 0, ErrInvalidCaptureRange
-	}
-	if end == (Cursor{}) {
-		if start != (Cursor{}) {
-			return nil, 0, 0, ErrInvalidCaptureRange
-		}
-		return nil, 0, 0, nil
-	}
-	if start != (Cursor{}) &&
-		(start.chunk > end.chunk || start.chunk == end.chunk && start.record > end.record) {
-		return nil, 0, 0, ErrInvalidCaptureRange
-	}
-	if start == end {
-		return nil, 0, 0, nil
+	if int(end.record) >= len(endView.records) {
+		return nil, 0, 0, false
 	}
 
 	first := 0
-	if start != (Cursor{}) {
+	if start.generation == generation && int(start.chunk) < len(chunks) {
+		if start.chunk > end.chunk || start.chunk == end.chunk && start.record >= end.record {
+			return nil, 0, 0, false
+		}
 		first = int(start.chunk)
 		skip = int(start.record) + 1
 	}
@@ -172,5 +151,5 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 		}
 	}
 	views[len(views)-1].records = views[len(views)-1].records[:end.record+1]
-	return views, skip, uint32(first), nil
+	return views, skip, uint32(first), true
 }
