@@ -296,11 +296,11 @@ func newSemanticPair(t *testing.T) (*uds.Client, *isotp.Link, context.Context) {
 		t.Fatalf("Open ECU: %v", err)
 	}
 	t.Cleanup(func() { _ = ecuBus.Close() })
-	testerLink, err := isotp.New(testerBus, capture, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708})
+	testerLink, err := isotp.New(testerBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708})
 	if err != nil {
 		t.Fatalf("New tester link: %v", err)
 	}
-	server, err := isotp.New(ecuBus, capture, isotp.Config{TransmitID: 0x708, ReceiveID: 0x700})
+	server, err := isotp.New(ecuBus, isotp.Config{TransmitID: 0x708, ReceiveID: 0x700})
 	if err != nil {
 		t.Fatalf("New server link: %v", err)
 	}

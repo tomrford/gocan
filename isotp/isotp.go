@@ -135,12 +135,13 @@ type Exchange struct {
 }
 
 // New validates config and prepares a physical, normal-addressing ISO-TP Link.
-func New(bus gocan.Bus, capture *gocan.Capture, config Config) (*Link, error) {
+func New(bus gocan.Bus, config Config) (*Link, error) {
 	if bus == nil {
 		return nil, errors.New("ISO-TP link requires a bus")
 	}
+	capture := bus.Capture()
 	if capture == nil {
-		return nil, errors.New("ISO-TP link requires a capture")
+		return nil, errors.New("ISO-TP bus requires a capture")
 	}
 	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte)
 	if err != nil {
