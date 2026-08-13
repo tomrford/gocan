@@ -1015,6 +1015,7 @@ func TestCaptureConcurrent(t *testing.T) {
 		reading.Add(1)
 		go func() {
 			defer reading.Done()
+			key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 			for {
 				select {
 				case <-done:
@@ -1022,11 +1023,16 @@ func TestCaptureConcurrent(t *testing.T) {
 				default:
 				}
 				capture.Frames()
-				capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive})
+				capture.Series(key)
 				capture.Latest(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive})
 				capture.Events()
 				capture.BusEvents(testBus0)
 				capture.Len()
+				end := capture.End()
+				capture.FramesBetween(Cursor{}, end)
+				capture.EventsBetween(Cursor{}, end)
+				capture.SeriesBetween(key, Cursor{}, end)
+				capture.BusEventsBetween(testBus0, Cursor{}, end)
 			}
 		}()
 	}

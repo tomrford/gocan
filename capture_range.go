@@ -123,9 +123,11 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 		return nil, 0, 0, false
 	}
 
-	endView := chunks[end.chunk].view()
+	var endView captureView
 	if int(end.chunk) == len(chunks)-1 {
 		endView = activeView
+	} else {
+		endView = chunks[end.chunk].view()
 	}
 	if int(end.record) >= len(endView.records) {
 		return nil, 0, 0, false
