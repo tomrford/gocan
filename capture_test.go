@@ -387,10 +387,26 @@ func TestCaptureBetween(t *testing.T) {
 	if len(capture.chunks) < 2 {
 		t.Fatal("test range did not cross a chunk boundary")
 	}
-	requireEvents(t, "FramesBetween", capture.FramesBetween(start, end), []FrameEvent{frame0, frame1, frame2})
-	requireBusEvents(t, "EventsBetween", capture.EventsBetween(start, end), []Event{error0, state1})
-	requireEvents(t, "SeriesBetween", capture.SeriesBetween(key, start, end), []FrameEvent{frame0, frame2})
-	requireBusEvents(t, "BusEventsBetween", capture.BusEventsBetween(testBus0, start, end), []Event{error0})
+	frames, err := capture.FramesBetween(start, end)
+	if err != nil {
+		t.Fatalf("FramesBetween: %v", err)
+	}
+	requireEvents(t, "FramesBetween", frames, []FrameEvent{frame0, frame1, frame2})
+	events, err := capture.EventsBetween(start, end)
+	if err != nil {
+		t.Fatalf("EventsBetween: %v", err)
+	}
+	requireBusEvents(t, "EventsBetween", events, []Event{error0, state1})
+	series, err := capture.SeriesBetween(key, start, end)
+	if err != nil {
+		t.Fatalf("SeriesBetween: %v", err)
+	}
+	requireEvents(t, "SeriesBetween", series, []FrameEvent{frame0, frame2})
+	busEvents, err := capture.BusEventsBetween(testBus0, start, end)
+	if err != nil {
+		t.Fatalf("BusEventsBetween: %v", err)
+	}
+	requireBusEvents(t, "BusEventsBetween", busEvents, []Event{error0})
 
 	writer := &captureWriterProbe{failAt: -1}
 	written, err := capture.WriteRecordsBetween(start, end, writer)
@@ -416,7 +432,7 @@ func TestCaptureBetween(t *testing.T) {
 		}
 	}
 
-	if frames := capture.FramesBetween(end, end); len(frames) != 0 {
+	if frames, err := capture.FramesBetween(end, end); err != nil || len(frames) != 0 {
 		t.Fatalf("empty interval returned %d frames", len(frames))
 	}
 	foreign := NewCapture()
@@ -424,13 +440,21 @@ func TestCaptureBetween(t *testing.T) {
 		t.Fatalf("append to foreign capture: %v", err)
 	}
 	foreignEnd := foreign.End()
-	if events := capture.EventsBetween(start, foreignEnd); len(events) != 0 {
-		t.Fatalf("foreign end returned %d events", len(events))
+	if _, err := capture.EventsBetween(start, foreignEnd); !errors.Is(err, ErrInvalidCaptureRange) {
+		t.Fatalf("foreign end error = %v, want ErrInvalidCaptureRange", err)
+	}
+	ahead := capture.End()
+	ahead.record++
+	if _, err := capture.FramesBetween(start, ahead); !errors.Is(err, ErrInvalidCaptureRange) {
+		t.Fatalf("ahead-of-end error = %v, want ErrInvalidCaptureRange", err)
+	}
+	if _, err := capture.SeriesBetween(key, foreignEnd, end); !errors.Is(err, ErrInvalidCaptureRange) {
+		t.Fatalf("foreign start error = %v, want ErrInvalidCaptureRange", err)
 	}
 
 	capture.Clear()
-	if frames := capture.FramesBetween(start, end); len(frames) != 0 {
-		t.Fatalf("stale interval returned %d frames after Clear", len(frames))
+	if _, err := capture.FramesBetween(start, end); !errors.Is(err, ErrInvalidCaptureRange) {
+		t.Fatalf("stale interval error = %v, want ErrInvalidCaptureRange", err)
 	}
 }
 
