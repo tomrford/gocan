@@ -49,6 +49,18 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New client: %v", err)
 	}
+	functionalPath, err := isotp.NewFunctional(testerBus, isotp.FunctionalConfig{TransmitID: 0x7df})
+	if err != nil {
+		t.Fatalf("New functional path: %v", err)
+	}
+	functional, err := uds.NewFunctional(functionalPath)
+	if err != nil {
+		t.Fatalf("New functional client: %v", err)
+	}
+	functionalServer, err := isotp.New(ecuBus, capture, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7df})
+	if err != nil {
+		t.Fatalf("New functional server: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -92,8 +104,45 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		t.Fatalf("ECU Reset response = service %#x data %x", response.Service, response.Data)
 	}
 
+	// A pending that echoes a stale service ID still restarts the wait.
+	response, err = client.Do(ctx, uds.Request{Service: 0x36, Data: []byte{1}})
+	if err != nil {
+		t.Fatalf("Transfer Data with mislabeled pending: %v", err)
+	}
+	if response.Service != 0x36 || !bytes.Equal(response.Data, []byte{1}) {
+		t.Fatalf("Transfer Data response = service %#x data %x", response.Service, response.Data)
+	}
+
 	if err := <-serverResult; err != nil {
 		t.Fatalf("ECU: %v", err)
+	}
+
+	broadcasts := []struct {
+		send func() error
+		want []byte
+	}{
+		{
+			send: func() error {
+				return functional.SendCommunicationControl(ctx, uds.CommunicationDisableRxAndTx, uds.CommunicationTypeNormalAndNetworkManagement)
+			},
+			want: []byte{0x28, 0x83, 0x03},
+		},
+		{
+			send: func() error { return functional.SendControlDTCSetting(ctx, uds.DTCSettingOff, nil) },
+			want: []byte{0x85, 0x82},
+		},
+		{
+			send: func() error { return functional.SendTesterPresent(ctx) },
+			want: []byte{0x3e, 0x80},
+		},
+	}
+	for _, broadcast := range broadcasts {
+		if err := broadcast.send(); err != nil {
+			t.Fatalf("send functional request %x: %v", broadcast.want, err)
+		}
+		if err := receiveRequest(ctx, functionalServer, broadcast.want); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -131,6 +180,16 @@ func runServerLifecycle(ctx context.Context, link *isotp.Link, responseData []by
 	}
 	if err := link.Send(ctx, []byte{0x51, 1}); err != nil {
 		return fmt.Errorf("send ECU Reset response: %w", err)
+	}
+
+	if err := receiveRequest(ctx, link, []byte{0x36, 1}); err != nil {
+		return err
+	}
+	if err := link.Send(ctx, []byte{0x7f, 0x31, 0x78}); err != nil {
+		return fmt.Errorf("send mislabeled ResponsePending: %w", err)
+	}
+	if err := link.Send(ctx, []byte{0x76, 1}); err != nil {
+		return fmt.Errorf("send Transfer Data response: %w", err)
 	}
 	return nil
 }

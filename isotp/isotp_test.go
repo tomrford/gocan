@@ -307,6 +307,11 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 		t.Fatalf("Open second: %v", err)
 	}
 	t.Cleanup(func() { _ = second.Close() })
+	third, err := network.Open(context.Background(), capture, virtual.Config{ID: 3, Name: "third"})
+	if err != nil {
+		t.Fatalf("Open third: %v", err)
+	}
+	t.Cleanup(func() { _ = third.Close() })
 
 	sender, err := isotp.New(first, capture, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
 	if err != nil {
@@ -353,6 +358,53 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 		if !bytes.Equal(payload, payloads[index]) {
 			t.Fatalf("payload %d = %x, want %x", index, payload, payloads[index])
 		}
+	}
+
+	functionalReceivers := make([]*isotp.Link, 2)
+	for index, bus := range []gocan.Bus{second, third} {
+		functionalReceivers[index], err = isotp.New(bus, capture, isotp.Config{TransmitID: 0x7e8 + uint32(index), ReceiveID: 0x7df})
+		if err != nil {
+			t.Fatalf("New functional receiver %d: %v", index, err)
+		}
+	}
+	functional, err := isotp.NewFunctional(first, isotp.FunctionalConfig{TransmitID: 0x7df})
+	if err != nil {
+		t.Fatalf("NewFunctional: %v", err)
+	}
+	broadcast := patternedPayload(7, 0x3e)
+	if err := functional.Send(ctx, broadcast); err != nil {
+		t.Fatalf("Send functional payload: %v", err)
+	}
+	for index, receiver := range functionalReceivers {
+		payload, err := receiver.Receive(ctx)
+		if err != nil || !bytes.Equal(payload, broadcast) {
+			t.Fatalf("functional receiver %d received %x, %v", index, payload, err)
+		}
+	}
+	if err := functional.Send(ctx, patternedPayload(8, 0x3e)); !errors.Is(err, isotp.ErrPayloadTooLarge) {
+		t.Fatalf("oversized functional Send = %v, want ErrPayloadTooLarge", err)
+	}
+
+	functionalFD, err := isotp.NewFunctional(first, isotp.FunctionalConfig{
+		TransmitID:         0x7df,
+		FrameFlags:         gocan.FrameFD,
+		TransmitDataLength: 64,
+		PadFrames:          true,
+		PaddingByte:        0xcc,
+	})
+	if err != nil {
+		t.Fatalf("NewFunctional FD: %v", err)
+	}
+	broadcast = patternedPayload(62, 0x2e)
+	if err := functionalFD.Send(ctx, broadcast); err != nil {
+		t.Fatalf("Send functional FD payload: %v", err)
+	}
+	payload, err := functionalReceivers[0].Receive(ctx)
+	if err != nil || !bytes.Equal(payload, broadcast) {
+		t.Fatalf("functional receiver received %x, %v", payload, err)
+	}
+	if err := functionalFD.Send(ctx, patternedPayload(63, 0x2e)); !errors.Is(err, isotp.ErrPayloadTooLarge) {
+		t.Fatalf("oversized functional FD Send = %v, want ErrPayloadTooLarge", err)
 	}
 }
 

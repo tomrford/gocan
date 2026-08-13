@@ -45,20 +45,69 @@ type transmission struct {
 	multiFrame bool
 }
 
-func (link *Link) prepareTransmission(payload []byte) (transmission, error) {
+// transmitter holds the addressing and framing configuration of one transmit
+// path, shared by physical Links and functional send paths.
+type transmitter struct {
+	transmitID           uint32
+	frameFlags           gocan.FrameFlags
+	transmitDataLength   int
+	padFrames            bool
+	paddingByte          byte
+	maximumPayloadLength uint32
+}
+
+// newTransmitter validates the transmit-side configuration common to New and
+// NewFunctional. The caller sets maximumPayloadLength.
+func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength uint8, padFrames bool, paddingByte byte) (transmitter, error) {
+	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
+		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", unsupported)
+	}
+	if flags.Has(gocan.FrameBitRateSwitch) && !flags.Has(gocan.FrameFD) {
+		return transmitter{}, errors.New("ISO-TP bit-rate switching requires CAN FD")
+	}
+	if err := validateID(transmitID, flags); err != nil {
+		return transmitter{}, fmt.Errorf("ISO-TP transmit ID: %w", err)
+	}
+	transmitDataLength := int(dataLength)
+	if transmitDataLength == 0 {
+		transmitDataLength = defaultTransmitDataLength
+	}
+	if err := validateTransmitDataLength(transmitDataLength, flags.Has(gocan.FrameFD)); err != nil {
+		return transmitter{}, err
+	}
+	return transmitter{
+		transmitID:         transmitID,
+		frameFlags:         flags,
+		transmitDataLength: transmitDataLength,
+		padFrames:          padFrames,
+		paddingByte:        paddingByte,
+	}, nil
+}
+
+// singleFrameCapacity is the largest payload one Single Frame carries with
+// this configuration. Classical CAN uses the one-byte header; every larger
+// CAN FD data length must accommodate the two-byte escape form.
+func (transmitter *transmitter) singleFrameCapacity() uint32 {
+	if transmitter.transmitDataLength <= 8 {
+		return uint32(transmitter.transmitDataLength) - 1
+	}
+	return uint32(transmitter.transmitDataLength) - 2
+}
+
+func (transmitter *transmitter) prepareTransmission(payload []byte) (transmission, error) {
 	if len(payload) == 0 {
 		return transmission{}, errors.New("ISO-TP payload must not be empty")
 	}
-	if uint64(len(payload)) > uint64(link.maximumPayloadLength) {
-		return transmission{}, fmt.Errorf("%w: %d exceeds configured maximum %d", ErrPayloadTooLarge, len(payload), link.maximumPayloadLength)
+	if uint64(len(payload)) > uint64(transmitter.maximumPayloadLength) {
+		return transmission{}, fmt.Errorf("%w: %d exceeds configured maximum %d", ErrPayloadTooLarge, len(payload), transmitter.maximumPayloadLength)
 	}
 
-	escapeSingleFrame := len(payload) > 7 || link.padFrames && link.transmitDataLength > 8
+	escapeSingleFrame := len(payload) > 7 || transmitter.padFrames && transmitter.transmitDataLength > 8
 	singleHeaderLength := 1
 	if escapeSingleFrame {
 		singleHeaderLength = 2
 	}
-	if len(payload) <= link.transmitDataLength-singleHeaderLength {
+	if len(payload) <= transmitter.transmitDataLength-singleHeaderLength {
 		data := make([]byte, singleHeaderLength+len(payload))
 		if escapeSingleFrame {
 			data[1] = byte(len(payload))
@@ -66,7 +115,7 @@ func (link *Link) prepareTransmission(payload []byte) (transmission, error) {
 			data[0] = byte(len(payload))
 		}
 		copy(data[singleHeaderLength:], payload)
-		frame, err := link.makeFrame(data, false)
+		frame, err := transmitter.makeFrame(data, false)
 		return transmission{firstFrame: frame}, err
 	}
 
@@ -74,7 +123,7 @@ func (link *Link) prepareTransmission(payload []byte) (transmission, error) {
 	if len(payload) > 0x0fff {
 		headerLength = 6
 	}
-	data := make([]byte, link.transmitDataLength)
+	data := make([]byte, transmitter.transmitDataLength)
 	if headerLength == 2 {
 		data[0] = 0x10 | byte(len(payload)>>8)
 		data[1] = byte(len(payload))
@@ -88,7 +137,7 @@ func (link *Link) prepareTransmission(payload []byte) (transmission, error) {
 		data[5] = byte(length)
 	}
 	offset := copy(data[headerLength:], payload)
-	frame, err := link.makeFrame(data, true)
+	frame, err := transmitter.makeFrame(data, true)
 	if err != nil {
 		return transmission{}, err
 	}
@@ -100,28 +149,28 @@ func (link *Link) prepareTransmission(payload []byte) (transmission, error) {
 	}, nil
 }
 
-func (link *Link) makeFrame(data []byte, fullLength bool) (gocan.Frame, error) {
-	if len(data) > link.transmitDataLength {
-		return gocan.Frame{}, fmt.Errorf("%w: %d-byte transport frame exceeds transmit data length %d", ErrProtocol, len(data), link.transmitDataLength)
+func (transmitter *transmitter) makeFrame(data []byte, fullLength bool) (gocan.Frame, error) {
+	if len(data) > transmitter.transmitDataLength {
+		return gocan.Frame{}, fmt.Errorf("%w: %d-byte transport frame exceeds transmit data length %d", ErrProtocol, len(data), transmitter.transmitDataLength)
 	}
 	targetLength := len(data)
-	if fullLength || link.padFrames {
-		targetLength = link.transmitDataLength
-	} else if link.frameFlags.Has(gocan.FrameFD) {
+	if fullLength || transmitter.padFrames {
+		targetLength = transmitter.transmitDataLength
+	} else if transmitter.frameFlags.Has(gocan.FrameFD) {
 		targetLength = nearestCANFDLength(targetLength)
 	}
-	if targetLength < len(data) || targetLength > link.transmitDataLength {
+	if targetLength < len(data) || targetLength > transmitter.transmitDataLength {
 		return gocan.Frame{}, fmt.Errorf("%w: invalid transport frame length %d", ErrProtocol, targetLength)
 	}
 	if targetLength != len(data) {
 		padded := make([]byte, targetLength)
 		copy(padded, data)
 		for index := len(data); index < len(padded); index++ {
-			padded[index] = link.paddingByte
+			padded[index] = transmitter.paddingByte
 		}
 		data = padded
 	}
-	return gocan.NewFrame(link.transmitID, data, link.frameFlags)
+	return gocan.NewFrame(transmitter.transmitID, data, transmitter.frameFlags)
 }
 
 func parseFrame(frame gocan.Frame) (pdu, error) {
