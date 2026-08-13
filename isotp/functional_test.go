@@ -65,7 +65,7 @@ func TestFunctionalBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFunctional FD: %v", err)
 	}
-	long := patternedPayload(40, 0x2e)
+	long := patternedPayload(62, 0x2e)
 	if err := padded.Send(ctx, long); err != nil {
 		t.Fatalf("Send FD: %v", err)
 	}

@@ -210,6 +210,9 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 	if err := client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x40); err == nil || !strings.Contains(err.Error(), "selects neither") {
 		t.Fatalf("communication type error = %v", err)
 	}
+	if err := client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x05); err == nil || !strings.Contains(err.Error(), "reserved bits") {
+		t.Fatalf("reserved communication type error = %v", err)
+	}
 }
 
 func TestSemanticClientValidatesResponses(t *testing.T) {

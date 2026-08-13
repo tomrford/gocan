@@ -90,8 +90,8 @@ const (
 
 // CommunicationType selects the messages that CommunicationControl affects.
 // The two low bits select normal and network-management communication, and
-// the high nibble addresses a subnet: zero for the receiving network only,
-// 0xf for every network the server is connected to.
+// the high nibble addresses a subnet: zero for every configured network and
+// 0xf for the network on which the request is received.
 type CommunicationType uint8
 
 const (
@@ -367,6 +367,9 @@ func validateCommunicationControl(controlType CommunicationControlType, communic
 	}
 	if controlType == 0x7f {
 		return fmt.Errorf("UDS communication control type %#02x is reserved", controlType)
+	}
+	if communicationType&0x0c != 0 {
+		return fmt.Errorf("UDS communication type %#02x sets reserved bits", communicationType)
 	}
 	if communicationType&0x03 == 0 {
 		return fmt.Errorf("UDS communication type %#02x selects neither normal nor network-management communication", communicationType)
