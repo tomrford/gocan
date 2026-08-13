@@ -1,6 +1,7 @@
-// Package isotp transports complete payloads over normal-addressed physical CAN
-// links. It supports classical CAN and CAN FD, including segmented transmission
-// and reception.
+// Package isotp transports complete payloads over normal-addressed CAN links.
+// Physical links support classical CAN and CAN FD, including segmented
+// transmission and reception. Functional send paths broadcast single-frame
+// payloads and have no receive path.
 //
 // The package defines no application protocol. It moves opaque byte payloads
 // and reports transport failures; UDS, OBD, and other diagnostic semantics
@@ -100,14 +101,9 @@ type Link struct {
 	bus     gocan.Bus
 	capture *gocan.Capture
 
-	transmitID uint32
-	frameFlags gocan.FrameFlags
+	transmitter
 	receiveKey gocan.FrameKey
 
-	transmitDataLength      int
-	padFrames               bool
-	paddingByte             byte
-	maximumPayloadLength    uint32
 	blockSize               uint8
 	separationTime          uint8
 	flowControlTimeout      time.Duration
@@ -146,26 +142,14 @@ func New(bus gocan.Bus, capture *gocan.Capture, config Config) (*Link, error) {
 	if capture == nil {
 		return nil, errors.New("ISO-TP link requires a capture")
 	}
-	if unsupported := config.FrameFlags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
-		return nil, fmt.Errorf("ISO-TP frame flags %#x are not supported", unsupported)
-	}
-	if config.FrameFlags.Has(gocan.FrameBitRateSwitch) && !config.FrameFlags.Has(gocan.FrameFD) {
-		return nil, errors.New("ISO-TP bit-rate switching requires CAN FD")
-	}
-	if err := validateID(config.TransmitID, config.FrameFlags); err != nil {
-		return nil, fmt.Errorf("ISO-TP transmit ID: %w", err)
+	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte)
+	if err != nil {
+		return nil, err
 	}
 	if err := validateID(config.ReceiveID, config.FrameFlags); err != nil {
 		return nil, fmt.Errorf("ISO-TP receive ID: %w", err)
 	}
 
-	transmitDataLength := int(config.TransmitDataLength)
-	if transmitDataLength == 0 {
-		transmitDataLength = defaultTransmitDataLength
-	}
-	if err := validateTransmitDataLength(transmitDataLength, config.FrameFlags.Has(gocan.FrameFD)); err != nil {
-		return nil, err
-	}
 	separationTime, err := encodeSeparationTime(config.AdvertisedSeparationTime)
 	if err != nil {
 		return nil, err
@@ -178,9 +162,9 @@ func New(bus gocan.Bus, capture *gocan.Capture, config Config) (*Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	maximumPayloadLength := config.MaximumPayloadLength
-	if maximumPayloadLength == 0 {
-		maximumPayloadLength = defaultMaximumPayloadLength
+	transmitter.maximumPayloadLength = config.MaximumPayloadLength
+	if transmitter.maximumPayloadLength == 0 {
+		transmitter.maximumPayloadLength = defaultMaximumPayloadLength
 	}
 	waitFrameLimit := config.WaitFrameLimit
 	if waitFrameLimit == 0 {
@@ -190,13 +174,8 @@ func New(bus gocan.Bus, capture *gocan.Capture, config Config) (*Link, error) {
 	link := &Link{
 		bus:                     bus,
 		capture:                 capture,
-		transmitID:              config.TransmitID,
-		frameFlags:              config.FrameFlags,
+		transmitter:             transmitter,
 		receiveKey:              gocan.FrameKey{Bus: bus.ID(), ID: config.ReceiveID, Direction: gocan.DirectionReceive, Extended: config.FrameFlags.Has(gocan.FrameExtended)},
-		transmitDataLength:      transmitDataLength,
-		padFrames:               config.PadFrames,
-		paddingByte:             config.PaddingByte,
-		maximumPayloadLength:    maximumPayloadLength,
 		blockSize:               config.AdvertisedBlockSize,
 		separationTime:          separationTime,
 		flowControlTimeout:      flowControlTimeout,
