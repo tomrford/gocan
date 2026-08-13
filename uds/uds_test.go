@@ -92,6 +92,15 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		t.Fatalf("ECU Reset response = service %#x data %x", response.Service, response.Data)
 	}
 
+	// A pending that echoes a stale service ID still restarts the wait.
+	response, err = client.Do(ctx, uds.Request{Service: 0x36, Data: []byte{1}})
+	if err != nil {
+		t.Fatalf("Transfer Data with mislabeled pending: %v", err)
+	}
+	if response.Service != 0x36 || !bytes.Equal(response.Data, []byte{1}) {
+		t.Fatalf("Transfer Data response = service %#x data %x", response.Service, response.Data)
+	}
+
 	if err := <-serverResult; err != nil {
 		t.Fatalf("ECU: %v", err)
 	}
@@ -131,6 +140,16 @@ func runServerLifecycle(ctx context.Context, link *isotp.Link, responseData []by
 	}
 	if err := link.Send(ctx, []byte{0x51, 1}); err != nil {
 		return fmt.Errorf("send ECU Reset response: %w", err)
+	}
+
+	if err := receiveRequest(ctx, link, []byte{0x36, 1}); err != nil {
+		return err
+	}
+	if err := link.Send(ctx, []byte{0x7f, 0x31, 0x78}); err != nil {
+		return fmt.Errorf("send mislabeled ResponsePending: %w", err)
+	}
+	if err := link.Send(ctx, []byte{0x76, 1}); err != nil {
+		return fmt.Errorf("send Transfer Data response: %w", err)
 	}
 	return nil
 }
