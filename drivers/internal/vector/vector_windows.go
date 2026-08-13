@@ -493,6 +493,9 @@ func (bus *Bus) ID() gocan.BusID { return bus.id }
 // Name returns the human-readable name of this bus.
 func (bus *Bus) Name() string { return bus.name }
 
+// Capture returns the capture that records this bus's traffic.
+func (bus *Bus) Capture() *gocan.Capture { return bus.capture }
+
 // Send hands frame to the XL Driver Library and records an accepted transmission.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {

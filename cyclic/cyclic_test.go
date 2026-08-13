@@ -143,6 +143,8 @@ func (bus *blockingBus) ID() gocan.BusID { return 1 }
 
 func (bus *blockingBus) Name() string { return "blocking" }
 
+func (bus *blockingBus) Capture() *gocan.Capture { return nil }
+
 func (bus *blockingBus) Send(context.Context, gocan.Frame) error {
 	bus.sends++
 	if bus.sends == 1 {

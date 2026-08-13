@@ -28,7 +28,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecuBus.Close() })
 
-	testerLink, err := isotp.New(testerBus, capture, isotp.Config{
+	testerLink, err := isotp.New(testerBus, isotp.Config{
 		TransmitID: 0x7e0,
 		ReceiveID:  0x7e8,
 		// Keep the segmented response in progress beyond P2* after its First
@@ -38,7 +38,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New tester link: %v", err)
 	}
-	ecuLink, err := isotp.New(ecuBus, capture, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
+	ecuLink, err := isotp.New(ecuBus, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
 	if err != nil {
 		t.Fatalf("New ECU link: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New functional client: %v", err)
 	}
-	functionalServer, err := isotp.New(ecuBus, capture, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7df})
+	functionalServer, err := isotp.New(ecuBus, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7df})
 	if err != nil {
 		t.Fatalf("New functional server: %v", err)
 	}

@@ -402,6 +402,11 @@ func (bus *Bus) Name() string {
 	return bus.name
 }
 
+// Capture returns the capture that records this bus's traffic.
+func (bus *Bus) Capture() *gocan.Capture {
+	return bus.capture
+}
+
 // Send hands frame to PCAN-Basic and records an accepted transmission.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := validateSendFrame(frame, bus.fd); err != nil {

@@ -67,7 +67,7 @@ func TestExchangeRoundTrip(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = ecu.Close() })
 
-			link, err := isotp.New(tester, capture, isotp.Config{
+			link, err := isotp.New(tester, isotp.Config{
 				TransmitID:               test.transmitID,
 				ReceiveID:                test.receiveID,
 				FrameFlags:               test.flags,
@@ -143,7 +143,7 @@ func TestFailuresReleaseLink(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecu.Close() })
 
-	link, err := isotp.New(tester, capture, isotp.Config{
+	link, err := isotp.New(tester, isotp.Config{
 		TransmitID:         0x7e0,
 		ReceiveID:          0x7e8,
 		FlowControlTimeout: 5 * time.Millisecond,
@@ -204,7 +204,7 @@ func TestInvalidResponsesDoNotEscapeConfiguredBounds(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecu.Close() })
 
-	link, err := isotp.New(tester, capture, isotp.Config{
+	link, err := isotp.New(tester, isotp.Config{
 		TransmitID:           0x7e0,
 		ReceiveID:            0x7e8,
 		MaximumPayloadLength: 4,
@@ -268,7 +268,7 @@ func TestExchangeStopsWithBus(t *testing.T) {
 		t.Fatalf("Open tester: %v", err)
 	}
 
-	link, err := isotp.New(tester, capture, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+	link, err := isotp.New(tester, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -313,11 +313,11 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = third.Close() })
 
-	sender, err := isotp.New(first, capture, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+	sender, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
 	if err != nil {
 		t.Fatalf("New sender: %v", err)
 	}
-	receiver, err := isotp.New(second, capture, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0, AdvertisedBlockSize: 2})
+	receiver, err := isotp.New(second, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0, AdvertisedBlockSize: 2})
 	if err != nil {
 		t.Fatalf("New receiver: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 
 	functionalReceivers := make([]*isotp.Link, 2)
 	for index, bus := range []gocan.Bus{second, third} {
-		functionalReceivers[index], err = isotp.New(bus, capture, isotp.Config{TransmitID: 0x7e8 + uint32(index), ReceiveID: 0x7df})
+		functionalReceivers[index], err = isotp.New(bus, isotp.Config{TransmitID: 0x7e8 + uint32(index), ReceiveID: 0x7df})
 		if err != nil {
 			t.Fatalf("New functional receiver %d: %v", index, err)
 		}
@@ -424,7 +424,7 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecu.Close() })
 
-	link, err := isotp.New(tester, capture, isotp.Config{
+	link, err := isotp.New(tester, isotp.Config{
 		TransmitID:              0x7e0,
 		ReceiveID:               0x7e8,
 		ConsecutiveFrameTimeout: time.Minute,
@@ -513,7 +513,7 @@ func TestSegmentationConformance(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = ecu.Close() })
 
-		link, err := isotp.New(tester, capture, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		link, err := isotp.New(tester, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

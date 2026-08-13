@@ -41,10 +41,11 @@ var (
 // context cancellation cannot revoke it: Send waits for the definite native
 // result and records an accepted transmission before returning nil.
 //
-// Done is closed after acquisition stops. Err then reports the background
-// failure, or nil after a normal Close. ID is the one-based channel stored in
-// captures and trace files; Name is its human-readable label. Close is
-// idempotent.
+// Capture returns the non-nil capture that records this bus's traffic. It
+// returns the same capture for the bus's lifetime. Done is closed after
+// acquisition stops. Err then reports the background failure, or nil after a
+// normal Close. ID is the one-based channel stored in captures and trace files;
+// Name is its human-readable label. Close is idempotent.
 //
 // A full native transmit queue is reported as ErrTransmitQueueFull. Send does
 // not wait for queue space or append a rejected transmission; callers decide
@@ -52,6 +53,7 @@ var (
 type Bus interface {
 	ID() BusID
 	Name() string
+	Capture() *Capture
 	Send(context.Context, Frame) error
 	Done() <-chan struct{}
 	Err() error
