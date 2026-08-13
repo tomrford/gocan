@@ -49,6 +49,18 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New client: %v", err)
 	}
+	functionalPath, err := isotp.NewFunctional(testerBus, isotp.FunctionalConfig{TransmitID: 0x7df})
+	if err != nil {
+		t.Fatalf("New functional path: %v", err)
+	}
+	functional, err := uds.NewFunctional(functionalPath)
+	if err != nil {
+		t.Fatalf("New functional client: %v", err)
+	}
+	functionalServer, err := isotp.New(ecuBus, capture, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7df})
+	if err != nil {
+		t.Fatalf("New functional server: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -103,6 +115,34 @@ func TestClientExchangeLifecycle(t *testing.T) {
 
 	if err := <-serverResult; err != nil {
 		t.Fatalf("ECU: %v", err)
+	}
+
+	broadcasts := []struct {
+		send func() error
+		want []byte
+	}{
+		{
+			send: func() error {
+				return functional.SendCommunicationControl(ctx, uds.CommunicationDisableRxAndTx, uds.CommunicationTypeNormalAndNetworkManagement)
+			},
+			want: []byte{0x28, 0x83, 0x03},
+		},
+		{
+			send: func() error { return functional.SendControlDTCSetting(ctx, uds.DTCSettingOff, nil) },
+			want: []byte{0x85, 0x82},
+		},
+		{
+			send: func() error { return functional.SendTesterPresent(ctx) },
+			want: []byte{0x3e, 0x80},
+		},
+	}
+	for _, broadcast := range broadcasts {
+		if err := broadcast.send(); err != nil {
+			t.Fatalf("send functional request %x: %v", broadcast.want, err)
+		}
+		if err := receiveRequest(ctx, functionalServer, broadcast.want); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
