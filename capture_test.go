@@ -329,6 +329,33 @@ func TestCaptureMixedRecords(t *testing.T) {
 	}
 }
 
+func TestCaptureBetween(t *testing.T) {
+	capture := NewCapture()
+	frames := []FrameEvent{
+		testDataEvent(t, testBus0, 0x100, 0, []byte{0}, 0, DirectionReceive),
+		testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 1, DirectionReceive),
+		testDataEvent(t, testBus0, 0x100, 0, []byte{2}, 2, DirectionReceive),
+	}
+	if err := capture.Append(frames[0]); err != nil {
+		t.Fatalf("append before range: %v", err)
+	}
+	start := capture.End()
+	if err := capture.Append(frames[1]); err != nil {
+		t.Fatalf("append in range: %v", err)
+	}
+	end := capture.End()
+	if err := capture.Append(frames[2]); err != nil {
+		t.Fatalf("append after range: %v", err)
+	}
+
+	requireEvents(t, "FramesBetween", capture.FramesBetween(start, end), frames[1:2])
+	ahead := capture.End()
+	ahead.record++
+	if got := capture.FramesBetween(start, ahead); len(got) != 0 {
+		t.Fatalf("FramesBetween with an invalid end returned %d frames", len(got))
+	}
+}
+
 func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
 	capture := newTestCapture(2, 8)
 	frame0 := testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 0, DirectionReceive)
@@ -864,6 +891,7 @@ func TestCaptureConcurrent(t *testing.T) {
 		reading.Add(1)
 		go func() {
 			defer reading.Done()
+			key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 			for {
 				select {
 				case <-done:
@@ -871,11 +899,16 @@ func TestCaptureConcurrent(t *testing.T) {
 				default:
 				}
 				capture.Frames()
-				capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive})
+				capture.Series(key)
 				capture.Latest(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive})
 				capture.Events()
 				capture.BusEvents(testBus0)
 				capture.Len()
+				end := capture.End()
+				capture.FramesBetween(Cursor{}, end)
+				capture.EventsBetween(Cursor{}, end)
+				capture.SeriesBetween(key, Cursor{}, end)
+				capture.BusEventsBetween(testBus0, Cursor{}, end)
 			}
 		}()
 	}
