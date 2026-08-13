@@ -696,11 +696,21 @@ func (capture *Capture) Frames() []FrameEvent {
 // output. Pass the zero Cursor to write the full retained Capture.
 func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
 	views, skip, next := capture.viewsSince(cursor)
-	lastWritten := cursor
 	startChunk := uint32(0)
 	if cursor.generation == next.generation {
 		startChunk = cursor.chunk
 	}
+	return writeRecords(views, skip, startChunk, cursor, next, writer)
+}
+
+func writeRecords(
+	views []captureView,
+	skip int,
+	firstChunk uint32,
+	lastWritten Cursor,
+	success Cursor,
+	writer RecordWriter,
+) (Cursor, error) {
 	for i := range views {
 		from := 0
 		if i == 0 {
@@ -717,8 +727,8 @@ func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (C
 				panic("gocan: capture record has an unknown kind")
 			}
 			recordCursor := Cursor{
-				generation: next.generation,
-				chunk:      startChunk + uint32(i),
+				generation: success.generation,
+				chunk:      firstChunk + uint32(i),
 				record:     uint32(record),
 			}
 			if err != nil {
@@ -727,7 +737,7 @@ func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (C
 			lastWritten = recordCursor
 		}
 	}
-	return next, nil
+	return success, nil
 }
 
 // FramesSince returns owned copies of every frame appended after cursor, in
@@ -736,9 +746,13 @@ func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (C
 // between; pass the zero Cursor to start from the beginning.
 func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor) {
 	views, skip, next := capture.viewsSince(cursor)
+	return framesFromViews(views, skip), next
+}
+
+func framesFromViews(views []captureView, skip int) []FrameEvent {
 	total := recordKindCount(views, skip, captureRecordFrame)
 	if total <= 0 {
-		return nil, next
+		return nil
 	}
 
 	frames := make([]FrameEvent, 0, total)
@@ -753,7 +767,7 @@ func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor) {
 			}
 		}
 	}
-	return frames, next
+	return frames
 }
 
 // Events returns every captured non-frame event in append order.
@@ -768,9 +782,13 @@ func (capture *Capture) Events() []Event {
 // between; pass the zero Cursor to start from the beginning.
 func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor) {
 	views, skip, next := capture.viewsSince(cursor)
+	return eventsFromViews(views, skip), next
+}
+
+func eventsFromViews(views []captureView, skip int) []Event {
 	total := recordKindCount(views, skip, captureRecordEvent)
 	if total <= 0 {
-		return nil, next
+		return nil
 	}
 
 	events := make([]Event, 0, total)
@@ -785,7 +803,7 @@ func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor) {
 			}
 		}
 	}
-	return events, next
+	return events
 }
 
 func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor) {

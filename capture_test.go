@@ -71,6 +71,7 @@ type captureWriterProbe struct {
 	failAt  int
 	failure error
 	calls   int
+	order   []captureRecordKind
 	frames  []uint32
 	events  []EventKind
 }
@@ -79,6 +80,7 @@ func (writer *captureWriterProbe) WriteFrame(event FrameEvent) error {
 	if err := writer.next(); err != nil {
 		return err
 	}
+	writer.order = append(writer.order, captureRecordFrame)
 	writer.frames = append(writer.frames, event.Frame.ID)
 	return nil
 }
@@ -87,6 +89,7 @@ func (writer *captureWriterProbe) WriteEvent(event Event) error {
 	if err := writer.next(); err != nil {
 		return err
 	}
+	writer.order = append(writer.order, captureRecordEvent)
 	writer.events = append(writer.events, event.Kind)
 	return nil
 }
@@ -326,6 +329,154 @@ func TestCaptureMixedRecords(t *testing.T) {
 	}
 	if got := capture.Len(); got != 7 {
 		t.Fatalf("Len() after rejected event = %d, want 7", got)
+	}
+}
+
+func TestCaptureBetween(t *testing.T) {
+	capture := newTestCapture(3, 24)
+	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	before := testDataEvent(t, key.Bus, key.ID, 0, []byte{0}, 0, key.Direction)
+	if err := capture.Append(before); err != nil {
+		t.Fatalf("append before range: %v", err)
+	}
+	start := capture.End()
+
+	error0, err := NewErrorFrameEvent(testBus0, captureTestBase.Add(time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewErrorFrameEvent: %v", err)
+	}
+	frame0 := testDataEvent(t, key.Bus, key.ID, 0, []byte{2}, 2, key.Direction)
+	state1, err := NewControllerStateEvent(
+		testBus1,
+		captureTestBase.Add(3*time.Millisecond),
+		ControllerWarning,
+		1,
+		2,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("NewControllerStateEvent: %v", err)
+	}
+	frame1 := testDataEvent(t, testBus1, 0x200, 0, []byte{4}, 4, DirectionTransmit)
+	frame2 := testDataEvent(t, key.Bus, key.ID, 0, []byte{5}, 5, key.Direction)
+	for _, appendRecord := range []func() error{
+		func() error { return capture.AppendEvent(error0) },
+		func() error { return capture.Append(frame0) },
+		func() error { return capture.AppendEvent(state1) },
+		func() error { return capture.Append(frame1) },
+		func() error { return capture.Append(frame2) },
+	} {
+		if err := appendRecord(); err != nil {
+			t.Fatalf("append range record: %v", err)
+		}
+	}
+	end := capture.End()
+
+	afterEvent, err := NewReceiveOverrunEvent(testBus0, captureTestBase.Add(6*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewReceiveOverrunEvent: %v", err)
+	}
+	afterFrame := testDataEvent(t, key.Bus, key.ID, 0, []byte{7}, 7, key.Direction)
+	if err := capture.AppendEvent(afterEvent); err != nil {
+		t.Fatalf("append event after range: %v", err)
+	}
+	if err := capture.Append(afterFrame); err != nil {
+		t.Fatalf("append frame after range: %v", err)
+	}
+
+	if len(capture.chunks) < 2 {
+		t.Fatal("test range did not cross a chunk boundary")
+	}
+	requireEvents(t, "FramesBetween", capture.FramesBetween(start, end), []FrameEvent{frame0, frame1, frame2})
+	requireBusEvents(t, "EventsBetween", capture.EventsBetween(start, end), []Event{error0, state1})
+	requireEvents(t, "SeriesBetween", capture.SeriesBetween(key, start, end), []FrameEvent{frame0, frame2})
+	requireBusEvents(t, "BusEventsBetween", capture.BusEventsBetween(testBus0, start, end), []Event{error0})
+
+	writer := &captureWriterProbe{failAt: -1}
+	written, err := capture.WriteRecordsBetween(start, end, writer)
+	if err != nil {
+		t.Fatalf("WriteRecordsBetween: %v", err)
+	}
+	if written != end {
+		t.Fatalf("WriteRecordsBetween cursor = %+v, want end %+v", written, end)
+	}
+	wantOrder := []captureRecordKind{
+		captureRecordEvent,
+		captureRecordFrame,
+		captureRecordEvent,
+		captureRecordFrame,
+		captureRecordFrame,
+	}
+	if len(writer.order) != len(wantOrder) {
+		t.Fatalf("WriteRecordsBetween wrote %d records, want %d", len(writer.order), len(wantOrder))
+	}
+	for i := range wantOrder {
+		if writer.order[i] != wantOrder[i] {
+			t.Fatalf("WriteRecordsBetween record %d kind = %d, want %d", i, writer.order[i], wantOrder[i])
+		}
+	}
+
+	if frames := capture.FramesBetween(end, end); len(frames) != 0 {
+		t.Fatalf("empty interval returned %d frames", len(frames))
+	}
+	foreign := NewCapture()
+	if err := foreign.Append(before); err != nil {
+		t.Fatalf("append to foreign capture: %v", err)
+	}
+	foreignEnd := foreign.End()
+	if events := capture.EventsBetween(start, foreignEnd); len(events) != 0 {
+		t.Fatalf("foreign end returned %d events", len(events))
+	}
+
+	capture.Clear()
+	if frames := capture.FramesBetween(start, end); len(frames) != 0 {
+		t.Fatalf("stale interval returned %d frames after Clear", len(frames))
+	}
+}
+
+func TestCaptureWriteRecordsBetweenFailureCursor(t *testing.T) {
+	capture := newTestCapture(2, 8)
+	before := testDataEvent(t, testBus0, 0x100, 0, []byte{0}, 0, DirectionReceive)
+	if err := capture.Append(before); err != nil {
+		t.Fatalf("append before range: %v", err)
+	}
+	start := capture.End()
+
+	frame := testDataEvent(t, testBus0, 0x200, 0, []byte{1}, 1, DirectionReceive)
+	errorEvent, err := NewErrorFrameEvent(testBus0, captureTestBase.Add(2*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewErrorFrameEvent: %v", err)
+	}
+	after := testDataEvent(t, testBus1, 0x300, 0, []byte{3}, 3, DirectionTransmit)
+	for _, appendRecord := range []func() error{
+		func() error { return capture.Append(frame) },
+		func() error { return capture.AppendEvent(errorEvent) },
+		func() error { return capture.Append(after) },
+	} {
+		if err := appendRecord(); err != nil {
+			t.Fatalf("append range record: %v", err)
+		}
+	}
+	end := capture.End()
+
+	writeFailure := errors.New("writer failed")
+	first := &captureWriterProbe{failAt: 1, failure: writeFailure}
+	written, err := capture.WriteRecordsBetween(start, end, first)
+	var recordError *RecordWriteError
+	if !errors.As(err, &recordError) || !errors.Is(err, writeFailure) {
+		t.Fatalf("WriteRecordsBetween error = %v, want wrapped *RecordWriteError", err)
+	}
+	if written == start || written == recordError.Cursor {
+		t.Fatal("failure did not distinguish start, last written, and failed record cursors")
+	}
+
+	retry := &captureWriterProbe{failAt: -1}
+	next, err := capture.WriteRecordsBetween(written, end, retry)
+	if err != nil {
+		t.Fatalf("retry WriteRecordsBetween: %v", err)
+	}
+	if next != end || len(retry.events) != 1 || len(retry.frames) != 1 || retry.frames[0] != after.Frame.ID {
+		t.Fatalf("retry wrote frames %v events %v and returned %+v", retry.frames, retry.events, next)
 	}
 }
 
