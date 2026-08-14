@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/tomrford/gocan/isotp"
@@ -59,11 +60,18 @@ func (err *NegativeResponseError) Error() string {
 	return fmt.Sprintf("UDS service %#02x returned negative response %#02x", err.Service, err.Code)
 }
 
-// Config sets the UDS application-response timeouts. Zero values select one
-// second for P2 and five seconds for P2*.
+// Config sets the UDS application-response timeouts and the P3Client
+// inter-request gap. Zero P2Timeout and P2StarTimeout select one second and
+// five seconds. Zero P3Client selects no extra gap, matching historical
+// behavior.
 type Config struct {
 	P2Timeout     time.Duration
 	P2StarTimeout time.Duration
+	// P3Client is the ISO 14229-2 minimum time after a completed request
+	// before this client starts another. It is a gap, not a response timeout.
+	// After a request is on the bus, Do and Send wait any remaining gap before
+	// returning so a following request on another client is also spaced.
+	P3Client time.Duration
 }
 
 // Client exchanges raw UDS requests over one ISO-TP link.
@@ -75,6 +83,7 @@ type Client struct {
 	link          *isotp.Link
 	p2Timeout     time.Duration
 	p2StarTimeout time.Duration
+	p3            requestGap
 }
 
 // New validates config and binds a raw UDS client to link.
@@ -90,26 +99,37 @@ func New(link *isotp.Link, config Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	p3Client, err := configuredDuration(config.P3Client, "P3 client")
+	if err != nil {
+		return nil, err
+	}
 	return &Client{
 		link:          link,
 		p2Timeout:     p2Timeout,
 		p2StarTimeout: p2StarTimeout,
+		p3:            requestGap{gap: p3Client},
 	}, nil
 }
 
 // Do sends request and waits for its final response. ResponsePending restarts
-// the wait using P2*. The caller's context bounds the complete exchange.
+// the wait using P2*. The caller's context bounds the complete exchange,
+// including any P3Client wait before and after the request.
 func (client *Client) Do(ctx context.Context, request Request) (Response, error) {
 	payload, err := request.payload()
 	if err != nil {
 		return Response{}, err
 	}
+	if err := client.p3.wait(ctx); err != nil {
+		return Response{}, err
+	}
 
 	exchange, err := client.link.Begin(ctx, payload)
 	if err != nil {
+		client.p3.finish(ctx)
 		return Response{}, err
 	}
 	defer exchange.Close()
+	defer client.p3.finish(ctx)
 
 	timeout := client.p2Timeout
 	timeoutError := ErrP2Timeout
@@ -134,13 +154,21 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 }
 
 // Send transmits request without waiting for a response. It is intended for a
-// request whose service data already contains suppressPositiveResponse.
+// request whose service data already contains suppressPositiveResponse. After
+// a successful transmit it waits any remaining P3Client gap before returning.
 func (client *Client) Send(ctx context.Context, request Request) error {
 	payload, err := request.payload()
 	if err != nil {
 		return err
 	}
-	return client.link.Send(ctx, payload)
+	if err := client.p3.wait(ctx); err != nil {
+		return err
+	}
+	if err := client.link.Send(ctx, payload); err != nil {
+		return err
+	}
+	client.p3.finish(ctx)
+	return nil
 }
 
 func (request Request) payload() ([]byte, error) {
@@ -199,4 +227,53 @@ func configuredTimeout(value, defaultValue time.Duration, name string) (time.Dur
 		return defaultValue, nil
 	}
 	return value, nil
+}
+
+func configuredDuration(value time.Duration, name string) (time.Duration, error) {
+	if value < 0 {
+		return 0, fmt.Errorf("UDS %s must not be negative", name)
+	}
+	return value, nil
+}
+
+// requestGap is the ISO 14229-2 P3Client minimum time between completing one
+// request and starting the next.
+type requestGap struct {
+	mu      sync.Mutex
+	gap     time.Duration
+	readyAt time.Time
+}
+
+func (gap *requestGap) wait(ctx context.Context) error {
+	if gap.gap == 0 {
+		return nil
+	}
+	gap.mu.Lock()
+	delay := time.Until(gap.readyAt)
+	gap.mu.Unlock()
+	return waitDuration(ctx, delay)
+}
+
+func (gap *requestGap) finish(ctx context.Context) {
+	if gap.gap == 0 {
+		return
+	}
+	gap.mu.Lock()
+	gap.readyAt = time.Now().Add(gap.gap)
+	gap.mu.Unlock()
+	_ = gap.wait(ctx)
+}
+
+func waitDuration(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

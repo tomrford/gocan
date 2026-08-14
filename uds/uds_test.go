@@ -53,7 +53,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New functional path: %v", err)
 	}
-	functional, err := uds.NewFunctional(functionalPath)
+	functional, err := uds.NewFunctional(functionalPath, uds.FunctionalConfig{})
 	if err != nil {
 		t.Fatalf("New functional client: %v", err)
 	}
@@ -203,4 +203,94 @@ func receiveRequest(ctx context.Context, link *isotp.Link, want []byte) error {
 		return fmt.Errorf("request = %x, want %x", request, want)
 	}
 	return nil
+}
+
+func TestClientP3ClientSpacesRequests(t *testing.T) {
+	const p3 = 40 * time.Millisecond
+	capture := gocan.NewCapture()
+	var network virtual.Network
+	testerBus, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
+	if err != nil {
+		t.Fatalf("Open tester: %v", err)
+	}
+	t.Cleanup(func() { _ = testerBus.Close() })
+	ecuBus, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ECU"})
+	if err != nil {
+		t.Fatalf("Open ECU: %v", err)
+	}
+	t.Cleanup(func() { _ = ecuBus.Close() })
+
+	testerLink, err := isotp.New(testerBus, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+	if err != nil {
+		t.Fatalf("New tester link: %v", err)
+	}
+	ecuLink, err := isotp.New(ecuBus, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
+	if err != nil {
+		t.Fatalf("New ECU link: %v", err)
+	}
+	client, err := uds.New(testerLink, uds.Config{P3Client: p3})
+	if err != nil {
+		t.Fatalf("New client: %v", err)
+	}
+	functionalPath, err := isotp.NewFunctional(testerBus, isotp.FunctionalConfig{TransmitID: 0x7df})
+	if err != nil {
+		t.Fatalf("New functional path: %v", err)
+	}
+	functional, err := uds.NewFunctional(functionalPath, uds.FunctionalConfig{P3Client: p3})
+	if err != nil {
+		t.Fatalf("New functional client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverResult := make(chan error, 1)
+	go func() {
+		for range 2 {
+			if err := receiveRequest(ctx, ecuLink, []byte{0x22, 0xf1, 0x90}); err != nil {
+				serverResult <- err
+				return
+			}
+			if err := ecuLink.Send(ctx, []byte{0x62, 0xf1, 0x90, 0x00}); err != nil {
+				serverResult <- err
+				return
+			}
+		}
+		serverResult <- nil
+	}()
+
+	if err := functional.SendTesterPresent(ctx); err != nil {
+		t.Fatalf("functional Tester Present: %v", err)
+	}
+	if _, err := client.ReadDataByIdentifier(ctx, 0xf190); err != nil {
+		t.Fatalf("first Read DID: %v", err)
+	}
+	if err := functional.SendTesterPresent(ctx); err != nil {
+		t.Fatalf("second functional Tester Present: %v", err)
+	}
+	if _, err := client.ReadDataByIdentifier(ctx, 0xf190); err != nil {
+		t.Fatalf("second Read DID: %v", err)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatalf("ECU: %v", err)
+	}
+
+	var requests []gocan.FrameEvent
+	for _, frame := range capture.FramesBetween(gocan.Cursor{}, capture.End()) {
+		if frame.Bus != testerBus.ID() || frame.Direction != gocan.DirectionTransmit {
+			continue
+		}
+		if frame.Frame.ID != 0x7df && frame.Frame.ID != 0x7e0 {
+			continue
+		}
+		requests = append(requests, frame)
+	}
+	if len(requests) != 4 {
+		t.Fatalf("tester requests = %d, want 4", len(requests))
+	}
+	for index := 1; index < len(requests); index++ {
+		gap := requests[index].Timestamp.Sub(requests[index-1].Timestamp)
+		if gap < p3 {
+			t.Fatalf("request %d after %d gap %s, want at least %s", index, index-1, gap, p3)
+		}
+	}
 }
