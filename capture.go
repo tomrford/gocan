@@ -201,9 +201,15 @@ type captureLocation struct {
 	record uint32
 }
 
+// captureWaiter parks the Next calls following one key. The append that wakes
+// them carries its own record, so a woken Next needs no second walk. A wake
+// with a zero cursor carries no record and means Clear discarded the position
+// the waiters hold.
 type captureWaiter struct {
-	ready chan struct{}
-	count int
+	ready  chan struct{}
+	count  int
+	event  FrameEvent
+	cursor Cursor
 }
 
 func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
@@ -454,7 +460,13 @@ func (capture *Capture) Append(event FrameEvent) error {
 
 	capture.latest[key] = captureLocation{chunk: chunk, record: recordIndex}
 	capture.length++
-	capture.wakeWaitersLocked(key)
+	// Decoding the record just written hands the waiters an owned copy, which
+	// holds nothing of the chunk it came from.
+	capture.wakeWaitersLocked(key, chunk.view().frameAt(recordIndex), Cursor{
+		generation: capture.generation,
+		chunk:      uint32(len(capture.chunks) - 1),
+		record:     recordIndex,
+	})
 	return nil
 }
 
@@ -497,12 +509,17 @@ func (capture *Capture) AppendEvent(event Event) error {
 	return nil
 }
 
-func (capture *Capture) wakeWaitersLocked(key FrameKey) {
+// wakeWaitersLocked hands the record that woke the waiters to every Next
+// parked on key, or a zero cursor when Clear discarded their position. The
+// waiter leaves the map first, so only the first matching append after parking
+// can set it, which is the earliest record those callers have not seen.
+func (capture *Capture) wakeWaitersLocked(key FrameKey, event FrameEvent, cursor Cursor) {
 	waiter := capture.waiters[key]
 	if waiter == nil {
 		return
 	}
 	delete(capture.waiters, key)
+	waiter.event, waiter.cursor = event, cursor
 	close(waiter.ready)
 }
 
@@ -556,48 +573,39 @@ func (capture *Capture) endLocked() Cursor {
 // happens while Next waits, returns cursor unchanged with
 // ErrCursorOutOfRange.
 func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (FrameEvent, Cursor, error) {
-	search := cursor
 	for {
 		// The walk to the snapshot's end reads write-once history, so as in the
 		// Since reads only capturing the snapshot holds the read lock.
 		capture.mu.RLock()
-		snapshot := capture.nextSearchLocked(key, search)
+		snapshot := capture.nextSearchLocked(key, cursor)
 		capture.mu.RUnlock()
 		if snapshot.err != nil {
-			// Only the position this walk advanced to may have gone stale while
-			// the caller's cursor still places, so restart from the caller's.
-			// When that one is unplaceable too, the next pass reports it.
-			if search != cursor {
-				search = cursor
-				continue
-			}
 			return FrameEvent{}, cursor, snapshot.err
 		}
 		if event, next, ok := snapshot.find(); ok {
 			return event, next, nil
 		}
-		search = snapshot.end()
 
-		// Nothing matched up to the snapshot's end. Register the waiter and
-		// re-capture in one critical section, then walk the delta that arrived
-		// during the unlocked walk: an append lands either inside that delta or
-		// after the waiter can hear it, so no frame slips between walk and wait.
-		waiter, delta := capture.addWaiter(key, search)
+		// Nothing matched. Register the waiter and re-walk in one critical
+		// section, so an append lands either inside that walk or after the
+		// waiter can hear it, never between the two.
+		waiter, delta := capture.addWaiter(key, cursor)
 		if delta.err != nil {
-			if search != cursor {
-				search = cursor
-				continue
-			}
 			return FrameEvent{}, cursor, delta.err
 		}
 		if event, next, ok := delta.find(); ok {
 			capture.removeWaiter(key, waiter)
 			return event, next, nil
 		}
-		search = delta.end()
 
 		select {
 		case <-waiter.ready:
+			// An append wake carries the frame it appended, the earliest this
+			// call has not seen. A Clear wake carries nothing, so the next pass
+			// reports the discarded cursor, or waits again if it still places.
+			if waiter.cursor != (Cursor{}) {
+				return waiter.event, waiter.cursor, nil
+			}
 		case <-ctx.Done():
 			capture.removeWaiter(key, waiter)
 			return FrameEvent{}, cursor, ctx.Err()
@@ -608,12 +616,11 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 // nextSearch freezes the state one Next walk scans after the lock is
 // released. Every chunk but the last is sealed, so their views and key states
 // may be read lazily without the lock; the active chunk's view and state were
-// frozen while it was held. start and boundary place the origin in the
-// snapshot; err reports an origin the snapshot cannot place, and leaves the
+// frozen while it was held. start and boundary place the cursor in the
+// snapshot; err reports a cursor the snapshot cannot place, and leaves the
 // walk unusable.
 type nextSearch struct {
 	key         FrameKey
-	origin      Cursor
 	generation  uint64
 	chunks      []*captureChunk
 	activeView  captureView
@@ -628,7 +635,6 @@ type nextSearch struct {
 func (capture *Capture) nextSearchLocked(key FrameKey, cursor Cursor) nextSearch {
 	search := nextSearch{
 		key:         key,
-		origin:      cursor,
 		generation:  capture.generation,
 		chunks:      capture.chunks,
 		activeView:  capture.active.view(),
@@ -646,7 +652,7 @@ func (search nextSearch) chunkAt(index int) (captureView, captureKeyState) {
 	return chunk.view(), chunk.keyStates[search.key]
 }
 
-// find returns the first frame matching the search key after its origin, up
+// find returns the first frame matching the search key after its cursor, up
 // to the snapshot's end.
 func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 	start, boundary := search.start, search.boundary
@@ -662,9 +668,9 @@ func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 		}
 		// The backward walk from the chunk's series tail visits only records
 		// of this key, so the cost of following a frontier scales with the
-		// key's own traffic since origin, not with everything else appended in
-		// between. The earliest record visited before crossing stop is the
-		// first match.
+		// key's own traffic since the cursor, not with everything else
+		// appended in between. The earliest record visited before crossing
+		// stop is the first match.
 		first := noCaptureRecord
 		for r := state.lastRecord; r != noCaptureRecord && int(r) > stop; r = view.records[r].frameData().previous {
 			first = r
@@ -681,22 +687,6 @@ func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 		return view.frameAt(first), next, true
 	}
 	return FrameEvent{}, Cursor{}, false
-}
-
-// end returns the cursor of the snapshot's newest record, or the origin when
-// the snapshot holds nothing beyond it.
-func (search nextSearch) end() Cursor {
-	for chunkIndex := len(search.chunks) - 1; chunkIndex >= search.start; chunkIndex-- {
-		view, _ := search.chunkAt(chunkIndex)
-		if count := len(view.records); count > 0 {
-			return Cursor{
-				generation: search.generation,
-				chunk:      uint32(chunkIndex),
-				record:     uint32(count - 1),
-			}
-		}
-	}
-	return search.origin
 }
 
 // addWaiter registers one waiter for key and captures the search state from
@@ -1129,6 +1119,6 @@ func (capture *Capture) Clear() {
 	// reports the loss or, for a caller reading from the beginning, waits on
 	// the fresh history.
 	for key := range capture.waiters {
-		capture.wakeWaitersLocked(key)
+		capture.wakeWaitersLocked(key, FrameEvent{}, Cursor{})
 	}
 }

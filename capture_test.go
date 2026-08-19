@@ -845,8 +845,8 @@ func TestCaptureNextAcrossClear(t *testing.T) {
 		t.Fatalf("%d waiter entries remain after a stale wake", leaked)
 	}
 
-	// A Next reading from the beginning walks the capture before it parks, so
-	// its internal position goes stale while the caller's does not. It must
+	// A Next reading from the beginning holds a cursor Clear cannot discard, so
+	// the wake Clear sends carries no record and the call parks again. It must
 	// deliver the first frame of the new generation, not an error.
 	if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, []byte{2}, 1, DirectionReceive)); err != nil {
 		t.Fatalf("append unrelated frame: %v", err)
