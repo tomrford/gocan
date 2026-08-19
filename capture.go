@@ -236,8 +236,8 @@ var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
 // records it names, fails the read that carries it with ErrCursorOutOfRange,
 // as does a range whose end precedes its start. A failed read returns no
 // records and the cursor it was given, so a caller either reports the loss or
-// resynchronises from Oldest, the zero Cursor, or End. No read silently
-// re-reads or skips history. A range whose end equals its start is empty, not
+// resynchronises from the zero Cursor or End. No read silently re-reads or
+// skips history. A range whose end equals its start is empty, not
 // an error.
 type Cursor struct {
 	generation uint64
@@ -263,11 +263,6 @@ func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk) (chu
 	index := int(cursor.chunk) - int(chunks[0].sequence)
 	if index < 0 || index >= len(chunks) {
 		return 0, 0, ErrCursorOutOfRange
-	}
-	// Oldest names the boundary before a chunk's first record, the one
-	// position no stored record can express.
-	if cursor.record == noCaptureRecord {
-		return index, -1, nil
 	}
 	return index, int(cursor.record), nil
 }
@@ -563,26 +558,9 @@ func (capture *Capture) endLocked() Cursor {
 	return Cursor{}
 }
 
-// Oldest returns the position before the oldest record the capture retains. A
-// caller whose cursor a Prune or Clear discarded can resynchronise from it to
-// read everything still retained.
-func (capture *Capture) Oldest() Cursor {
-	capture.mu.RLock()
-	defer capture.mu.RUnlock()
-	return capture.oldestLocked()
-}
-
-func (capture *Capture) oldestLocked() Cursor {
-	return Cursor{
-		generation: capture.generation,
-		chunk:      capture.chunks[0].sequence,
-		record:     noCaptureRecord,
-	}
-}
-
-// Prune discards records at or before cursor and returns Oldest, the position
-// before the oldest record still retained. It is how a capture that runs
-// indefinitely releases memory; the caller owns the policy of what to keep.
+// Prune discards records at or before cursor. It is how a capture that runs
+// indefinitely releases memory; the caller owns the policy of what to keep,
+// and the zero Cursor still reads everything that survives.
 //
 // Pruning is chunk-granular, so it is approximate in the caller's favour: it
 // discards only whole sealed chunks that end at or before cursor and never the
@@ -593,14 +571,14 @@ func (capture *Capture) oldestLocked() Cursor {
 // Pruning past a cursor another reader holds is allowed: that reader's next
 // read fails with ErrCursorOutOfRange and resynchronises. Reads already in
 // progress finish against the chunks they observed. An unplaceable cursor
-// returns it unchanged with ErrCursorOutOfRange and discards nothing.
-func (capture *Capture) Prune(cursor Cursor) (Cursor, error) {
+// reports ErrCursorOutOfRange and discards nothing.
+func (capture *Capture) Prune(cursor Cursor) error {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
 	chunk, boundary, err := locateCursor(cursor, capture.generation, capture.chunks)
 	if err != nil {
-		return cursor, err
+		return err
 	}
 	// The cursor's own chunk goes too when the cursor names its last record and
 	// a later chunk has sealed it.
@@ -617,7 +595,7 @@ func (capture *Capture) Prune(cursor Cursor) (Cursor, error) {
 		// Readers holding an earlier snapshot keep the chunks they observed.
 		capture.chunks = append([]*captureChunk(nil), capture.chunks[discard:]...)
 	}
-	return capture.oldestLocked(), nil
+	return nil
 }
 
 // Next returns the first frame matching key after cursor. It returns

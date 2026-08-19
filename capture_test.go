@@ -698,17 +698,12 @@ func TestCapturePrune(t *testing.T) {
 
 	// A cursor inside a chunk discards nothing: pruning never compacts inside
 	// one.
-	oldest := capture.Oldest()
-	if got, err := capture.Prune(cursors[sealed-2]); err != nil || got != oldest || capture.Len() != len(appended) {
-		t.Fatalf("Prune inside the first chunk = (%+v, %v), retaining %d records", got, err, capture.Len())
+	if err := capture.Prune(cursors[sealed-2]); err != nil || capture.Len() != len(appended) {
+		t.Fatalf("Prune inside the first chunk = %v, retaining %d records", err, capture.Len())
 	}
 
-	pruned, err := capture.Prune(cursors[sealed-1])
-	if err != nil {
+	if err := capture.Prune(cursors[sealed-1]); err != nil {
 		t.Fatalf("Prune at the chunk seam: %v", err)
-	}
-	if pruned == oldest || pruned != capture.Oldest() {
-		t.Fatalf("Prune returned %+v, want the new Oldest %+v", pruned, capture.Oldest())
 	}
 	if capture.Len() != len(appended)-sealed {
 		t.Fatalf("capture retains %d records, want %d", capture.Len(), len(appended)-sealed)
@@ -722,7 +717,6 @@ func TestCapturePrune(t *testing.T) {
 		want   []FrameEvent
 	}{
 		{"the zero Cursor", Cursor{}, appended[sealed:]},
-		{"Oldest", pruned, appended[sealed:]},
 		{"a retained cursor", cursors[sealed+1], appended[sealed+2:]},
 	} {
 		frames, _, err := capture.FramesSince(from.cursor)
@@ -737,8 +731,8 @@ func TestCapturePrune(t *testing.T) {
 	if !errors.Is(err, ErrCursorOutOfRange) || len(stale) != 0 || returned != cursors[0] {
 		t.Fatalf("FramesSince a discarded cursor = %d frames, cursor %+v, %v", len(stale), returned, err)
 	}
-	if got, err := capture.Prune(cursors[0]); !errors.Is(err, ErrCursorOutOfRange) || got != cursors[0] {
-		t.Fatalf("Prune with a discarded cursor = (%+v, %v), want it back with ErrCursorOutOfRange", got, err)
+	if err := capture.Prune(cursors[0]); !errors.Is(err, ErrCursorOutOfRange) {
+		t.Fatalf("Prune with a discarded cursor = %v, want ErrCursorOutOfRange", err)
 	}
 
 	// Latest owns its frames, so pruning cannot take the newest frame away,
@@ -752,8 +746,8 @@ func TestCapturePrune(t *testing.T) {
 
 	// The chunk being appended to is never discarded, so pruning at the
 	// frontier still keeps the newest records.
-	if got, err := capture.Prune(capture.End()); err != nil || got != pruned || capture.Len() != len(appended)-sealed {
-		t.Fatalf("Prune at the capture end = (%+v, %v), retaining %d records", got, err, capture.Len())
+	if err := capture.Prune(capture.End()); err != nil || capture.Len() != len(appended)-sealed {
+		t.Fatalf("Prune at the capture end = %v, retaining %d records", err, capture.Len())
 	}
 
 	collected := false
