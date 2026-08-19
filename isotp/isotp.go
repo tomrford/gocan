@@ -89,7 +89,8 @@ type Config struct {
 // repositions it for the same reason: it has to recognise its own Flow Control.
 // Clearing the underlying capture during an operation discards that position,
 // so the operation fails with gocan.ErrCursorStale rather than reading traffic
-// from before the reset.
+// from before the reset, and the position moves to the present so the next
+// operation starts from records the capture still holds.
 //
 // Link serialises Send calls and Receive calls independently. Begin owns both
 // paths until its Exchange closes. A server must finish Receive before calling
@@ -328,6 +329,12 @@ func (link *Link) newExchange() *Exchange {
 func (link *Link) nextFrame(ctx context.Context) (gocan.FrameEvent, error) {
 	frame, cursor, err := link.capture.Next(ctx, link.receiveKey, link.cursor)
 	if err != nil {
+		if errors.Is(err, gocan.ErrCursorStale) {
+			// The capture discarded the position this link was reading from.
+			// The operation still fails, but repositioning to the present keeps
+			// a server that only receives usable for the next one.
+			link.cursor = link.capture.End()
+		}
 		return gocan.FrameEvent{}, err
 	}
 	link.cursor = cursor

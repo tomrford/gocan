@@ -513,11 +513,19 @@ func rangeReads(capture *Capture, key FrameKey) []rangeRead {
 // back the cursor the caller passed in, so a retry loop can neither replay nor
 // skip history.
 func TestCaptureCursorErrors(t *testing.T) {
-	capture := NewCapture()
+	// Three 8-byte payloads seal the first chunk, so the fixture spans a seam
+	// and a rejected cursor can name a sealed chunk as well as the active one.
+	capture := newTestCapture(4, 24)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
-	if err := capture.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{0}, 0, DirectionReceive)); err != nil {
-		t.Fatalf("append first frame: %v", err)
+	appendFrame := func(seq int) {
+		t.Helper()
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		if err := capture.Append(testDataEvent(t, testBus0, 0x100, 0, data, seq, DirectionReceive)); err != nil {
+			t.Fatalf("Append %d: %v", seq, err)
+		}
 	}
+	appendFrame(0)
 	early := capture.End()
 	state, err := NewControllerStateEvent(testBus0, captureTestBase.Add(time.Millisecond), ControllerActive, 0, 0, true)
 	if err != nil {
@@ -526,10 +534,13 @@ func TestCaptureCursorErrors(t *testing.T) {
 	if err := capture.AppendEvent(state); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
-	if err := capture.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 2, DirectionReceive)); err != nil {
-		t.Fatalf("append second frame: %v", err)
+	for seq := 2; seq < 6; seq++ {
+		appendFrame(seq)
 	}
 	end := capture.End()
+	if end.chunk == 0 {
+		t.Fatalf("fixture stayed inside one chunk, want it to rotate")
+	}
 
 	reads := cursorReads(capture, key)
 	bounded := rangeReads(capture, key)
@@ -552,8 +563,12 @@ func TestCaptureCursorErrors(t *testing.T) {
 			if records, err := read.read(cursor, end); !errors.Is(err, want) || records != 0 {
 				t.Errorf("%s with a rejected start = %d records, %v, want %v", read.name, records, err, want)
 			}
-			if records, err := read.read(Cursor{}, cursor); !errors.Is(err, want) || records != 0 {
-				t.Errorf("%s with a rejected end = %d records, %v, want %v", read.name, records, err, want)
+			// A rejected end must fail behind both a zero and a placeable start.
+			for _, start := range []Cursor{{}, early} {
+				if records, err := read.read(start, cursor); !errors.Is(err, want) || records != 0 {
+					t.Errorf("%s with a rejected end after start %+v = %d records, %v, want %v",
+						read.name, start, records, err, want)
+				}
 			}
 		}
 	}
@@ -573,6 +588,15 @@ func TestCaptureCursorErrors(t *testing.T) {
 		beyondChunk := end
 		beyondChunk.chunk++
 		requireRejected(t, beyondChunk, ErrCursorOutOfRange)
+
+		// A record past the end of a sealed chunk is out of range even though
+		// later chunks hold that many records.
+		beyondSealed := Cursor{
+			generation: capture.generation,
+			chunk:      0,
+			record:     uint32(len(capture.chunks[0].records)),
+		}
+		requireRejected(t, beyondSealed, ErrCursorOutOfRange)
 	})
 
 	t.Run("reversed range", func(t *testing.T) {
@@ -956,6 +980,96 @@ func TestCaptureNextWalksAcrossRotation(t *testing.T) {
 	capture.mu.RUnlock()
 	if leaked != 0 {
 		t.Fatalf("%d waiter entries remain after cancellation", leaked)
+	}
+}
+
+// waitForCaptureWaiter blocks until one Next has parked on key.
+func waitForCaptureWaiter(t *testing.T, capture *Capture, key FrameKey) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		capture.mu.RLock()
+		parked := capture.waiters[key] != nil
+		capture.mu.RUnlock()
+		if parked {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("no Next parked on the key")
+}
+
+// TestCaptureNextAcrossClear covers a Next that is already waiting when Clear
+// discards the position it holds: it must report the loss promptly, and a
+// caller reading from the beginning must keep waiting instead, because the zero
+// Cursor still places.
+func TestCaptureNextAcrossClear(t *testing.T) {
+	capture := newTestCapture(8, 64)
+	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
+	if err := capture.Append(testDataEvent(t, testBus0, key.ID, 0, []byte{1}, 0, DirectionReceive)); err != nil {
+		t.Fatalf("append first frame: %v", err)
+	}
+	held := capture.End()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		cursor Cursor
+		err    error
+	}
+	stale := make(chan result, 1)
+	go func() {
+		_, next, err := capture.Next(ctx, key, held)
+		stale <- result{next, err}
+	}()
+	waitForCaptureWaiter(t, capture, key)
+	capture.Clear()
+
+	select {
+	case got := <-stale:
+		if !errors.Is(got.err, ErrCursorStale) {
+			t.Fatalf("waiting Next after Clear returned %v, want ErrCursorStale", got.err)
+		}
+		if got.cursor != held {
+			t.Fatalf("waiting Next returned cursor %+v, want the cursor it was given", got.cursor)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiting Next did not report Clear discarding its position")
+	}
+	capture.mu.RLock()
+	leaked := len(capture.waiters)
+	capture.mu.RUnlock()
+	if leaked != 0 {
+		t.Fatalf("%d waiter entries remain after a stale wake", leaked)
+	}
+
+	// A Next reading from the beginning walks the capture before it parks, so
+	// its internal position goes stale while the caller's does not. It must
+	// deliver the first frame of the new generation, not an error.
+	if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, []byte{2}, 1, DirectionReceive)); err != nil {
+		t.Fatalf("append unrelated frame: %v", err)
+	}
+	fromStart := make(chan result, 1)
+	frames := make(chan FrameEvent, 1)
+	go func() {
+		event, next, err := capture.Next(ctx, key, Cursor{})
+		frames <- event
+		fromStart <- result{next, err}
+	}()
+	waitForCaptureWaiter(t, capture, key)
+	capture.Clear()
+	revived := testDataEvent(t, testBus0, key.ID, 0, []byte{3}, 2, DirectionReceive)
+	if err := capture.Append(revived); err != nil {
+		t.Fatalf("append after Clear: %v", err)
+	}
+	got := <-fromStart
+	if got.err != nil {
+		t.Fatalf("Next from the zero Cursor across Clear: %v", got.err)
+	}
+	if event := <-frames; !eventsEqual(event, revived) {
+		t.Fatalf("Next from the zero Cursor returned %+v, want %+v", event, revived)
 	}
 }
 

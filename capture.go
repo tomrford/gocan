@@ -590,6 +590,13 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 		snapshot := capture.nextSearchLocked(key, search)
 		capture.mu.RUnlock()
 		if snapshot.err != nil {
+			// Only the position this walk advanced to may have gone stale while
+			// the caller's cursor still places, so restart from the caller's.
+			// When that one is unplaceable too, the next pass reports it.
+			if search != cursor {
+				search = cursor
+				continue
+			}
 			return FrameEvent{}, cursor, snapshot.err
 		}
 		if event, next, ok := snapshot.find(); ok {
@@ -604,6 +611,10 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 		waiter, delta := capture.addWaiter(key, search)
 		if delta.err != nil {
 			capture.removeWaiter(key, waiter)
+			if search != cursor {
+				search = cursor
+				continue
+			}
 			return FrameEvent{}, cursor, delta.err
 		}
 		if event, next, ok := delta.find(); ok {
@@ -1137,7 +1148,9 @@ func (capture *Capture) Len() int {
 }
 
 // Clear discards all retained records and indexes. Readers already in progress
-// finish against their existing snapshot.
+// finish against their existing snapshot. A Next waiting on a cursor this
+// Clear discards wakes and reports ErrCursorStale instead of waiting for
+// unrelated traffic to reveal the reset.
 func (capture *Capture) Clear() {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
@@ -1153,4 +1166,12 @@ func (capture *Capture) Clear() {
 	clear(capture.latest)
 	capture.length = 0
 	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))
+
+	// Every waiter is parked on a position this Clear just discarded. Waking
+	// them makes each Next re-walk against the new generation, where it either
+	// reports the loss or, for a caller reading from the beginning, waits on
+	// the fresh history.
+	for key := range capture.waiters {
+		capture.wakeWaitersLocked(key)
+	}
 }

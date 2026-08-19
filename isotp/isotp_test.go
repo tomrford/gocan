@@ -780,3 +780,79 @@ func testFDLength(length int) int {
 	}
 	return 64
 }
+
+// TestReceiveSurvivesCaptureClear covers a server link whose capture is reset
+// while it waits: the pending Receive must report the discarded position, and
+// the link must remain usable for the next payload.
+func TestReceiveSurvivesCaptureClear(t *testing.T) {
+	capture := gocan.NewCapture()
+	var network virtual.Network
+	first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
+	if err != nil {
+		t.Fatalf("Open second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	sender, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+	if err != nil {
+		t.Fatalf("New sender: %v", err)
+	}
+	receiver, err := isotp.New(second, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
+	if err != nil {
+		t.Fatalf("New receiver: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// One payload first, so the link holds a real position rather than the zero
+	// Cursor that New starts from.
+	opening := patternedPayload(4, 0x40)
+	if err := sender.Send(ctx, opening); err != nil {
+		t.Fatalf("Send opening payload: %v", err)
+	}
+	if got, err := receiver.Receive(ctx); err != nil || !bytes.Equal(got, opening) {
+		t.Fatalf("Receive opening payload = %x, %v", got, err)
+	}
+
+	failures := make(chan error, 1)
+	go func() {
+		_, err := receiver.Receive(ctx)
+		failures <- err
+	}()
+
+	// Reset the capture until the waiting Receive notices, without assuming how
+	// quickly it parks.
+	deadline := time.Now().Add(2 * time.Second)
+	var received error
+	for received == nil {
+		capture.Clear()
+		select {
+		case received = <-failures:
+		case <-time.After(10 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("Receive did not report the capture reset")
+			}
+		}
+	}
+	if !errors.Is(received, gocan.ErrCursorStale) {
+		t.Fatalf("Receive across Clear = %v, want gocan.ErrCursorStale", received)
+	}
+
+	payload := patternedPayload(5, 0x50)
+	if err := sender.Send(ctx, payload); err != nil {
+		t.Fatalf("Send after Clear: %v", err)
+	}
+	got, err := receiver.Receive(ctx)
+	if err != nil {
+		t.Fatalf("Receive after Clear: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload after Clear = %x, want %x", got, payload)
+	}
+}
