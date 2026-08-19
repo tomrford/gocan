@@ -102,15 +102,16 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	chunks := capture.chunks
 	activeView := capture.active.view()
 	generation := capture.generation
+	pruneSeam := capture.pruneSeam
 	capture.mu.RUnlock()
 
 	// The end boundary is the last record the interval includes, so a zero end
 	// bounds an empty interval at the start of the capture.
-	last, endRecord, err := locateCursor(end, generation, chunks)
+	last, endRecord, err := locateCursor(end, generation, chunks, pruneSeam)
 	if err != nil {
 		return nil, 0, fmt.Errorf("capture range end: %w", err)
 	}
-	first, startRecord, err := locateCursor(start, generation, chunks)
+	first, startRecord, err := locateCursor(start, generation, chunks, pruneSeam)
 	if err != nil {
 		return nil, 0, fmt.Errorf("capture range start: %w", err)
 	}

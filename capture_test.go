@@ -710,13 +710,15 @@ func TestCapturePrune(t *testing.T) {
 	}
 
 	// Cursors keep their identity across the discard: the retained one still
-	// names the same record, and both starting points read the rest.
+	// names the same record, the prune-point cursor still starts the rest, and
+	// each starting point reads the retained history.
 	for _, from := range []struct {
 		label  string
 		cursor Cursor
 		want   []FrameEvent
 	}{
 		{"the zero Cursor", Cursor{}, appended[sealed:]},
+		{"the prune-point cursor", cursors[sealed-1], appended[sealed:]},
 		{"a retained cursor", cursors[sealed+1], appended[sealed+2:]},
 	} {
 		frames, _, err := capture.FramesSince(from.cursor)
@@ -725,6 +727,18 @@ func TestCapturePrune(t *testing.T) {
 		}
 		requireEvents(t, "FramesSince "+from.label+" after pruning", frames, from.want)
 	}
+
+	// A follow-and-prune loop continues from the prune point: Next and a
+	// bounded read both see the first retained record.
+	event, _, err := capture.Next(context.Background(), key, cursors[sealed-1])
+	if err != nil || !eventsEqual(event, appended[sealed]) {
+		t.Fatalf("Next from the prune-point cursor = (%+v, %v), want %+v", event, err, appended[sealed])
+	}
+	between, err := capture.FramesBetween(cursors[sealed-1], capture.End())
+	if err != nil {
+		t.Fatalf("FramesBetween from the prune-point cursor: %v", err)
+	}
+	requireEvents(t, "FramesBetween from the prune-point cursor", between, appended[sealed:])
 
 	// A cursor into the discarded chunk is rejected, never quietly replaced.
 	stale, returned, err := capture.FramesSince(cursors[0])
@@ -916,10 +930,9 @@ func waitForCaptureWaiter(t *testing.T, capture *Capture, key FrameKey) {
 	t.Fatal("no Next parked on the key")
 }
 
-// TestCaptureNextAcrossClear covers a Next that is already waiting when Clear
-// discards the position it holds: it must report the loss promptly, and a
-// caller reading from the beginning must keep waiting instead, because the zero
-// Cursor still places.
+// TestCaptureNextAcrossClear covers the registration boundary: a Next that has
+// parked no longer depends on its input cursor and survives Clear, while a new
+// call carrying that old-generation cursor still fails.
 func TestCaptureNextAcrossClear(t *testing.T) {
 	capture := newTestCapture(8, 64)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
@@ -933,60 +946,162 @@ func TestCaptureNextAcrossClear(t *testing.T) {
 	defer cancel()
 
 	type result struct {
+		event  FrameEvent
 		cursor Cursor
 		err    error
 	}
-	stale := make(chan result, 1)
+	pending := make(chan result, 1)
 	go func() {
-		_, next, err := capture.Next(ctx, key, held)
-		stale <- result{next, err}
+		event, next, err := capture.Next(ctx, key, held)
+		pending <- result{event, next, err}
 	}()
 	waitForCaptureWaiter(t, capture, key)
 	capture.Clear()
 
 	select {
-	case got := <-stale:
-		if !errors.Is(got.err, ErrCursorOutOfRange) {
-			t.Fatalf("waiting Next after Clear returned %v, want ErrCursorOutOfRange", got.err)
-		}
-		if got.cursor != held {
-			t.Fatalf("waiting Next returned cursor %+v, want the cursor it was given", got.cursor)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("waiting Next did not report Clear discarding its position")
-	}
-	capture.mu.RLock()
-	leaked := len(capture.waiters)
-	capture.mu.RUnlock()
-	if leaked != 0 {
-		t.Fatalf("%d waiter entries remain after a stale wake", leaked)
+	case got := <-pending:
+		t.Fatalf("registered Next returned (%+v, %v) during Clear", got.event, got.err)
+	default:
 	}
 
-	// A Next reading from the beginning holds a cursor Clear cannot discard, so
-	// the wake Clear sends carries no record and the call parks again. It must
-	// deliver the first frame of the new generation, not an error.
 	if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, []byte{2}, 1, DirectionReceive)); err != nil {
 		t.Fatalf("append unrelated frame: %v", err)
 	}
-	fromStart := make(chan result, 1)
-	frames := make(chan FrameEvent, 1)
-	go func() {
-		event, next, err := capture.Next(ctx, key, Cursor{})
-		frames <- event
-		fromStart <- result{next, err}
-	}()
-	waitForCaptureWaiter(t, capture, key)
-	capture.Clear()
+	select {
+	case got := <-pending:
+		t.Fatalf("registered Next returned unrelated frame (%+v, %v)", got.event, got.err)
+	default:
+	}
+
 	revived := testDataEvent(t, testBus0, key.ID, 0, []byte{3}, 2, DirectionReceive)
 	if err := capture.Append(revived); err != nil {
 		t.Fatalf("append after Clear: %v", err)
 	}
-	got := <-fromStart
-	if got.err != nil {
-		t.Fatalf("Next from the zero Cursor across Clear: %v", got.err)
+	got := <-pending
+	if got.err != nil || !eventsEqual(got.event, revived) {
+		t.Fatalf("registered Next across Clear = (%+v, %v), want %+v", got.event, got.err, revived)
 	}
-	if event := <-frames; !eventsEqual(event, revived) {
-		t.Fatalf("Next from the zero Cursor returned %+v, want %+v", event, revived)
+	if got.cursor != capture.End() {
+		t.Fatalf("registered Next cursor = %+v, want %+v", got.cursor, capture.End())
+	}
+
+	if event, next, err := capture.Next(context.Background(), key, held); !errors.Is(err, ErrCursorOutOfRange) || event != (FrameEvent{}) || next != held {
+		t.Fatalf("new Next from cleared cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
+	}
+}
+
+// TestCaptureNextAcrossPrune covers Next already parked when Prune discards a
+// sealed chunk. Both calls have exhausted a valid snapshot, so their input
+// cursors are no longer needed and the next matching append wakes them. A new
+// call from the earlier discarded cursor still fails.
+func TestCaptureNextAcrossPrune(t *testing.T) {
+	// Three 8-byte payloads seal the first chunk. Only the first record matches
+	// the followed key, so both Next calls wait: one from that record, one from
+	// the prune point at the sealed tail.
+	capture := newTestCapture(4, 24)
+	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
+	var discarded, sealed Cursor
+	for seq := range 3 {
+		id := other.ID
+		if seq == 0 {
+			id = key.ID
+		}
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		event := testDataEvent(t, testBus0, id, 0, data, seq, DirectionReceive)
+		if err := capture.Append(event); err != nil {
+			t.Fatalf("Append %d: %v", seq, err)
+		}
+		if seq == 0 {
+			discarded = capture.End()
+		}
+		sealed = capture.End()
+	}
+	if discarded == sealed {
+		t.Fatal("sealed chunk has one record, want a discarded cursor distinct from the prune point")
+	}
+	if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, make([]byte, 8), 3, DirectionReceive)); err != nil {
+		t.Fatalf("append unrelated frame: %v", err)
+	}
+	if len(capture.chunks) != 2 {
+		t.Fatalf("capture holds %d chunks, want a sealed chunk and an active one", len(capture.chunks))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		event  FrameEvent
+		cursor Cursor
+		err    error
+	}
+	stale := make(chan result, 1)
+	seam := make(chan result, 1)
+	go func() {
+		event, next, err := capture.Next(ctx, key, discarded)
+		stale <- result{event, next, err}
+	}()
+	go func() {
+		event, next, err := capture.Next(ctx, key, sealed)
+		seam <- result{event, next, err}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		capture.mu.RLock()
+		parked := 0
+		if waiter := capture.waiters[key]; waiter != nil {
+			parked = waiter.count
+		}
+		capture.mu.RUnlock()
+		if parked == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Next waiters did not register")
+		}
+		runtime.Gosched()
+	}
+
+	if err := capture.Prune(sealed); err != nil {
+		t.Fatalf("Prune at the chunk seam: %v", err)
+	}
+
+	for label, result := range map[string]<-chan result{
+		"discarded-cursor Next": stale,
+		"prune-point Next":      seam,
+	} {
+		select {
+		case got := <-result:
+			t.Fatalf("%s returned (%+v, %v) during Prune", label, got.event, got.err)
+		default:
+		}
+	}
+
+	revived := testDataEvent(t, testBus0, key.ID, 0, []byte{4}, 4, DirectionReceive)
+	if err := capture.Append(revived); err != nil {
+		t.Fatalf("append after Prune: %v", err)
+	}
+	for label, result := range map[string]<-chan result{
+		"discarded-cursor Next": stale,
+		"prune-point Next":      seam,
+	} {
+		got := <-result
+		if got.err != nil || !eventsEqual(got.event, revived) || got.cursor != capture.End() {
+			t.Fatalf("%s = (%+v, %+v, %v), want %+v at %+v", label, got.event, got.cursor, got.err, revived, capture.End())
+		}
+	}
+
+	if event, next, err := capture.Next(context.Background(), key, discarded); !errors.Is(err, ErrCursorOutOfRange) || event != (FrameEvent{}) || next != discarded {
+		t.Fatalf("new Next from pruned cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
+	}
+
+	capture.mu.RLock()
+	leaked := len(capture.waiters)
+	capture.mu.RUnlock()
+	if leaked != 0 {
+		t.Fatalf("%d waiter entries remain after the prune/wait/append lifecycle", leaked)
 	}
 }
 
