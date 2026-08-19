@@ -1139,7 +1139,7 @@ func TestCaptureConcurrentClear(t *testing.T) {
 	}()
 
 	var churning sync.WaitGroup
-	churning.Add(2)
+	churning.Add(3)
 	go func() {
 		defer churning.Done()
 		for {
@@ -1188,8 +1188,44 @@ func TestCaptureConcurrentClear(t *testing.T) {
 			}
 		}
 	}()
+
+	// A follower on the blocking path meets Clear at every point of the walk,
+	// including the window between the walk and the waiter registration, and
+	// must never leave a waiter behind.
+	go func() {
+		defer churning.Done()
+		key := FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive}
+		var cursor Cursor
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			waitContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			_, next, err := capture.Next(waitContext, key, cursor)
+			cancel()
+			switch {
+			case err == nil:
+				cursor = next
+			case errors.Is(err, ErrCursorStale):
+				cursor = capture.Oldest()
+			case errors.Is(err, context.DeadlineExceeded):
+			default:
+				t.Errorf("tailing Next under Clear: %v", err)
+				return
+			}
+		}
+	}()
 	<-done
 	churning.Wait()
+
+	capture.mu.RLock()
+	leaked := len(capture.waiters)
+	capture.mu.RUnlock()
+	if leaked != 0 {
+		t.Fatalf("%d waiter entries remain after Clear churn", leaked)
+	}
 
 	// Whatever survived the final Clear must be, per bus, a consecutive run of
 	// the most recently appended sequence numbers, and the total must agree.
