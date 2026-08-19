@@ -8,11 +8,11 @@ import "fmt"
 // record. On success it returns end. Failure behavior matches
 // WriteRecordsSince.
 func (capture *Capture) WriteRecordsBetween(start, end Cursor, writer RecordWriter) (Cursor, error) {
-	views, skip, firstChunk, err := capture.viewsBetween(start, end)
+	views, skip, err := capture.viewsBetween(start, end)
 	if err != nil {
 		return start, err
 	}
-	return writeRecords(views, skip, firstChunk, start, end, writer)
+	return writeRecords(views, skip, start, end, writer)
 }
 
 // FramesBetween returns owned copies of every frame in the capture interval
@@ -20,7 +20,7 @@ func (capture *Capture) WriteRecordsBetween(start, end Cursor, writer RecordWrit
 // cursor is included. A zero start begins at the first retained record. Records
 // appended after end are never included.
 func (capture *Capture) FramesBetween(start, end Cursor) ([]FrameEvent, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
+	views, skip, err := capture.viewsBetween(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +32,7 @@ func (capture *Capture) FramesBetween(start, end Cursor) ([]FrameEvent, error) {
 // cursor is included. A zero start begins at the first retained record. Records
 // appended after end are never included.
 func (capture *Capture) EventsBetween(start, end Cursor) ([]Event, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
+	views, skip, err := capture.viewsBetween(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func (capture *Capture) EventsBetween(start, end Cursor) ([]Event, error) {
 // and the end cursor is included. A zero start begins at the first retained
 // record. Records appended after end are never included.
 func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) ([]FrameEvent, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
+	views, skip, err := capture.viewsBetween(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) ([]FrameE
 // cursor is included. A zero start begins at the first retained record. Records
 // appended after end are never included.
 func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) ([]Event, error) {
-	views, skip, _, err := capture.viewsBetween(start, end)
+	views, skip, err := capture.viewsBetween(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +96,8 @@ func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) ([]Event,
 
 // viewsBetween freezes the records in (start, end]. The returned views are
 // clipped at end, so readers can use the same loops as an unbounded Since
-// read. firstChunk is the capture index represented by views[0].
-func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, skip int, firstChunk uint32, err error) {
+// read.
+func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, skip int, err error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
 	activeView := capture.active.view()
@@ -108,14 +108,14 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	// bounds an empty interval at the start of the capture.
 	last, endRecord, err := locateCursor(end, generation, chunks)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("capture range end: %w", err)
+		return nil, 0, fmt.Errorf("capture range end: %w", err)
 	}
 	first, startRecord, err := locateCursor(start, generation, chunks)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("capture range start: %w", err)
+		return nil, 0, fmt.Errorf("capture range start: %w", err)
 	}
 	if first > last || first == last && startRecord > endRecord {
-		return nil, 0, 0, fmt.Errorf("capture range end precedes its start: %w", ErrCursorOutOfRange)
+		return nil, 0, fmt.Errorf("capture range end precedes its start: %w", ErrCursorOutOfRange)
 	}
 
 	views = make([]captureView, last-first+1)
@@ -131,8 +131,8 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	// it. Only a library bug can name a record the chunk does not hold.
 	tail := views[len(views)-1].records
 	if endRecord+1 > len(tail) {
-		return nil, 0, 0, fmt.Errorf("capture range end: %w", ErrCursorOutOfRange)
+		return nil, 0, fmt.Errorf("capture range end: %w", ErrCursorOutOfRange)
 	}
 	views[len(views)-1].records = tail[:endRecord+1]
-	return views, startRecord + 1, uint32(first), nil
+	return views, startRecord + 1, nil
 }

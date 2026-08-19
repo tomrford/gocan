@@ -109,7 +109,7 @@ func newTestCapture(recordCapacity, payloadCapacity int) *Capture {
 		generation: captureEpochs.Add(1),
 		chunks:     []*captureChunk{active},
 		active:     active,
-		latest:     make(map[FrameKey]captureLocation),
+		latest:     make(map[FrameKey]FrameEvent),
 	}
 }
 
@@ -649,6 +649,116 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	}
 	seriesA, _ = readSeries("resynchronised", Cursor{})
 	requireEvents(t, "resynchronised after Clear", seriesA, []FrameEvent{revived})
+}
+
+// TestCapturePrune covers the pruning lifecycle: a discard that keeps whole
+// chunks, cursors that keep naming the same records across it, the cursors it
+// rejects, and the release of the discarded storage, which no read can see.
+func TestCapturePrune(t *testing.T) {
+	// Three 8-byte payloads seal the first chunk, so the appends that follow
+	// fill an active chunk that pruning must not touch.
+	capture := newTestCapture(4, 24)
+	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	var appended []FrameEvent
+	var cursors []Cursor
+	for seq := range 12 {
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		event := testDataEvent(t, testBus0, key.ID, 0, data, seq, DirectionReceive)
+		if err := capture.Append(event); err != nil {
+			t.Fatalf("Append %d: %v", seq, err)
+		}
+		appended = append(appended, event)
+		cursors = append(cursors, capture.End())
+	}
+
+	// Pruning must leave the sealed chunk collectable, which no read reveals.
+	// The chunk pointer stays out of this frame, where a live stack slot could
+	// pin it by itself.
+	released := make(chan struct{})
+	var sealed int
+	func() {
+		chunk := capture.chunks[0]
+		sealed = len(chunk.records)
+		runtime.AddCleanup(chunk, func(done chan struct{}) { close(done) }, released)
+	}()
+	if len(capture.chunks) != 2 || sealed == len(appended) {
+		t.Fatalf("capture holds %d chunks with %d sealed records, want a sealed chunk and an active one",
+			len(capture.chunks), sealed)
+	}
+
+	// A cursor inside a chunk discards nothing: pruning never compacts inside
+	// one.
+	oldest := capture.Oldest()
+	if got, err := capture.Prune(cursors[sealed-2]); err != nil || got != oldest || capture.Len() != len(appended) {
+		t.Fatalf("Prune inside the first chunk = (%+v, %v), retaining %d records", got, err, capture.Len())
+	}
+
+	pruned, err := capture.Prune(cursors[sealed-1])
+	if err != nil {
+		t.Fatalf("Prune at the chunk seam: %v", err)
+	}
+	if pruned == oldest || pruned != capture.Oldest() {
+		t.Fatalf("Prune returned %+v, want the new Oldest %+v", pruned, capture.Oldest())
+	}
+	if capture.Len() != len(appended)-sealed {
+		t.Fatalf("capture retains %d records, want %d", capture.Len(), len(appended)-sealed)
+	}
+
+	// Cursors keep their identity across the discard: the retained one still
+	// names the same record, and both starting points read the rest.
+	for _, from := range []struct {
+		label  string
+		cursor Cursor
+		want   []FrameEvent
+	}{
+		{"the zero Cursor", Cursor{}, appended[sealed:]},
+		{"Oldest", pruned, appended[sealed:]},
+		{"a retained cursor", cursors[sealed+1], appended[sealed+2:]},
+	} {
+		frames, _, err := capture.FramesSince(from.cursor)
+		if err != nil {
+			t.Fatalf("FramesSince %s after pruning: %v", from.label, err)
+		}
+		requireEvents(t, "FramesSince "+from.label+" after pruning", frames, from.want)
+	}
+
+	// A cursor into the discarded chunk is rejected, never quietly replaced.
+	stale, returned, err := capture.FramesSince(cursors[0])
+	if !errors.Is(err, ErrCursorOutOfRange) || len(stale) != 0 || returned != cursors[0] {
+		t.Fatalf("FramesSince a discarded cursor = %d frames, cursor %+v, %v", len(stale), returned, err)
+	}
+	if got, err := capture.Prune(cursors[0]); !errors.Is(err, ErrCursorOutOfRange) || got != cursors[0] {
+		t.Fatalf("Prune with a discarded cursor = (%+v, %v), want it back with ErrCursorOutOfRange", got, err)
+	}
+
+	// Latest owns its frames, so pruning cannot take the newest frame away.
+	if latest, ok := capture.Latest(key); !ok || !eventsEqual(latest, appended[len(appended)-1]) {
+		t.Fatalf("Latest after pruning = %+v (ok=%t), want the newest appended frame", latest, ok)
+	}
+
+	// The chunk being appended to is never discarded, so pruning at the
+	// frontier still keeps the newest records.
+	if got, err := capture.Prune(capture.End()); err != nil || got != pruned || capture.Len() != len(appended)-sealed {
+		t.Fatalf("Prune at the capture end = (%+v, %v), retaining %d records", got, err, capture.Len())
+	}
+
+	collected := false
+	for deadline := time.Now().Add(10 * time.Second); !collected && time.Now().Before(deadline); {
+		runtime.GC()
+		select {
+		case <-released:
+			collected = true
+		default:
+			runtime.Gosched()
+		}
+	}
+	if !collected {
+		t.Fatalf("a discarded chunk is still referenced, with %d records retained", capture.Len())
+	}
+	// The capture has to outlive the collections above, or the discarded chunk
+	// would go with it and prove nothing.
+	runtime.KeepAlive(capture)
 }
 
 func TestCaptureNext(t *testing.T) {
