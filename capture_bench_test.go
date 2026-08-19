@@ -86,8 +86,13 @@ func BenchmarkAppendUnderLoad(b *testing.B) {
 	go func() {
 		defer func() { consumers <- struct{}{} }()
 		var cursor Cursor
+		var err error
 		for ctx.Err() == nil {
-			_, cursor = capture.SeriesSince(FrameKey{Bus: 1, ID: 0x100, Direction: DirectionReceive}, cursor)
+			_, cursor, err = capture.SeriesSince(FrameKey{Bus: 1, ID: 0x100, Direction: DirectionReceive}, cursor)
+			if err != nil {
+				b.Errorf("SeriesSince: %v", err)
+				return
+			}
 		}
 	}()
 	go func() {

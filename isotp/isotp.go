@@ -87,6 +87,9 @@ type Config struct {
 // unread payloads, because ISO-TP has no transaction identifier and a request
 // must not be answered by traffic that predates it. A multi-frame Send
 // repositions it for the same reason: it has to recognise its own Flow Control.
+// Clearing the underlying capture during an operation discards that position,
+// so the operation fails with gocan.ErrCursorStale rather than reading traffic
+// from before the reset.
 //
 // Link serialises Send calls and Receive calls independently. Begin owns both
 // paths until its Exchange closes. A server must finish Receive before calling
