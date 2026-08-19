@@ -126,11 +126,11 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 
 	// The end boundary is the last record the interval includes, so a zero end
 	// bounds an empty interval at the start of the capture.
-	last, endRecord, err := locateCursor(end, generation, chunks, activeView)
+	last, endRecord, err := locateCursor(end, generation, chunks)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("capture range end: %w", err)
 	}
-	first, startRecord, err := locateCursor(start, generation, chunks, activeView)
+	first, startRecord, err := locateCursor(start, generation, chunks)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("capture range start: %w", err)
 	}
@@ -147,6 +147,12 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 			views[i] = chunks[chunkIndex].view()
 		}
 	}
-	views[len(views)-1].records = views[len(views)-1].records[:endRecord+1]
+	// The end record is cut from the frozen tail view, so it has to lie inside
+	// it. Only a library bug can name a record the chunk does not hold.
+	tail := views[len(views)-1].records
+	if endRecord+1 > len(tail) {
+		return nil, 0, 0, fmt.Errorf("capture range end: %w", ErrCursorOutOfRange)
+	}
+	views[len(views)-1].records = tail[:endRecord+1]
 	return views, startRecord + 1, uint32(first), nil
 }

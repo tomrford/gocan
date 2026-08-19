@@ -218,10 +218,11 @@ func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
 var (
 	// ErrCursorStale indicates a cursor the capture can no longer place: it was
 	// minted by a different Capture, or by this one before Clear. Resynchronise
-	// from Oldest to keep the retained history, or from End to skip it.
+	// from the zero Cursor to keep the retained history, or from End to skip it.
 	ErrCursorStale = errors.New("capture cursor is stale")
-	// ErrCursorOutOfRange indicates a cursor beyond the capture's end, or a
-	// range whose end precedes its start.
+	// ErrCursorOutOfRange indicates a range whose end precedes its start. It
+	// also guards a cursor beyond the capture's end, which no cursor a Capture
+	// minted can be.
 	ErrCursorOutOfRange = errors.New("capture cursor is out of range")
 )
 
@@ -238,24 +239,23 @@ var (
 // from another Capture or from before Clear reports ErrCursorStale, and a
 // cursor past the capture's end reports ErrCursorOutOfRange. A failed read
 // returns no records and the cursor it was given, so a caller either reports
-// the loss or resynchronises from Oldest or End. No read silently re-reads or
-// skips history.
+// the loss or resynchronises from the zero Cursor or End. No read silently
+// re-reads or skips history.
 type Cursor struct {
 	generation uint64
 	chunk      uint32
 	record     uint32
 }
 
-// locateCursor places cursor in a snapshot of chunks taken in generation,
-// whose last chunk is frozen as active. It reports the chunk a read starts in
-// and the record boundary within it: that record and every earlier one lie
-// before the cursor.
-func locateCursor(
-	cursor Cursor,
-	generation uint64,
-	chunks []*captureChunk,
-	active captureView,
-) (chunk, boundary int, err error) {
+// locateCursor places cursor in a snapshot of chunks taken in generation. It
+// reports the chunk a read starts in and the record boundary within it: that
+// record and every earlier one lie before the cursor.
+//
+// Generations are process-unique and chunks are never removed, so a cursor
+// that matches the generation names a chunk that still exists and a record
+// that chunk still holds. The bound is therefore a guard against a library
+// bug, not a caller mistake.
+func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk) (chunk, boundary int, err error) {
 	if cursor == (Cursor{}) {
 		return 0, -1, nil
 	}
@@ -263,15 +263,6 @@ func locateCursor(
 		return 0, 0, ErrCursorStale
 	}
 	if int(cursor.chunk) >= len(chunks) {
-		return 0, 0, ErrCursorOutOfRange
-	}
-	// The active chunk grows under append, so only its frozen view may be
-	// measured without the lock. Sealed chunks never change again.
-	records := len(active.records)
-	if int(cursor.chunk) != len(chunks)-1 {
-		records = len(chunks[cursor.chunk].records)
-	}
-	if int(cursor.record) >= records {
 		return 0, 0, ErrCursorOutOfRange
 	}
 	return int(cursor.chunk), int(cursor.record), nil
@@ -533,17 +524,6 @@ func (capture *Capture) Latest(key FrameKey) (FrameEvent, bool) {
 	return location.chunk.view().frameAt(location.record), true
 }
 
-// Oldest returns the cursor just before the first record the capture still
-// retains. It pairs with End: a read since Oldest returns the whole retained
-// history, and a read since End returns only what arrives later. It is the
-// resynchronisation point for a caller whose cursor a read rejected.
-//
-// Capture keeps every record until Clear, so the oldest position is the start
-// of the capture: the zero Cursor.
-func (capture *Capture) Oldest() Cursor {
-	return Cursor{}
-}
-
 // End returns the cursor at the current end of the capture. A caller can pass
 // it to Next or any Since method to observe only later records.
 func (capture *Capture) End() Cursor {
@@ -661,12 +641,7 @@ func (capture *Capture) nextSearchLocked(key FrameKey, cursor Cursor) nextSearch
 		activeView:  capture.active.view(),
 		activeState: capture.active.keyStates[key],
 	}
-	search.start, search.boundary, search.err = locateCursor(
-		cursor,
-		search.generation,
-		search.chunks,
-		search.activeView,
-	)
+	search.start, search.boundary, search.err = locateCursor(cursor, search.generation, search.chunks)
 	return search
 }
 
@@ -921,7 +896,7 @@ func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor, e
 	// The placed cursor names its own chunk, so the read jumps straight to it
 	// and its cost scales with what arrived since the cursor, not with total
 	// capture history.
-	start, boundary, err := locateCursor(cursor, generation, chunks, activeView)
+	start, boundary, err := locateCursor(cursor, generation, chunks)
 	if err != nil {
 		return nil, 0, cursor, err
 	}
@@ -989,7 +964,7 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 	// The placed cursor names its own chunk, so the read jumps straight to it
 	// and its cost scales with what arrived since the cursor, not with total
 	// capture history.
-	start, boundary, err := locateCursor(cursor, generation, chunks, activeView)
+	start, boundary, err := locateCursor(cursor, generation, chunks)
 	if err != nil {
 		return nil, cursor, err
 	}
@@ -1081,7 +1056,7 @@ func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Curso
 	generation := capture.generation
 	capture.mu.RUnlock()
 
-	start, boundary, err := locateCursor(cursor, generation, chunks, activeView)
+	start, boundary, err := locateCursor(cursor, generation, chunks)
 	if err != nil {
 		return nil, cursor, err
 	}
