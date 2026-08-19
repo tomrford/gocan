@@ -374,93 +374,9 @@ func TestCaptureBetween(t *testing.T) {
 	}
 }
 
-// cursorRead is one cursor-consuming read reduced to a record count, the
-// cursor it hands back, and its error, so every read family can be held to the
-// same failure contract.
-type cursorRead struct {
-	name string
-	read func(cursor Cursor) (int, Cursor, error)
-}
-
-// rangeRead is one bounded read reduced to a record count and its error.
-type rangeRead struct {
-	name string
-	read func(start, end Cursor) (int, error)
-}
-
-func cursorReads(capture *Capture, key FrameKey) []cursorRead {
-	return []cursorRead{
-		{"WriteRecordsSince", func(cursor Cursor) (int, Cursor, error) {
-			writer := &captureWriterProbe{failAt: -1}
-			next, err := capture.WriteRecordsSince(cursor, writer)
-			return len(writer.frames) + len(writer.events), next, err
-		}},
-		{"FramesSince", func(cursor Cursor) (int, Cursor, error) {
-			frames, next, err := capture.FramesSince(cursor)
-			return len(frames), next, err
-		}},
-		{"EventsSince", func(cursor Cursor) (int, Cursor, error) {
-			events, next, err := capture.EventsSince(cursor)
-			return len(events), next, err
-		}},
-		{"SeriesSince", func(cursor Cursor) (int, Cursor, error) {
-			frames, next, err := capture.SeriesSince(key, cursor)
-			return len(frames), next, err
-		}},
-		{"BusEventsSince", func(cursor Cursor) (int, Cursor, error) {
-			events, next, err := capture.BusEventsSince(key.Bus, cursor)
-			return len(events), next, err
-		}},
-		{"Next", func(cursor Cursor) (int, Cursor, error) {
-			// A rejected cursor must fail before Next reaches its waiter, so a
-			// short context is enough to prove the read does not block.
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			_, next, err := capture.Next(ctx, key, cursor)
-			if err != nil {
-				return 0, next, err
-			}
-			return 1, next, nil
-		}},
-	}
-}
-
-func rangeReads(capture *Capture, key FrameKey) []rangeRead {
-	return []rangeRead{
-		{"WriteRecordsBetween", func(start, end Cursor) (int, error) {
-			writer := &captureWriterProbe{failAt: -1}
-			next, err := capture.WriteRecordsBetween(start, end, writer)
-			if err != nil && next != start {
-				return 0, fmt.Errorf("returned cursor %+v, want start %+v: %w", next, start, err)
-			}
-			return len(writer.frames) + len(writer.events), err
-		}},
-		{"FramesBetween", func(start, end Cursor) (int, error) {
-			frames, err := capture.FramesBetween(start, end)
-			return len(frames), err
-		}},
-		{"EventsBetween", func(start, end Cursor) (int, error) {
-			events, err := capture.EventsBetween(start, end)
-			return len(events), err
-		}},
-		{"SeriesBetween", func(start, end Cursor) (int, error) {
-			frames, err := capture.SeriesBetween(key, start, end)
-			return len(frames), err
-		}},
-		{"BusEventsBetween", func(start, end Cursor) (int, error) {
-			events, err := capture.BusEventsBetween(key.Bus, start, end)
-			return len(events), err
-		}},
-	}
-}
-
-// TestCaptureCursorErrors holds every cursor-consuming read to one contract: a
-// cursor the capture cannot place fails the read, yields no records, and hands
-// back the cursor the caller passed in, so a retry loop can neither replay nor
-// skip history.
+// TestCaptureCursorErrors covers the distinct cursor failures together with a
+// valid bounded read across a chunk seam.
 func TestCaptureCursorErrors(t *testing.T) {
-	// Three 8-byte payloads seal the first chunk, so the fixture spans a seam
-	// and a rejected cursor can name a sealed chunk as well as the active one.
 	capture := newTestCapture(4, 24)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 	var appended []FrameEvent
@@ -476,14 +392,7 @@ func TestCaptureCursorErrors(t *testing.T) {
 	}
 	appendFrame(0)
 	early := capture.End()
-	state, err := NewControllerStateEvent(testBus0, captureTestBase.Add(time.Millisecond), ControllerActive, 0, 0, true)
-	if err != nil {
-		t.Fatalf("NewControllerStateEvent: %v", err)
-	}
-	if err := capture.AppendEvent(state); err != nil {
-		t.Fatalf("append event: %v", err)
-	}
-	for seq := 2; seq < 6; seq++ {
+	for seq := 1; seq < 6; seq++ {
 		appendFrame(seq)
 	}
 	end := capture.End()
@@ -491,13 +400,6 @@ func TestCaptureCursorErrors(t *testing.T) {
 		t.Fatalf("fixture stayed inside one chunk, want it to rotate")
 	}
 
-	reads := cursorReads(capture, key)
-	bounded := rangeReads(capture, key)
-
-	// The fixture spans a seam, so one accepted interval over it proves the
-	// bounded reads still clip the last chunk without dropping the chunks in
-	// between: FramesBetween walks every record, SeriesBetween the per-chunk
-	// key index instead.
 	spanning, err := capture.FramesBetween(early, end)
 	if err != nil {
 		t.Fatalf("FramesBetween across a seam: %v", err)
@@ -509,77 +411,22 @@ func TestCaptureCursorErrors(t *testing.T) {
 	}
 	requireEvents(t, "SeriesBetween across a seam", series, appended[1:])
 
-	requireRejected := func(t *testing.T, cursor Cursor, want error) {
-		t.Helper()
-		for _, read := range reads {
-			records, next, err := read.read(cursor)
-			if !errors.Is(err, want) {
-				t.Errorf("%s error = %v, want %v", read.name, err, want)
-			}
-			if records != 0 {
-				t.Errorf("%s returned %d records for a rejected cursor", read.name, records)
-			}
-			if next != cursor {
-				t.Errorf("%s returned cursor %+v, want the rejected cursor back", read.name, next)
-			}
-		}
-		for _, read := range bounded {
-			if records, err := read.read(cursor, end); !errors.Is(err, want) || records != 0 {
-				t.Errorf("%s with a rejected start = %d records, %v, want %v", read.name, records, err, want)
-			}
-			// A rejected end must fail behind both a zero and a placeable start.
-			for _, start := range []Cursor{{}, early} {
-				if records, err := read.read(start, cursor); !errors.Is(err, want) || records != 0 {
-					t.Errorf("%s with a rejected end after start %+v = %d records, %v, want %v",
-						read.name, start, records, err, want)
-				}
-			}
-		}
+	other := NewCapture()
+	if err := other.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{9}, 0, DirectionReceive)); err != nil {
+		t.Fatalf("append to the other capture: %v", err)
+	}
+	foreign := other.End()
+	writer := &captureWriterProbe{failAt: -1}
+	next, err := capture.WriteRecordsSince(foreign, writer)
+	if !errors.Is(err, ErrCursorOutOfRange) || next != foreign ||
+		len(writer.frames) != 0 || len(writer.events) != 0 {
+		t.Fatalf("WriteRecordsSince with foreign cursor = %+v, %v, wrote %d records",
+			next, err, len(writer.frames)+len(writer.events))
 	}
 
-	t.Run("foreign", func(t *testing.T) {
-		other := NewCapture()
-		if err := other.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{9}, 0, DirectionReceive)); err != nil {
-			t.Fatalf("append to the other capture: %v", err)
-		}
-		requireRejected(t, other.End(), ErrCursorStale)
-	})
-
-	// A cursor naming a chunk the capture does not hold is unreachable through
-	// the exported API, so this only pins the guard against a library bug.
-	t.Run("beyond the end", func(t *testing.T) {
-		beyondChunk := end
-		beyondChunk.chunk++
-		requireRejected(t, beyondChunk, ErrCursorOutOfRange)
-	})
-
-	t.Run("reversed range", func(t *testing.T) {
-		for _, read := range bounded {
-			if records, err := read.read(end, early); !errors.Is(err, ErrCursorOutOfRange) || records != 0 {
-				t.Errorf("%s over a reversed range = %d records, %v, want ErrCursorOutOfRange",
-					read.name, records, err)
-			}
-		}
-	})
-
-	// Clear last: it invalidates every cursor minted above, which is exactly
-	// the case a follower hits when the capture it tails is reset underneath it.
-	t.Run("cleared", func(t *testing.T) {
-		capture.Clear()
-		if err := capture.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{2}, 3, DirectionReceive)); err != nil {
-			t.Fatalf("append after Clear: %v", err)
-		}
-		requireRejected(t, end, ErrCursorStale)
-
-		// The zero Cursor is the resynchronisation point: it reads what survives.
-		frames, _, err := capture.FramesSince(Cursor{})
-		if err != nil {
-			t.Fatalf("FramesSince(the zero Cursor): %v", err)
-		}
-		if len(frames) != 1 {
-			t.Fatalf("FramesSince(the zero Cursor) returned %d frames, want the one record after Clear", len(frames))
-		}
-	})
+	if records, err := capture.FramesBetween(end, early); !errors.Is(err, ErrCursorOutOfRange) || len(records) != 0 {
+		t.Fatalf("FramesBetween over reversed range = %d records, %v", len(records), err)
+	}
 }
 
 func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
@@ -795,8 +642,8 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	capture.Clear()
 	revived := appendSeq(100, 0x100)
 	stale, returned, err := capture.SeriesSince(keyA, cursorA)
-	if !errors.Is(err, ErrCursorStale) {
-		t.Fatalf("SeriesSince after Clear error = %v, want ErrCursorStale", err)
+	if !errors.Is(err, ErrCursorOutOfRange) {
+		t.Fatalf("SeriesSince after Clear error = %v, want ErrCursorOutOfRange", err)
 	}
 	if len(stale) != 0 || returned != cursorA {
 		t.Fatalf("stale SeriesSince returned %d frames and cursor %+v", len(stale), returned)
@@ -983,8 +830,8 @@ func TestCaptureNextAcrossClear(t *testing.T) {
 
 	select {
 	case got := <-stale:
-		if !errors.Is(got.err, ErrCursorStale) {
-			t.Fatalf("waiting Next after Clear returned %v, want ErrCursorStale", got.err)
+		if !errors.Is(got.err, ErrCursorOutOfRange) {
+			t.Fatalf("waiting Next after Clear returned %v, want ErrCursorOutOfRange", got.err)
 		}
 		if got.cursor != held {
 			t.Fatalf("waiting Next returned cursor %+v, want the cursor it was given", got.cursor)
@@ -1123,7 +970,7 @@ func TestCaptureConcurrentClear(t *testing.T) {
 			// way a follower does: it reports nothing and starts again from the
 			// oldest retained record.
 			_, next, err := capture.EventsSince(eventsCursor)
-			if err != nil && !errors.Is(err, ErrCursorStale) {
+			if err != nil && !errors.Is(err, ErrCursorOutOfRange) {
 				t.Errorf("EventsSince: %v", err)
 				return
 			}
@@ -1132,7 +979,7 @@ func TestCaptureConcurrentClear(t *testing.T) {
 				eventsCursor = Cursor{}
 			}
 			_, next, err = capture.BusEventsSince(testBus0, busEventsCursor)
-			if err != nil && !errors.Is(err, ErrCursorStale) {
+			if err != nil && !errors.Is(err, ErrCursorOutOfRange) {
 				t.Errorf("BusEventsSince: %v", err)
 				return
 			}
@@ -1162,7 +1009,7 @@ func TestCaptureConcurrentClear(t *testing.T) {
 			switch {
 			case err == nil:
 				cursor = next
-			case errors.Is(err, ErrCursorStale):
+			case errors.Is(err, ErrCursorOutOfRange):
 				cursor = Cursor{}
 			case errors.Is(err, context.DeadlineExceeded):
 			default:

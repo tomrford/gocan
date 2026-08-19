@@ -215,16 +215,10 @@ func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
 	}
 }
 
-var (
-	// ErrCursorStale indicates a cursor the capture can no longer place: it was
-	// minted by a different Capture, or by this one before Clear. Resynchronise
-	// from the zero Cursor to keep the retained history, or from End to skip it.
-	ErrCursorStale = errors.New("capture cursor is stale")
-	// ErrCursorOutOfRange indicates a range whose end precedes its start. It
-	// also guards a cursor beyond the capture's end, which no cursor a Capture
-	// minted can be.
-	ErrCursorOutOfRange = errors.New("capture cursor is out of range")
-)
+// ErrCursorOutOfRange indicates a cursor the capture cannot place: it belongs
+// to another Capture, names records discarded by Clear or pruning, lies beyond
+// the capture's end, or follows the end of a requested range.
+var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
 
 // Cursor identifies a position in a capture's append order: the boundary just
 // after one stored record. The zero Cursor is the position before every
@@ -235,12 +229,10 @@ var (
 // Capture and never moves backwards. Cursors hold no references, so retaining
 // one costs nothing.
 //
-// A cursor the capture cannot place fails the read that carries it: a cursor
-// from another Capture or from before Clear reports ErrCursorStale, and a
-// cursor past the capture's end reports ErrCursorOutOfRange. A failed read
-// returns no records and the cursor it was given, so a caller either reports
-// the loss or resynchronises from the zero Cursor or End. No read silently
-// re-reads or skips history.
+// A cursor the capture cannot place fails the read that carries it with
+// ErrCursorOutOfRange. A failed read returns no records and the cursor it was
+// given, so a caller either reports the loss or resynchronises from the zero
+// Cursor or End. No read silently re-reads or skips history.
 type Cursor struct {
 	generation uint64
 	chunk      uint32
@@ -260,7 +252,7 @@ func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk) (chu
 		return 0, -1, nil
 	}
 	if cursor.generation != generation {
-		return 0, 0, ErrCursorStale
+		return 0, 0, ErrCursorOutOfRange
 	}
 	if int(cursor.chunk) >= len(chunks) {
 		return 0, 0, ErrCursorOutOfRange
@@ -559,7 +551,7 @@ func (capture *Capture) endLocked() Cursor {
 // returned cursor.
 //
 // A cursor the capture cannot place, including one held across a Clear that
-// happens while Next waits, returns cursor unchanged with ErrCursorStale or
+// happens while Next waits, returns cursor unchanged with
 // ErrCursorOutOfRange.
 func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (FrameEvent, Cursor, error) {
 	search := cursor
@@ -590,7 +582,6 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 		// after the waiter can hear it, so no frame slips between walk and wait.
 		waiter, delta := capture.addWaiter(key, search)
 		if delta.err != nil {
-			capture.removeWaiter(key, waiter)
 			if search != cursor {
 				search = cursor
 				continue
@@ -713,6 +704,10 @@ func (capture *Capture) addWaiter(key FrameKey, cursor Cursor) (*captureWaiter, 
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
+	search := capture.nextSearchLocked(key, cursor)
+	if search.err != nil {
+		return nil, search
+	}
 	waiter := capture.waiters[key]
 	if waiter == nil {
 		if capture.waiters == nil {
@@ -722,7 +717,7 @@ func (capture *Capture) addWaiter(key FrameKey, cursor Cursor) (*captureWaiter, 
 		capture.waiters[key] = waiter
 	}
 	waiter.count++
-	return waiter, capture.nextSearchLocked(key, cursor)
+	return waiter, search
 }
 
 func (capture *Capture) removeWaiter(key FrameKey, waiter *captureWaiter) {
@@ -757,7 +752,7 @@ func (capture *Capture) Frames() []FrameEvent {
 // output. Pass the zero Cursor to write the full retained Capture.
 //
 // A cursor the capture cannot place writes nothing and returns cursor with
-// ErrCursorStale or ErrCursorOutOfRange.
+// ErrCursorOutOfRange.
 func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
 	views, skip, next, err := capture.viewsSince(cursor)
 	if err != nil {
@@ -813,7 +808,7 @@ func writeRecords(
 // between; pass the zero Cursor to start from the beginning.
 //
 // A cursor the capture cannot place returns no frames and cursor unchanged
-// with ErrCursorStale or ErrCursorOutOfRange.
+// with ErrCursorOutOfRange.
 func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor, error) {
 	views, skip, next, err := capture.viewsSince(cursor)
 	if err != nil {
@@ -856,7 +851,7 @@ func (capture *Capture) Events() []Event {
 // between; pass the zero Cursor to start from the beginning.
 //
 // A cursor the capture cannot place returns no events and cursor unchanged
-// with ErrCursorStale or ErrCursorOutOfRange.
+// with ErrCursorOutOfRange.
 func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor, error) {
 	views, skip, next, err := capture.viewsSince(cursor)
 	if err != nil {
@@ -952,7 +947,7 @@ func (capture *Capture) Series(key FrameKey) []FrameEvent {
 // from the beginning.
 //
 // A cursor the capture cannot place returns no frames and cursor unchanged
-// with ErrCursorStale or ErrCursorOutOfRange.
+// with ErrCursorOutOfRange.
 func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
@@ -1047,7 +1042,7 @@ func (capture *Capture) BusEvents(bus BusID) []Event {
 // what arrived in between; pass the zero Cursor to start from the beginning.
 //
 // A cursor the capture cannot place returns no events and cursor unchanged
-// with ErrCursorStale or ErrCursorOutOfRange.
+// with ErrCursorOutOfRange.
 func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
@@ -1124,7 +1119,7 @@ func (capture *Capture) Len() int {
 
 // Clear discards all retained records and indexes. Readers already in progress
 // finish against their existing snapshot. A Next waiting on a cursor this
-// Clear discards wakes and reports ErrCursorStale instead of waiting for
+// Clear discards wakes and reports ErrCursorOutOfRange instead of waiting for
 // unrelated traffic to reveal the reset.
 func (capture *Capture) Clear() {
 	capture.mu.Lock()
