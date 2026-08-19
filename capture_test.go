@@ -661,10 +661,19 @@ func TestCapturePrune(t *testing.T) {
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 	var appended []FrameEvent
 	var cursors []Cursor
+	// The first frame carries a different ID and is never sent again, so its
+	// latest entry lives in the chunk that gets discarded: the release check
+	// below only holds if that index owns its frames instead of pointing at
+	// chunk storage.
+	quiet := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
 	for seq := range 12 {
 		data := make([]byte, 8)
 		binary.LittleEndian.PutUint32(data, uint32(seq))
-		event := testDataEvent(t, testBus0, key.ID, 0, data, seq, DirectionReceive)
+		id := key.ID
+		if seq == 0 {
+			id = quiet.ID
+		}
+		event := testDataEvent(t, testBus0, id, 0, data, seq, DirectionReceive)
 		if err := capture.Append(event); err != nil {
 			t.Fatalf("Append %d: %v", seq, err)
 		}
@@ -732,9 +741,13 @@ func TestCapturePrune(t *testing.T) {
 		t.Fatalf("Prune with a discarded cursor = (%+v, %v), want it back with ErrCursorOutOfRange", got, err)
 	}
 
-	// Latest owns its frames, so pruning cannot take the newest frame away.
+	// Latest owns its frames, so pruning cannot take the newest frame away,
+	// nor the last frame of an ID whose records were discarded entirely.
 	if latest, ok := capture.Latest(key); !ok || !eventsEqual(latest, appended[len(appended)-1]) {
 		t.Fatalf("Latest after pruning = %+v (ok=%t), want the newest appended frame", latest, ok)
+	}
+	if latest, ok := capture.Latest(quiet); !ok || !eventsEqual(latest, appended[0]) {
+		t.Fatalf("Latest of a discarded ID = %+v (ok=%t), want its last frame", latest, ok)
 	}
 
 	// The chunk being appended to is never discarded, so pruning at the
