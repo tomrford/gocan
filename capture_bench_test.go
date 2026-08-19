@@ -2,6 +2,7 @@ package gocan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -89,6 +90,10 @@ func BenchmarkAppendUnderLoad(b *testing.B) {
 		var err error
 		for ctx.Err() == nil {
 			_, cursor, err = capture.SeriesSince(FrameKey{Bus: 1, ID: 0x100, Direction: DirectionReceive}, cursor)
+			if errors.Is(err, ErrCursorOutOfRange) {
+				cursor = Cursor{}
+				continue
+			}
 			if err != nil {
 				b.Errorf("SeriesSince: %v", err)
 				return
@@ -100,6 +105,10 @@ func BenchmarkAppendUnderLoad(b *testing.B) {
 		var cursor Cursor
 		for {
 			_, next, err := capture.Next(ctx, FrameKey{Bus: 1, ID: 0x200, Direction: DirectionReceive}, cursor)
+			if errors.Is(err, ErrCursorOutOfRange) {
+				cursor = Cursor{}
+				continue
+			}
 			if err != nil {
 				return
 			}
