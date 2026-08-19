@@ -2,6 +2,7 @@ package gocan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -214,19 +215,51 @@ func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
 	}
 }
 
+// ErrCursorOutOfRange indicates a cursor the capture cannot place: it belongs
+// to another Capture, names records discarded by Clear or pruning, lies beyond
+// the capture's end, or follows the end of a requested range.
+var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
+
 // Cursor identifies a position in a capture's append order: the boundary just
 // after one stored record. The zero Cursor is the position before every
-// record.
+// record, so every read accepts it.
 //
 // Cursors track global capture position, not per-series progress, so a cursor
 // returned by one Since read may be passed to any Since read of the same
 // Capture and never moves backwards. Cursors hold no references, so retaining
-// one costs nothing. A cursor whose position was discarded, whether by Clear
-// or by being passed to a different Capture, behaves like the zero Cursor.
+// one costs nothing.
+//
+// A cursor the capture cannot place fails the read that carries it with
+// ErrCursorOutOfRange, as does a range whose end precedes its start. A failed
+// read returns no records and the cursor it was given, so a caller either
+// reports the loss or resynchronises from the zero Cursor or End. No read
+// silently re-reads or skips history. A range whose end equals its start is
+// empty, not an error.
 type Cursor struct {
 	generation uint64
 	chunk      uint32
 	record     uint32
+}
+
+// locateCursor places cursor in a snapshot of chunks taken in generation. It
+// reports the chunk a read starts in and the record boundary within it: that
+// record and every earlier one lie before the cursor.
+//
+// Generations are process-unique and chunks are never removed, so a cursor
+// that matches the generation names a chunk that still exists and a record
+// that chunk still holds. The bound is therefore a guard against a library
+// bug, not a caller mistake.
+func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk) (chunk, boundary int, err error) {
+	if cursor == (Cursor{}) {
+		return 0, -1, nil
+	}
+	if cursor.generation != generation {
+		return 0, 0, ErrCursorOutOfRange
+	}
+	if int(cursor.chunk) >= len(chunks) {
+		return 0, 0, ErrCursorOutOfRange
+	}
+	return int(cursor.chunk), int(cursor.record), nil
 }
 
 func (chunk *captureChunk) appendPayload(data []byte) uint32 {
@@ -518,6 +551,10 @@ func (capture *Capture) endLocked() Cursor {
 // traffic since cursor, however busy the rest of the capture is. To step
 // through deep history, read in bulk with SeriesSince and continue from the
 // returned cursor.
+//
+// A cursor the capture cannot place, including one held across a Clear that
+// happens while Next waits, returns cursor unchanged with
+// ErrCursorOutOfRange.
 func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (FrameEvent, Cursor, error) {
 	search := cursor
 	for {
@@ -526,6 +563,16 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 		capture.mu.RLock()
 		snapshot := capture.nextSearchLocked(key, search)
 		capture.mu.RUnlock()
+		if snapshot.err != nil {
+			// Only the position this walk advanced to may have gone stale while
+			// the caller's cursor still places, so restart from the caller's.
+			// When that one is unplaceable too, the next pass reports it.
+			if search != cursor {
+				search = cursor
+				continue
+			}
+			return FrameEvent{}, cursor, snapshot.err
+		}
 		if event, next, ok := snapshot.find(); ok {
 			return event, next, nil
 		}
@@ -536,6 +583,13 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 		// during the unlocked walk: an append lands either inside that delta or
 		// after the waiter can hear it, so no frame slips between walk and wait.
 		waiter, delta := capture.addWaiter(key, search)
+		if delta.err != nil {
+			if search != cursor {
+				search = cursor
+				continue
+			}
+			return FrameEvent{}, cursor, delta.err
+		}
 		if event, next, ok := delta.find(); ok {
 			capture.removeWaiter(key, waiter)
 			return event, next, nil
@@ -554,7 +608,9 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 // nextSearch freezes the state one Next walk scans after the lock is
 // released. Every chunk but the last is sealed, so their views and key states
 // may be read lazily without the lock; the active chunk's view and state were
-// frozen while it was held.
+// frozen while it was held. start and boundary place the origin in the
+// snapshot; err reports an origin the snapshot cannot place, and leaves the
+// walk unusable.
 type nextSearch struct {
 	key         FrameKey
 	origin      Cursor
@@ -562,12 +618,15 @@ type nextSearch struct {
 	chunks      []*captureChunk
 	activeView  captureView
 	activeState captureKeyState
+	start       int
+	boundary    int
+	err         error
 }
 
 // nextSearchLocked captures what one Next walk from cursor needs. The caller
 // must hold at least the read lock.
 func (capture *Capture) nextSearchLocked(key FrameKey, cursor Cursor) nextSearch {
-	return nextSearch{
+	search := nextSearch{
 		key:         key,
 		origin:      cursor,
 		generation:  capture.generation,
@@ -575,13 +634,8 @@ func (capture *Capture) nextSearchLocked(key FrameKey, cursor Cursor) nextSearch
 		activeView:  capture.active.view(),
 		activeState: capture.active.keyStates[key],
 	}
-}
-
-func (search nextSearch) bounds() (start, boundary int) {
-	if search.origin.generation == search.generation && int(search.origin.chunk) < len(search.chunks) {
-		return int(search.origin.chunk), int(search.origin.record)
-	}
-	return 0, -1
+	search.start, search.boundary, search.err = locateCursor(cursor, search.generation, search.chunks)
+	return search
 }
 
 func (search nextSearch) chunkAt(index int) (captureView, captureKeyState) {
@@ -595,7 +649,7 @@ func (search nextSearch) chunkAt(index int) (captureView, captureKeyState) {
 // find returns the first frame matching the search key after its origin, up
 // to the snapshot's end.
 func (search nextSearch) find() (FrameEvent, Cursor, bool) {
-	start, boundary := search.bounds()
+	start, boundary := search.start, search.boundary
 	for chunkIndex := start; chunkIndex < len(search.chunks); chunkIndex++ {
 		view, state := search.chunkAt(chunkIndex)
 		if state.count == 0 {
@@ -632,8 +686,7 @@ func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 // end returns the cursor of the snapshot's newest record, or the origin when
 // the snapshot holds nothing beyond it.
 func (search nextSearch) end() Cursor {
-	start, _ := search.bounds()
-	for chunkIndex := len(search.chunks) - 1; chunkIndex >= start; chunkIndex-- {
+	for chunkIndex := len(search.chunks) - 1; chunkIndex >= search.start; chunkIndex-- {
 		view, _ := search.chunkAt(chunkIndex)
 		if count := len(view.records); count > 0 {
 			return Cursor{
@@ -653,6 +706,10 @@ func (capture *Capture) addWaiter(key FrameKey, cursor Cursor) (*captureWaiter, 
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
+	search := capture.nextSearchLocked(key, cursor)
+	if search.err != nil {
+		return nil, search
+	}
 	waiter := capture.waiters[key]
 	if waiter == nil {
 		if capture.waiters == nil {
@@ -662,7 +719,7 @@ func (capture *Capture) addWaiter(key FrameKey, cursor Cursor) (*captureWaiter, 
 		capture.waiters[key] = waiter
 	}
 	waiter.count++
-	return waiter, capture.nextSearchLocked(key, cursor)
+	return waiter, search
 }
 
 func (capture *Capture) removeWaiter(key FrameKey, waiter *captureWaiter) {
@@ -680,7 +737,8 @@ func (capture *Capture) removeWaiter(key FrameKey, waiter *captureWaiter) {
 
 // Frames returns owned copies of every captured frame in append order.
 func (capture *Capture) Frames() []FrameEvent {
-	frames, _ := capture.FramesSince(Cursor{})
+	// The zero Cursor is always placeable, so this read cannot fail.
+	frames, _, _ := capture.FramesSince(Cursor{})
 	return frames
 }
 
@@ -695,9 +753,12 @@ func (capture *Capture) Frames() []FrameEvent {
 // completed writer calls, not the transactional state of the underlying
 // output. Pass the zero Cursor to write the full retained Capture.
 func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
-	views, skip, next := capture.viewsSince(cursor)
+	views, skip, next, err := capture.viewsSince(cursor)
+	if err != nil {
+		return cursor, err
+	}
 	startChunk := uint32(0)
-	if cursor.generation == next.generation {
+	if cursor != (Cursor{}) {
 		startChunk = cursor.chunk
 	}
 	return writeRecords(views, skip, startChunk, cursor, next, writer)
@@ -744,9 +805,12 @@ func writeRecords(
 // append order, together with the cursor of the newest record observed. Pass
 // the returned cursor to a later Since read to receive only what arrived in
 // between; pass the zero Cursor to start from the beginning.
-func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor) {
-	views, skip, next := capture.viewsSince(cursor)
-	return framesFromViews(views, skip), next
+func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor, error) {
+	views, skip, next, err := capture.viewsSince(cursor)
+	if err != nil {
+		return nil, cursor, err
+	}
+	return framesFromViews(views, skip), next, nil
 }
 
 func framesFromViews(views []captureView, skip int) []FrameEvent {
@@ -772,7 +836,8 @@ func framesFromViews(views []captureView, skip int) []FrameEvent {
 
 // Events returns every captured non-frame event in append order.
 func (capture *Capture) Events() []Event {
-	events, _ := capture.EventsSince(Cursor{})
+	// The zero Cursor is always placeable, so this read cannot fail.
+	events, _, _ := capture.EventsSince(Cursor{})
 	return events
 }
 
@@ -780,9 +845,12 @@ func (capture *Capture) Events() []Event {
 // order, together with the cursor of the newest record observed. Pass the
 // returned cursor to a later Since read to receive only what arrived in
 // between; pass the zero Cursor to start from the beginning.
-func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor) {
-	views, skip, next := capture.viewsSince(cursor)
-	return eventsFromViews(views, skip), next
+func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor, error) {
+	views, skip, next, err := capture.viewsSince(cursor)
+	if err != nil {
+		return nil, cursor, err
+	}
+	return eventsFromViews(views, skip), next, nil
 }
 
 func eventsFromViews(views []captureView, skip int) []Event {
@@ -806,20 +874,21 @@ func eventsFromViews(views []captureView, skip int) []Event {
 	return events
 }
 
-func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor) {
+func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
 	activeView := capture.active.view()
 	generation := capture.generation
 	capture.mu.RUnlock()
 
-	// A matching generation guarantees the cursor's chunk index is still
-	// valid, so the read jumps straight to it and its cost scales with what
-	// arrived since the cursor, not with total capture history.
-	start, skip := 0, 0
-	if cursor.generation == generation && int(cursor.chunk) < len(chunks) {
-		start, skip = int(cursor.chunk), int(cursor.record)+1
+	// The placed cursor names its own chunk, so the read jumps straight to it
+	// and its cost scales with what arrived since the cursor, not with total
+	// capture history.
+	start, boundary, err := locateCursor(cursor, generation, chunks)
+	if err != nil {
+		return nil, 0, cursor, err
 	}
+	skip := boundary + 1
 	views := make([]captureView, len(chunks)-start)
 	for i := range views {
 		if start+i == len(chunks)-1 {
@@ -837,7 +906,7 @@ func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor) {
 		}
 	}
 
-	return views, skip, next
+	return views, skip, next, nil
 }
 
 func recordKindCount(views []captureView, skip int, kind captureRecordKind) int {
@@ -859,7 +928,8 @@ func recordKindCount(views []captureView, skip int, kind captureRecordKind) int 
 // Series returns owned copies of every captured frame matching key in append
 // order.
 func (capture *Capture) Series(key FrameKey) []FrameEvent {
-	frames, _ := capture.SeriesSince(key, Cursor{})
+	// The zero Cursor is always placeable, so this read cannot fail.
+	frames, _, _ := capture.SeriesSince(key, Cursor{})
 	return frames
 }
 
@@ -868,7 +938,7 @@ func (capture *Capture) Series(key FrameKey) []FrameEvent {
 // observed anywhere in the capture. Pass the returned cursor to a later Since
 // read to receive only what arrived in between; pass the zero Cursor to start
 // from the beginning.
-func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, Cursor) {
+func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
 	activeView := capture.active.view()
@@ -876,12 +946,12 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 	generation := capture.generation
 	capture.mu.RUnlock()
 
-	// A matching generation guarantees the cursor's chunk index is still
-	// valid, so the read jumps straight to it and its cost scales with what
-	// arrived since the cursor, not with total capture history.
-	start, boundary := 0, -1
-	if cursor.generation == generation && int(cursor.chunk) < len(chunks) {
-		start, boundary = int(cursor.chunk), int(cursor.record)
+	// The placed cursor names its own chunk, so the read jumps straight to it
+	// and its cost scales with what arrived since the cursor, not with total
+	// capture history.
+	start, boundary, err := locateCursor(cursor, generation, chunks)
+	if err != nil {
+		return nil, cursor, err
 	}
 	views := make([]captureView, len(chunks)-start)
 	states := make([]captureKeyState, len(views))
@@ -925,7 +995,7 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 		}
 	}
 	if total == 0 {
-		return nil, next
+		return nil, next, nil
 	}
 
 	// The counts size the result exactly, and the backward walks from each
@@ -946,12 +1016,13 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 			frames[remaining] = views[i].frameAt(r)
 		}
 	}
-	return frames, next
+	return frames, next, nil
 }
 
 // BusEvents returns every captured event from bus in append order.
 func (capture *Capture) BusEvents(bus BusID) []Event {
-	events, _ := capture.BusEventsSince(bus, Cursor{})
+	// The zero Cursor is always placeable, so this read cannot fail.
+	events, _, _ := capture.BusEventsSince(bus, Cursor{})
 	return events
 }
 
@@ -959,7 +1030,7 @@ func (capture *Capture) BusEvents(bus BusID) []Event {
 // order, together with the cursor of the newest record observed anywhere in
 // the capture. Pass the returned cursor to a later Since read to receive only
 // what arrived in between; pass the zero Cursor to start from the beginning.
-func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Cursor) {
+func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
 	activeView := capture.active.view()
@@ -967,9 +1038,9 @@ func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Curso
 	generation := capture.generation
 	capture.mu.RUnlock()
 
-	start, boundary := 0, -1
-	if cursor.generation == generation && int(cursor.chunk) < len(chunks) {
-		start, boundary = int(cursor.chunk), int(cursor.record)
+	start, boundary, err := locateCursor(cursor, generation, chunks)
+	if err != nil {
+		return nil, cursor, err
 	}
 	views := make([]captureView, len(chunks)-start)
 	states := make([]captureEventState, len(views))
@@ -1005,7 +1076,7 @@ func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Curso
 		}
 	}
 	if total == 0 {
-		return nil, next
+		return nil, next, nil
 	}
 
 	events := make([]Event, total)
@@ -1023,7 +1094,7 @@ func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Curso
 			events[remaining] = views[i].eventAt(record)
 		}
 	}
-	return events, next
+	return events, next, nil
 }
 
 // Len returns the number of retained frame and event records.
@@ -1034,7 +1105,9 @@ func (capture *Capture) Len() int {
 }
 
 // Clear discards all retained records and indexes. Readers already in progress
-// finish against their existing snapshot.
+// finish against their existing snapshot. A Next waiting on a cursor this
+// Clear discards wakes and reports ErrCursorOutOfRange instead of waiting for
+// unrelated traffic to reveal the reset.
 func (capture *Capture) Clear() {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
@@ -1050,4 +1123,12 @@ func (capture *Capture) Clear() {
 	clear(capture.latest)
 	capture.length = 0
 	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))
+
+	// Every waiter is parked on a position this Clear just discarded. Waking
+	// them makes each Next re-walk against the new generation, where it either
+	// reports the loss or, for a caller reading from the beginning, waits on
+	// the fresh history.
+	for key := range capture.waiters {
+		capture.wakeWaitersLocked(key)
+	}
 }

@@ -283,7 +283,10 @@ func waitForVectorEvents(
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		events, next := capture.BusEventsSince(bus, cursor)
+		events, next, err := capture.BusEventsSince(bus, cursor)
+		if err != nil {
+			t.Fatalf("BusEventsSince: %v", err)
+		}
 		for _, event := range events {
 			if accept(event) {
 				return next

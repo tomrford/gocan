@@ -87,6 +87,10 @@ type Config struct {
 // unread payloads, because ISO-TP has no transaction identifier and a request
 // must not be answered by traffic that predates it. A multi-frame Send
 // repositions it for the same reason: it has to recognise its own Flow Control.
+// Clearing or pruning the underlying capture during an operation may discard
+// that position, so the operation fails with gocan.ErrCursorOutOfRange rather
+// than hiding the loss. The next operation starts from the oldest records the
+// capture still holds.
 //
 // Link serialises Send calls and Receive calls independently. Begin owns both
 // paths until its Exchange closes. A server must finish Receive before calling
@@ -325,6 +329,12 @@ func (link *Link) newExchange() *Exchange {
 func (link *Link) nextFrame(ctx context.Context) (gocan.FrameEvent, error) {
 	frame, cursor, err := link.capture.Next(ctx, link.receiveKey, link.cursor)
 	if err != nil {
+		if errors.Is(err, gocan.ErrCursorOutOfRange) {
+			// The capture discarded the position this link was reading from.
+			// The operation still fails, but the next one can consume records
+			// retained after the discard.
+			link.cursor = gocan.Cursor{}
+		}
 		return gocan.FrameEvent{}, err
 	}
 	link.cursor = cursor
