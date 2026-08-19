@@ -1,5 +1,7 @@
 package gocan
 
+import "fmt"
+
 // WriteRecordsBetween sends every frame and event in the capture interval
 // (start, end] to writer in Capture append order. The start cursor is excluded
 // and the end cursor is included. A zero start begins at the first retained
@@ -126,14 +128,14 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	// bounds an empty interval at the start of the capture.
 	last, endRecord, err := locateCursor(end, generation, chunks)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, fmt.Errorf("capture range end: %w", err)
 	}
 	first, startRecord, err := locateCursor(start, generation, chunks)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, fmt.Errorf("capture range start: %w", err)
 	}
 	if first > last || first == last && startRecord > endRecord {
-		return nil, 0, 0, ErrCursorOutOfRange
+		return nil, 0, 0, fmt.Errorf("capture range end precedes its start: %w", ErrCursorOutOfRange)
 	}
 
 	views = make([]captureView, last-first+1)
@@ -149,7 +151,7 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	// it. Only a library bug can name a record the chunk does not hold.
 	tail := views[len(views)-1].records
 	if endRecord+1 > len(tail) {
-		return nil, 0, 0, ErrCursorOutOfRange
+		return nil, 0, 0, fmt.Errorf("capture range end: %w", ErrCursorOutOfRange)
 	}
 	views[len(views)-1].records = tail[:endRecord+1]
 	return views, startRecord + 1, uint32(first), nil
