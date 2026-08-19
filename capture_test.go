@@ -374,6 +374,60 @@ func TestCaptureBetween(t *testing.T) {
 	}
 }
 
+// TestCaptureBetweenAcrossSeam bounds an interval whose start and end lie in
+// different chunks, so the read must clip the last chunk without dropping the
+// records of the chunks in between.
+func TestCaptureBetweenAcrossSeam(t *testing.T) {
+	// Three 8-byte payloads seal the first chunk, so the appends below rotate.
+	capture := newTestCapture(4, 24)
+
+	const total = 12
+	var frames []FrameEvent
+	var start, end Cursor
+	for seq := range total {
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		event := testDataEvent(t, testBus0, 0x100, 0, data, seq, DirectionReceive)
+		if err := capture.Append(event); err != nil {
+			t.Fatalf("Append %d: %v", seq, err)
+		}
+		frames = append(frames, event)
+		switch seq {
+		case 1:
+			start = capture.End()
+		case 8:
+			end = capture.End()
+		}
+	}
+	if start.chunk == end.chunk {
+		t.Fatalf("interval stayed inside chunk %d, want it to cross a seam", start.chunk)
+	}
+
+	between, err := capture.FramesBetween(start, end)
+	if err != nil {
+		t.Fatalf("FramesBetween: %v", err)
+	}
+	requireEvents(t, "FramesBetween across seam", between, frames[2:9])
+
+	series, err := capture.SeriesBetween(
+		FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive},
+		start,
+		end,
+	)
+	if err != nil {
+		t.Fatalf("SeriesBetween: %v", err)
+	}
+	requireEvents(t, "SeriesBetween across seam", series, frames[2:9])
+
+	writer := &captureWriterProbe{failAt: -1}
+	if next, err := capture.WriteRecordsBetween(start, end, writer); err != nil || next != end {
+		t.Fatalf("WriteRecordsBetween = %+v, %v, want the end cursor and no error", next, err)
+	}
+	if len(writer.frames) != 7 {
+		t.Fatalf("WriteRecordsBetween wrote %d records, want 7", len(writer.frames))
+	}
+}
+
 // cursorRead is one cursor-consuming read reduced to a record count, the
 // cursor it hands back, and its error, so every read family can be held to the
 // same failure contract.
