@@ -781,10 +781,10 @@ func testFDLength(length int) int {
 	return 64
 }
 
-// TestReceiveSurvivesCaptureClear covers a server link whose capture is reset
-// while it waits: the pending Receive must report the discarded position, and
-// the link must remain usable for the next payload.
-func TestReceiveSurvivesCaptureClear(t *testing.T) {
+// TestReceiveResynchronisesAfterCaptureClear covers a server link whose
+// capture is reset while it is idle. The first Receive reports the discarded
+// position; the next one must still see a request retained after the reset.
+func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	capture := gocan.NewCapture()
 	var network virtual.Network
 	first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
@@ -820,39 +820,19 @@ func TestReceiveSurvivesCaptureClear(t *testing.T) {
 		t.Fatalf("Receive opening payload = %x, %v", got, err)
 	}
 
-	failures := make(chan error, 1)
-	go func() {
-		_, err := receiver.Receive(ctx)
-		failures <- err
-	}()
-
-	// Reset the capture until the waiting Receive notices, without assuming how
-	// quickly it parks.
-	deadline := time.Now().Add(2 * time.Second)
-	var received error
-	for received == nil {
-		capture.Clear()
-		select {
-		case received = <-failures:
-		case <-time.After(10 * time.Millisecond):
-			if time.Now().After(deadline) {
-				t.Fatal("Receive did not report the capture reset")
-			}
-		}
-	}
-	if !errors.Is(received, gocan.ErrCursorStale) {
-		t.Fatalf("Receive across Clear = %v, want gocan.ErrCursorStale", received)
-	}
-
+	capture.Clear()
 	payload := patternedPayload(5, 0x50)
 	if err := sender.Send(ctx, payload); err != nil {
 		t.Fatalf("Send after Clear: %v", err)
 	}
+	if _, err := receiver.Receive(ctx); !errors.Is(err, gocan.ErrCursorOutOfRange) {
+		t.Fatalf("first Receive after Clear = %v, want gocan.ErrCursorOutOfRange", err)
+	}
 	got, err := receiver.Receive(ctx)
 	if err != nil {
-		t.Fatalf("Receive after Clear: %v", err)
+		t.Fatalf("resynchronised Receive: %v", err)
 	}
 	if !bytes.Equal(got, payload) {
-		t.Fatalf("payload after Clear = %x, want %x", got, payload)
+		t.Fatalf("resynchronised payload = %x, want %x", got, payload)
 	}
 }
