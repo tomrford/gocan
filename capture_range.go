@@ -7,10 +7,6 @@ import "fmt"
 // and the end cursor is included. A zero start begins at the first retained
 // record. On success it returns end. Failure behavior matches
 // WriteRecordsSince.
-//
-// A cursor the capture cannot place, or an end that precedes start, writes no
-// records and returns start with ErrCursorOutOfRange. An end equal to start is
-// an empty interval, not an error.
 func (capture *Capture) WriteRecordsBetween(start, end Cursor, writer RecordWriter) (Cursor, error) {
 	views, skip, firstChunk, err := capture.viewsBetween(start, end)
 	if err != nil {
@@ -23,10 +19,6 @@ func (capture *Capture) WriteRecordsBetween(start, end Cursor, writer RecordWrit
 // (start, end], in append order. The start cursor is excluded and the end
 // cursor is included. A zero start begins at the first retained record. Records
 // appended after end are never included.
-//
-// A cursor the capture cannot place, or an end that precedes start, returns no
-// records with ErrCursorOutOfRange. An end equal to start is an empty interval,
-// not an error.
 func (capture *Capture) FramesBetween(start, end Cursor) ([]FrameEvent, error) {
 	views, skip, _, err := capture.viewsBetween(start, end)
 	if err != nil {
@@ -39,10 +31,6 @@ func (capture *Capture) FramesBetween(start, end Cursor) ([]FrameEvent, error) {
 // (start, end], in append order. The start cursor is excluded and the end
 // cursor is included. A zero start begins at the first retained record. Records
 // appended after end are never included.
-//
-// A cursor the capture cannot place, or an end that precedes start, returns no
-// records with ErrCursorOutOfRange. An end equal to start is an empty interval,
-// not an error.
 func (capture *Capture) EventsBetween(start, end Cursor) ([]Event, error) {
 	views, skip, _, err := capture.viewsBetween(start, end)
 	if err != nil {
@@ -55,10 +43,6 @@ func (capture *Capture) EventsBetween(start, end Cursor) ([]Event, error) {
 // capture interval (start, end], in append order. The start cursor is excluded
 // and the end cursor is included. A zero start begins at the first retained
 // record. Records appended after end are never included.
-//
-// A cursor the capture cannot place, or an end that precedes start, returns no
-// records with ErrCursorOutOfRange. An end equal to start is an empty interval,
-// not an error.
 func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) ([]FrameEvent, error) {
 	views, skip, _, err := capture.viewsBetween(start, end)
 	if err != nil {
@@ -88,10 +72,6 @@ func (capture *Capture) SeriesBetween(key FrameKey, start, end Cursor) ([]FrameE
 // (start, end], in append order. The start cursor is excluded and the end
 // cursor is included. A zero start begins at the first retained record. Records
 // appended after end are never included.
-//
-// A cursor the capture cannot place, or an end that precedes start, returns no
-// records with ErrCursorOutOfRange. An end equal to start is an empty interval,
-// not an error.
 func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) ([]Event, error) {
 	views, skip, _, err := capture.viewsBetween(start, end)
 	if err != nil {

@@ -230,9 +230,11 @@ var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
 // one costs nothing.
 //
 // A cursor the capture cannot place fails the read that carries it with
-// ErrCursorOutOfRange. A failed read returns no records and the cursor it was
-// given, so a caller either reports the loss or resynchronises from the zero
-// Cursor or End. No read silently re-reads or skips history.
+// ErrCursorOutOfRange, as does a range whose end precedes its start. A failed
+// read returns no records and the cursor it was given, so a caller either
+// reports the loss or resynchronises from the zero Cursor or End. No read
+// silently re-reads or skips history. A range whose end equals its start is
+// empty, not an error.
 type Cursor struct {
 	generation uint64
 	chunk      uint32
@@ -750,9 +752,6 @@ func (capture *Capture) Frames() []FrameEvent {
 // A writer may commit partial output before returning an error. Capture tracks
 // completed writer calls, not the transactional state of the underlying
 // output. Pass the zero Cursor to write the full retained Capture.
-//
-// A cursor the capture cannot place writes nothing and returns cursor with
-// ErrCursorOutOfRange.
 func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
 	views, skip, next, err := capture.viewsSince(cursor)
 	if err != nil {
@@ -806,9 +805,6 @@ func writeRecords(
 // append order, together with the cursor of the newest record observed. Pass
 // the returned cursor to a later Since read to receive only what arrived in
 // between; pass the zero Cursor to start from the beginning.
-//
-// A cursor the capture cannot place returns no frames and cursor unchanged
-// with ErrCursorOutOfRange.
 func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor, error) {
 	views, skip, next, err := capture.viewsSince(cursor)
 	if err != nil {
@@ -849,9 +845,6 @@ func (capture *Capture) Events() []Event {
 // order, together with the cursor of the newest record observed. Pass the
 // returned cursor to a later Since read to receive only what arrived in
 // between; pass the zero Cursor to start from the beginning.
-//
-// A cursor the capture cannot place returns no events and cursor unchanged
-// with ErrCursorOutOfRange.
 func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor, error) {
 	views, skip, next, err := capture.viewsSince(cursor)
 	if err != nil {
@@ -945,9 +938,6 @@ func (capture *Capture) Series(key FrameKey) []FrameEvent {
 // observed anywhere in the capture. Pass the returned cursor to a later Since
 // read to receive only what arrived in between; pass the zero Cursor to start
 // from the beginning.
-//
-// A cursor the capture cannot place returns no frames and cursor unchanged
-// with ErrCursorOutOfRange.
 func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
@@ -1040,9 +1030,6 @@ func (capture *Capture) BusEvents(bus BusID) []Event {
 // order, together with the cursor of the newest record observed anywhere in
 // the capture. Pass the returned cursor to a later Since read to receive only
 // what arrived in between; pass the zero Cursor to start from the beginning.
-//
-// A cursor the capture cannot place returns no events and cursor unchanged
-// with ErrCursorOutOfRange.
 func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Cursor, error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
