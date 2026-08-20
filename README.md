@@ -13,6 +13,7 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 | `drivers/virtual` | In-process CAN networks for development and tests |
 | `cyclic` | Recurring raw frame transmission |
 | `asc` | Vector ASCII trace writing |
+| `recorder` | Lifecycled trace recording with safe flush checkpoints |
 | `dbc` | DBC parsing and semantic CAN frame encoding and decoding |
 | `isotp` | ISO-TP payload transport over classical CAN and CAN FD |
 | `uds` | Raw exchanges and typed Unified Diagnostic Services operations |
