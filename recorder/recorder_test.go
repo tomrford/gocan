@@ -3,68 +3,80 @@ package recorder_test
 import (
 	"context"
 	"errors"
-	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/asc"
 	"github.com/tomrford/gocan/recorder"
 )
 
-type memoryWriter struct {
-	mu     sync.Mutex
-	frames []gocan.FrameEvent
+var _ recorder.Writer = (*asc.Writer)(nil)
+
+type writerProbe struct {
+	mu sync.Mutex
+
+	ids      []uint32
+	closes   int
+	failAt   int
+	writeErr error
+	flushErr error
+	closeErr error
+
+	flushStarted chan struct{}
+	flushRelease chan struct{}
 }
 
-type failingWriter struct {
-	remaining int
-	err       error
-}
-
-func (writer *failingWriter) WriteFrame(gocan.FrameEvent) error {
-	if writer.remaining == 0 {
-		return writer.err
-	}
-	writer.remaining--
-	return nil
-}
-
-func (writer *failingWriter) WriteEvent(gocan.Event) error {
-	return writer.err
-}
-
-func newMemoryWriter() *memoryWriter {
-	return &memoryWriter{}
-}
-
-func (writer *memoryWriter) WriteFrame(event gocan.FrameEvent) error {
-	writer.mu.Lock()
-	writer.frames = append(writer.frames, event)
-	writer.mu.Unlock()
-	return nil
-}
-
-func (writer *memoryWriter) WriteEvent(gocan.Event) error { return nil }
-
-func (writer *memoryWriter) ids() []uint32 {
+func (writer *writerProbe) WriteFrame(event gocan.FrameEvent) error {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
-	ids := make([]uint32, len(writer.frames))
-	for i, event := range writer.frames {
-		ids[i] = event.Frame.ID
+	if writer.writeErr != nil && len(writer.ids) == writer.failAt {
+		return writer.writeErr
 	}
-	return ids
+	writer.ids = append(writer.ids, event.Frame.ID)
+	return nil
 }
 
-func awaitCursor(t *testing.T, task *recorder.Task, want gocan.Cursor) {
-	t.Helper()
-	for deadline := time.Now().Add(time.Second); task.Cursor() != want; {
-		if time.Now().After(deadline) {
-			t.Fatalf("recorder cursor = %+v, want %+v", task.Cursor(), want)
-		}
-		runtime.Gosched()
+func (writer *writerProbe) WriteEvent(gocan.Event) error { return nil }
+
+func (writer *writerProbe) Flush() error {
+	writer.mu.Lock()
+	started, release := writer.flushStarted, writer.flushRelease
+	writer.flushStarted, writer.flushRelease = nil, nil
+	err := writer.flushErr
+	writer.mu.Unlock()
+	if started != nil {
+		close(started)
 	}
+	if release != nil {
+		<-release
+	}
+	return err
+}
+
+func (writer *writerProbe) Close() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	writer.closes++
+	return writer.closeErr
+}
+
+func (writer *writerProbe) blockNextFlush() (<-chan struct{}, chan struct{}) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer.flushStarted = started
+	writer.flushRelease = release
+	return started, release
+}
+
+func (writer *writerProbe) state() ([]uint32, int) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return append([]uint32(nil), writer.ids...), writer.closes
 }
 
 func appendFrame(t *testing.T, capture *gocan.Capture, id uint32) {
@@ -73,138 +85,125 @@ func appendFrame(t *testing.T, capture *gocan.Capture, id uint32) {
 	if err != nil {
 		t.Fatalf("NewFrame %#x: %v", id, err)
 	}
-	err = capture.Append(gocan.FrameEvent{
+	if err := capture.Append(gocan.FrameEvent{
 		Bus:       1,
 		Timestamp: time.Now(),
 		Direction: gocan.DirectionReceive,
 		Frame:     frame,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Append %#x: %v", id, err)
 	}
 }
 
-func equalIDs(got []uint32, want ...uint32) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			return false
+func awaitFlushed(t *testing.T, recorder *recorder.Recorder, want gocan.Cursor) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for recorder.Flushed() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("Flushed = %+v, want %+v", recorder.Flushed(), want)
 		}
+		time.Sleep(time.Millisecond)
 	}
-	return true
 }
 
-func TestRecordsRetainedAndLaterFramesInOrder(t *testing.T) {
+func TestRecorderLifecycle(t *testing.T) {
 	capture := gocan.NewCapture()
 	appendFrame(t, capture, 0x100)
-	writer := newMemoryWriter()
+	writer := &writerProbe{}
 
-	task, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Millisecond)
+	rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Millisecond)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(task.Stop)
-	if got := writer.ids(); !equalIDs(got, 0x100) {
-		t.Fatalf("frames written before Start returned = %#x, want 0x100", got)
-	}
-
 	appendFrame(t, capture, 0x101)
+	awaitFlushed(t, rec, capture.End())
 	appendFrame(t, capture, 0x102)
-	awaitCursor(t, task, capture.End())
+	rec.Stop()
 
-	if got := writer.ids(); !equalIDs(got, 0x100, 0x101, 0x102) {
-		t.Fatalf("recorded frame IDs = %#x, want 0x100 0x101 0x102", got)
+	ids, closes := writer.state()
+	if want := []uint32{0x100, 0x101, 0x102}; !slices.Equal(ids, want) {
+		t.Fatalf("written IDs = %#x, want %#x", ids, want)
 	}
-	if got, want := task.Cursor(), capture.End(); got != want {
-		t.Fatalf("Cursor after catching up = %+v, want capture end %+v", got, want)
+	if closes != 1 {
+		t.Fatalf("writer closes = %d, want 1", closes)
+	}
+	if rec.Accepted() != capture.End() || rec.Flushed() != capture.End() {
+		t.Fatal("recorder did not finish at the capture end")
+	}
+	if err := rec.Err(); err != nil {
+		t.Fatalf("Err after Stop = %v", err)
 	}
 }
 
-func TestStartReportsInitialFailureAndProgress(t *testing.T) {
+func TestRecorderPublishesFlushBoundary(t *testing.T) {
 	capture := gocan.NewCapture()
-	appendFrame(t, capture, 0x180)
-	accepted := capture.End()
-	appendFrame(t, capture, 0x181)
-	wantErr := errors.New("writer failed")
-
-	task, err := recorder.Start(
-		context.Background(),
-		capture,
-		&failingWriter{remaining: 1, err: wantErr},
-		gocan.Cursor{},
-		time.Second,
-	)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Start error = %v, want %v", err, wantErr)
-	}
-	if task == nil {
-		t.Fatal("Start returned no Task after partial progress")
-	}
-	if got := task.Cursor(); got != accepted {
-		t.Fatalf("Cursor after initial failure = %+v, want %+v", got, accepted)
-	}
-	if got := task.Err(); !errors.Is(got, wantErr) {
-		t.Fatalf("Task error = %v, want %v", got, wantErr)
-	}
-	select {
-	case <-task.Done():
-	default:
-		t.Fatal("Task is still running after Start failed")
-	}
-}
-
-func TestStopRecordsFinalWindow(t *testing.T) {
-	capture := gocan.NewCapture()
-	appendFrame(t, capture, 0x200)
-	writer := newMemoryWriter()
-
-	// An interval no test run can reach leaves Stop as the only pass that can
-	// record the frames appended below.
-	task, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Hour)
+	appendFrame(t, capture, 0x140)
+	writer := &writerProbe{}
+	rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Hour)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	appendFrame(t, capture, 0x201)
-	appendFrame(t, capture, 0x202)
-	task.Stop()
-
-	if got := writer.ids(); !equalIDs(got, 0x200, 0x201, 0x202) {
-		t.Fatalf("recorded frame IDs = %#x, want 0x200 0x201 0x202", got)
-	}
-	if err := task.Err(); err != nil {
-		t.Fatalf("Err after Stop = %v, want nil", err)
-	}
-}
-
-func TestClearStopsWithCursorOutOfRange(t *testing.T) {
-	capture := gocan.NewCapture()
-	writer := newMemoryWriter()
-
-	task, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Millisecond)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(task.Stop)
-
-	// The zero cursor survives any Clear, so the recorder must hold a real
-	// position before the capture discards it.
-	appendFrame(t, capture, 0x300)
-	lost := capture.End()
-	awaitCursor(t, task, lost)
-	capture.Clear()
+	flushed := capture.End()
+	appendFrame(t, capture, 0x141)
+	started, release := writer.blockNextFlush()
+	stopped := make(chan struct{})
+	go func() {
+		rec.Stop()
+		close(stopped)
+	}()
 
 	select {
-	case <-task.Done():
+	case <-started:
 	case <-time.After(time.Second):
-		t.Fatal("recorder did not stop after Clear")
+		t.Fatal("final Flush did not start")
 	}
-	if err := task.Err(); !errors.Is(err, gocan.ErrCursorOutOfRange) {
-		t.Fatalf("Err after Clear = %v, want ErrCursorOutOfRange", err)
+	if rec.Accepted() != capture.End() || rec.Flushed() != flushed {
+		t.Fatal("accepted and flushed cursors did not expose the blocked Flush")
 	}
-	if got := task.Cursor(); got != lost {
-		t.Fatalf("Cursor after Clear = %+v, want the last recorded position %+v", got, lost)
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before Flush completed")
+	default:
 	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after Flush completed")
+	}
+}
+
+func TestRecorderFailureCheckpoints(t *testing.T) {
+	t.Run("partial write", func(t *testing.T) {
+		capture := gocan.NewCapture()
+		appendFrame(t, capture, 0x180)
+		accepted := capture.End()
+		appendFrame(t, capture, 0x181)
+		writeErr := errors.New("write failed")
+		writer := &writerProbe{failAt: 1, writeErr: writeErr}
+
+		rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Second)
+		if !errors.Is(err, writeErr) || rec == nil {
+			t.Fatalf("Start = %#v, %v; want stopped Recorder and write error", rec, err)
+		}
+		if rec.Accepted() != accepted || rec.Flushed() != accepted {
+			t.Fatal("successfully flushed prefix was not checkpointed")
+		}
+	})
+
+	t.Run("flush and close", func(t *testing.T) {
+		capture := gocan.NewCapture()
+		appendFrame(t, capture, 0x200)
+		flushErr := errors.New("flush failed")
+		closeErr := errors.New("close failed")
+		writer := &writerProbe{flushErr: flushErr, closeErr: closeErr}
+
+		rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Second)
+		if !errors.Is(err, flushErr) || !errors.Is(err, closeErr) {
+			t.Fatalf("Start error = %v, want flush and close errors", err)
+		}
+		if rec.Accepted() != capture.End() || rec.Flushed() != (gocan.Cursor{}) {
+			t.Fatal("failed lifecycle published an unsafe flush cursor")
+		}
+	})
 }
