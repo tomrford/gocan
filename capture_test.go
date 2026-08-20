@@ -782,10 +782,10 @@ func TestCapturePrune(t *testing.T) {
 	runtime.KeepAlive(capture)
 }
 
-// TestCaptureOldestNewest covers picking the earliest and latest of a set of
-// cursors: argument order, Placeable filtering to members that still place,
-// and Oldest and Newest failing when any member cannot place.
-func TestCaptureOldestNewest(t *testing.T) {
+// TestCapturePruneFollowsSlowestCursor covers a retention owner coordinating
+// several consumers: the slowest cursor holds pruning back, advancing it
+// releases history, and a lost consumer stops pruning until it recovers.
+func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	var cursors []Cursor
 	for seq := range 8 {
@@ -800,88 +800,46 @@ func TestCaptureOldestNewest(t *testing.T) {
 		t.Fatal("fixture stayed inside one chunk, want it to rotate")
 	}
 
-	if oldest, err := capture.Oldest(); !errors.Is(err, ErrCursorOutOfRange) || oldest != (Cursor{}) {
-		t.Fatalf("Oldest with no cursors = (%+v, %v), want ErrCursorOutOfRange", oldest, err)
+	retained := capture.Len()
+	if err := capture.Prune(); err != nil || capture.Len() != retained {
+		t.Fatalf("empty Prune = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
-	if newest, err := capture.Newest(); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
-		t.Fatalf("Newest with no cursors = (%+v, %v), want ErrCursorOutOfRange", newest, err)
-	}
-	if got := capture.Placeable(); len(got) != 0 {
-		t.Fatalf("Placeable with no cursors = %d cursors, want none", len(got))
+	if err := capture.Prune(cursors[5], Cursor{}); err != nil || capture.Len() != retained {
+		t.Fatalf("Prune with a zero cursor = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
 
-	early, late := cursors[1], cursors[len(cursors)-1]
-	oldest, err := capture.Oldest(late, early, late)
-	if err != nil || oldest != early {
-		t.Fatalf("Oldest of placeable cursors = (%+v, %v), want %+v", oldest, err, early)
-	}
-	newest, err := capture.Newest(early, late, early)
-	if err != nil || newest != late {
-		t.Fatalf("Newest of placeable cursors = (%+v, %v), want %+v", newest, err, late)
+	// One consumer is still inside the first chunk, so the later consumer must
+	// not cause that chunk to be discarded. Argument order is not policy.
+	if err := capture.Prune(cursors[5], cursors[1]); err != nil || capture.Len() != retained {
+		t.Fatalf("Prune behind the slowest consumer = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
 
-	zero, err := capture.Oldest(Cursor{}, late)
-	if err != nil || zero != (Cursor{}) {
-		t.Fatalf("Oldest with the zero Cursor = (%+v, %v), want the zero Cursor", zero, err)
+	sealed := len(capture.chunks[0].records)
+	if err := capture.Prune(cursors[5], cursors[sealed-1]); err != nil {
+		t.Fatalf("Prune after the slowest consumer advanced: %v", err)
 	}
-	if got := capture.Placeable(Cursor{}, late); len(got) != 2 || got[0] != (Cursor{}) || got[1] != late {
-		t.Fatalf("Placeable of the zero Cursor and a late cursor = %+v", got)
-	}
-
-	if err := capture.Prune(cursors[3]); err != nil {
-		t.Fatalf("Prune at the chunk seam: %v", err)
+	retained -= sealed
+	if capture.Len() != retained {
+		t.Fatalf("Prune after both consumers advanced retained %d records, want %d", capture.Len(), retained)
 	}
 
-	if oldest, err = capture.Oldest(cursors[0], cursors[5], cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || oldest != (Cursor{}) {
-		t.Fatalf("Oldest with a discarded cursor = (%+v, %v), want ErrCursorOutOfRange", oldest, err)
-	}
-	if newest, err = capture.Newest(cursors[0], cursors[5], cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
-		t.Fatalf("Newest with a discarded cursor = (%+v, %v), want ErrCursorOutOfRange", newest, err)
-	}
-	if got := capture.Placeable(cursors[0], cursors[5], cursors[6]); len(got) != 2 || got[0] != cursors[5] || got[1] != cursors[6] {
-		t.Fatalf("Placeable dropping a discarded cursor = %+v, want %+v %+v", got, cursors[5], cursors[6])
-	}
-	oldest, err = capture.Oldest(capture.Placeable(cursors[0], cursors[5], cursors[6])...)
-	if err != nil || oldest != cursors[5] {
-		t.Fatalf("Oldest of Placeable result = (%+v, %v), want %+v", oldest, err, cursors[5])
+	// Repeating the same positions is safe. The slow cursor is now the prune
+	// seam and still names the boundary before the retained history.
+	if err := capture.Prune(cursors[5], cursors[sealed-1]); err != nil || capture.Len() != retained {
+		t.Fatalf("repeated Prune = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
 
-	other := NewCapture()
-	if err := other.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{9}, 0, DirectionReceive)); err != nil {
-		t.Fatalf("append to the other capture: %v", err)
-	}
-	if oldest, err = capture.Oldest(other.End(), cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || oldest != (Cursor{}) {
-		t.Fatalf("Oldest with a foreign cursor = (%+v, %v), want ErrCursorOutOfRange", oldest, err)
-	}
-	if newest, err = capture.Newest(other.End(), cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
-		t.Fatalf("Newest with a foreign cursor = (%+v, %v), want ErrCursorOutOfRange", newest, err)
-	}
-	if got := capture.Placeable(other.End(), cursors[6]); len(got) != 1 || got[0] != cursors[6] {
-		t.Fatalf("Placeable dropping a foreign cursor = %+v, want %+v", got, cursors[6])
+	// A consumer behind the prune seam has lost history. It stops the whole
+	// operation, so the retention owner can recover that consumer explicitly.
+	if err := capture.Prune(cursors[5], cursors[0]); !errors.Is(err, ErrCursorOutOfRange) || capture.Len() != retained {
+		t.Fatalf("Prune with a stale consumer = %v, retaining %d records, want ErrCursorOutOfRange and %d",
+			err, capture.Len(), retained)
 	}
 
-	past := capture.End()
-	past.chunk += 8
-	if oldest, err = capture.Oldest(cursors[5], past); !errors.Is(err, ErrCursorOutOfRange) || oldest != (Cursor{}) {
-		t.Fatalf("Oldest with a cursor past the end = (%+v, %v), want ErrCursorOutOfRange", oldest, err)
-	}
-	if newest, err = capture.Newest(cursors[5], past); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
-		t.Fatalf("Newest with a cursor past the end = (%+v, %v), want ErrCursorOutOfRange", newest, err)
-	}
-	if got := capture.Placeable(cursors[5], past); len(got) != 1 || got[0] != cursors[5] {
-		t.Fatalf("Placeable dropping a cursor past the end = %+v, want %+v", got, cursors[5])
-	}
-
-	oldest, err = capture.Oldest(cursors[5], cursors[6])
-	if err != nil || oldest != cursors[5] {
-		t.Fatalf("Oldest of retained cursors after prune = (%+v, %v), want %+v", oldest, err, cursors[5])
-	}
-	newest, err = capture.Newest(cursors[5], cursors[6])
-	if err != nil || newest != cursors[6] {
-		t.Fatalf("Newest of retained cursors after prune = (%+v, %v), want %+v", newest, err, cursors[6])
-	}
-	if got := capture.Placeable(cursors[5], cursors[6]); len(got) != 2 || got[0] != cursors[5] || got[1] != cursors[6] {
-		t.Fatalf("Placeable of retained cursors after prune = %+v", got)
+	// Resetting that consumer to zero is explicit recovery and holds pruning
+	// back until it catches up again.
+	if err := capture.Prune(cursors[5], Cursor{}); err != nil || capture.Len() != retained {
+		t.Fatalf("Prune with a recovered consumer = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
 }
 
