@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/tomrford/gocan/j1939"
 )
 
 // vectorIndependentSignalsID is the reserved identifier of the
@@ -426,11 +428,20 @@ func (r *resolver) resolveFrameFormats() error {
 
 func (r *resolver) compileCodecs() error {
 	r.db.messagesByName = make(map[string]int, len(r.messagesByName))
+	r.db.messagesByPGN = make(map[j1939.PGN][]int)
 	for name, index := range r.messagesByName {
 		r.db.messagesByName[name] = index
 	}
 	for index := range r.db.Messages {
-		r.db.Messages[index].codec = compileMessageCodec(&r.db.Messages[index])
+		message := &r.db.Messages[index]
+		message.codec = compileMessageCodec(message)
+		if message.Format == FrameFormatJ1939 {
+			header, err := j1939.ParseID(message.ID)
+			if err != nil {
+				return semanticError(r.messagePositions[index], "BO_", "message %q: %v", message.Name, err)
+			}
+			r.db.messagesByPGN[header.PGN] = append(r.db.messagesByPGN[header.PGN], index)
+		}
 	}
 	return nil
 }
