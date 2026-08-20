@@ -783,8 +783,8 @@ func TestCapturePrune(t *testing.T) {
 }
 
 // TestCaptureOldestNewest covers picking the earliest and latest of a set of
-// cursors: argument order, Placeable as the shared placement check, and all
-// three helpers failing when any member cannot place.
+// cursors: argument order, Placeable filtering to members that still place,
+// and Oldest and Newest failing when any member cannot place.
 func TestCaptureOldestNewest(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	var cursors []Cursor
@@ -806,8 +806,8 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if newest, err := capture.Newest(); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest with no cursors = (%+v, %v), want ErrCursorOutOfRange", newest, err)
 	}
-	if err := capture.Placeable(); !errors.Is(err, ErrCursorOutOfRange) {
-		t.Fatalf("Placeable with no cursors = %v, want ErrCursorOutOfRange", err)
+	if got := capture.Placeable(); len(got) != 0 {
+		t.Fatalf("Placeable with no cursors = %d cursors, want none", len(got))
 	}
 
 	early, late := cursors[1], cursors[len(cursors)-1]
@@ -824,8 +824,8 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if err != nil || zero != (Cursor{}) {
 		t.Fatalf("Oldest with the zero Cursor = (%+v, %v), want the zero Cursor", zero, err)
 	}
-	if err := capture.Placeable(Cursor{}, late); err != nil {
-		t.Fatalf("Placeable of the zero Cursor and a late cursor: %v", err)
+	if got := capture.Placeable(Cursor{}, late); len(got) != 2 || got[0] != (Cursor{}) || got[1] != late {
+		t.Fatalf("Placeable of the zero Cursor and a late cursor = %+v", got)
 	}
 
 	if err := capture.Prune(cursors[3]); err != nil {
@@ -838,8 +838,12 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if newest, err = capture.Newest(cursors[0], cursors[5], cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest with a discarded cursor = (%+v, %v), want ErrCursorOutOfRange", newest, err)
 	}
-	if err := capture.Placeable(cursors[0], cursors[5], cursors[6]); !errors.Is(err, ErrCursorOutOfRange) {
-		t.Fatalf("Placeable with a discarded cursor = %v, want ErrCursorOutOfRange", err)
+	if got := capture.Placeable(cursors[0], cursors[5], cursors[6]); len(got) != 2 || got[0] != cursors[5] || got[1] != cursors[6] {
+		t.Fatalf("Placeable dropping a discarded cursor = %+v, want %+v %+v", got, cursors[5], cursors[6])
+	}
+	oldest, err = capture.Oldest(capture.Placeable(cursors[0], cursors[5], cursors[6])...)
+	if err != nil || oldest != cursors[5] {
+		t.Fatalf("Oldest of Placeable result = (%+v, %v), want %+v", oldest, err, cursors[5])
 	}
 
 	other := NewCapture()
@@ -852,6 +856,9 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if newest, err = capture.Newest(other.End(), cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest with a foreign cursor = (%+v, %v), want ErrCursorOutOfRange", newest, err)
 	}
+	if got := capture.Placeable(other.End(), cursors[6]); len(got) != 1 || got[0] != cursors[6] {
+		t.Fatalf("Placeable dropping a foreign cursor = %+v, want %+v", got, cursors[6])
+	}
 
 	past := capture.End()
 	past.chunk += 8
@@ -860,6 +867,9 @@ func TestCaptureOldestNewest(t *testing.T) {
 	}
 	if newest, err = capture.Newest(cursors[5], past); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest with a cursor past the end = (%+v, %v), want ErrCursorOutOfRange", newest, err)
+	}
+	if got := capture.Placeable(cursors[5], past); len(got) != 1 || got[0] != cursors[5] {
+		t.Fatalf("Placeable dropping a cursor past the end = %+v, want %+v", got, cursors[5])
 	}
 
 	oldest, err = capture.Oldest(cursors[5], cursors[6])
@@ -870,8 +880,8 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if err != nil || newest != cursors[6] {
 		t.Fatalf("Newest of retained cursors after prune = (%+v, %v), want %+v", newest, err, cursors[6])
 	}
-	if err := capture.Placeable(cursors[5], cursors[6]); err != nil {
-		t.Fatalf("Placeable of retained cursors after prune: %v", err)
+	if got := capture.Placeable(cursors[5], cursors[6]); len(got) != 2 || got[0] != cursors[5] || got[1] != cursors[6] {
+		t.Fatalf("Placeable of retained cursors after prune = %+v", got)
 	}
 }
 
