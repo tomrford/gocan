@@ -1,4 +1,7 @@
-// Package recorder writes and flushes capture records as they arrive.
+// Package recorder writes capture records as they arrive.
+//
+// Task hands records to any RecordWriter and reports that handoff cursor.
+// Logger requires a flushing Writer and reports a committed cursor after Flush.
 package recorder
 
 import (
@@ -13,37 +16,24 @@ import (
 
 var errStopRequested = errors.New("recorder task stop requested")
 
-// Writer receives capture records and delivers buffered output to its
-// underlying io.Writer. Flush does not imply durable storage such as
-// os.File.Sync.
-type Writer interface {
-	gocan.RecordWriter
-	Flush() error
-}
-
-// Task hands every record a Capture appends to one Writer.
+// Task hands every record a Capture appends to one gocan.RecordWriter.
 //
 // A Task polls the capture every interval and advances by the cursor the
 // capture returns, so it only reads and never blocks or slows an append. It
 // makes no attempt to keep the writer's output bounded: rotation, retention,
-// and pruning belong to the caller. One Task owns one Writer exclusively until
-// it stops. An asc.Writer can be passed directly to Start.
+// and pruning belong to the caller. Cursor reports delivery to the writer,
+// not durable storage. Use Logger when the prune cursor must wait for Flush.
 //
-// Cursor reports records delivered through Flush, not durable storage. During
-// a pass it remains at the previous flushed position. If a partial write is
-// flushed successfully, Cursor advances through the last accepted record and
-// the write error stops the Task. If Flush fails, Cursor does not advance. Any
-// writer error stops the Task without a retry.
-//
-// A cursor the capture can no longer place stops the Task with
-// gocan.ErrCursorOutOfRange; a Task never resynchronises, because a lost
-// position means records went unrecorded. Stop is idempotent and writes and
-// flushes one final window before it returns. To record through shutdown, stop
-// capture producers before Stop, then close the writer after it. Err reports
-// the terminal error, or nil after Stop.
+// Any writer error stops the Task, without a retry, leaving Cursor at the last
+// record the writer accepted. A cursor the capture can no longer place stops
+// the Task with gocan.ErrCursorOutOfRange; a Task never resynchronises,
+// because a lost position means records went unrecorded. Stop is idempotent
+// and writes one final window before it returns. To record through shutdown,
+// stop capture producers before Stop, then flush or close the writer after it.
+// Err reports the terminal error, or nil after Stop.
 type Task struct {
 	capture  *gocan.Capture
-	writer   Writer
+	writer   gocan.RecordWriter
 	interval time.Duration
 
 	ctx    context.Context
@@ -61,13 +51,12 @@ type Task struct {
 // record everything the capture retains, or capture.End() to record only later
 // records.
 //
-// Start takes exclusive ownership of writer until the Task stops. If the
-// initial write or flush fails, Start returns the stopped Task and the error;
-// Cursor shows how far the writer flushed successfully.
+// If the initial write fails, Start returns the stopped Task and the error;
+// Cursor shows how far the writer got.
 func Start(
 	ctx context.Context,
 	capture *gocan.Capture,
-	writer Writer,
+	writer gocan.RecordWriter,
 	from gocan.Cursor,
 	interval time.Duration,
 ) (*Task, error) {
@@ -99,17 +88,17 @@ func Start(
 	return task, nil
 }
 
-// Cursor returns the position through which every accepted record has been
-// flushed through the writer. It is safe to call from any goroutine, including
-// after the Task stops, and never moves backwards.
+// Cursor returns the position through which every record has been handed to
+// the writer. It is safe to call from any goroutine, including after the Task
+// stops, and never moves backwards.
 func (task *Task) Cursor() gocan.Cursor {
 	task.mu.Lock()
 	defer task.mu.Unlock()
 	return task.cursor
 }
 
-// Stop writes and flushes one final window, so records appended since the last
-// pass are recorded rather than lost, then waits until recording has ended.
+// Stop writes one final window, so records appended since the last pass are
+// recorded rather than lost, then waits until recording has ended.
 func (task *Task) Stop() {
 	task.mu.Lock()
 	if !task.stopping {
@@ -164,22 +153,18 @@ func (task *Task) run() {
 	}
 }
 
-// pass hands the capture's new records to the writer and flushes them before
-// publishing progress. WriteRecordsSince reports the last record the writer
-// accepted even when it fails, so a successfully flushed partial write can
-// advance the cursor before its error stops the Task.
+// pass hands the capture's new records to the writer. WriteRecordsSince
+// reports the last record the writer accepted even when it fails, so a partial
+// write and an unplaceable cursor both leave the position exactly where the
+// writer stopped.
 func (task *Task) pass() error {
-	next, writeErr := task.capture.WriteRecordsSince(task.cursor, task.writer)
-	flushErr := task.writer.Flush()
-	if flushErr != nil {
-		return errors.Join(writeErr, fmt.Errorf("flush recorder writer: %w", flushErr))
-	}
+	next, err := task.capture.WriteRecordsSince(task.cursor, task.writer)
 
 	task.mu.Lock()
 	task.cursor = next
 	task.mu.Unlock()
 
-	return writeErr
+	return err
 }
 
 func (task *Task) finish(err error) {
