@@ -782,6 +782,94 @@ func TestCapturePrune(t *testing.T) {
 	runtime.KeepAlive(capture)
 }
 
+// TestCaptureOldestNewest covers picking the earliest and latest of a set of
+// cursors: argument order, a discarded oldest cursor clamping to zero, and
+// Newest failing only when nothing in the set still places.
+func TestCaptureOldestNewest(t *testing.T) {
+	capture := newTestCapture(4, 24)
+	var cursors []Cursor
+	for seq := range 8 {
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		if err := capture.Append(testDataEvent(t, testBus0, 0x100, 0, data, seq, DirectionReceive)); err != nil {
+			t.Fatalf("Append %d: %v", seq, err)
+		}
+		cursors = append(cursors, capture.End())
+	}
+	if cursors[len(cursors)-1].chunk == 0 {
+		t.Fatal("fixture stayed inside one chunk, want it to rotate")
+	}
+
+	if _, err := capture.Oldest(); !errors.Is(err, errNoCursors) {
+		t.Fatalf("Oldest with no cursors = %v, want errNoCursors", err)
+	}
+	if _, err := capture.Newest(); !errors.Is(err, errNoCursors) {
+		t.Fatalf("Newest with no cursors = %v, want errNoCursors", err)
+	}
+
+	early, late := cursors[1], cursors[len(cursors)-1]
+	oldest, err := capture.Oldest(late, early, late)
+	if err != nil || oldest != early {
+		t.Fatalf("Oldest of placeable cursors = (%+v, %v), want %+v", oldest, err, early)
+	}
+	newest, err := capture.Newest(early, late, early)
+	if err != nil || newest != late {
+		t.Fatalf("Newest of placeable cursors = (%+v, %v), want %+v", newest, err, late)
+	}
+
+	zero, err := capture.Oldest(Cursor{}, late)
+	if err != nil || zero != (Cursor{}) {
+		t.Fatalf("Oldest with the zero Cursor = (%+v, %v), want the zero Cursor", zero, err)
+	}
+
+	if err := capture.Prune(cursors[3]); err != nil {
+		t.Fatalf("Prune at the chunk seam: %v", err)
+	}
+
+	// The discarded cursor is still the earliest in the set, so Oldest names
+	// the start of retained history instead of failing.
+	oldest, err = capture.Oldest(cursors[0], cursors[5], cursors[6])
+	if err != nil || oldest != (Cursor{}) {
+		t.Fatalf("Oldest with a discarded cursor = (%+v, %v), want the zero Cursor", oldest, err)
+	}
+	newest, err = capture.Newest(cursors[0], cursors[5], cursors[6])
+	if err != nil || newest != cursors[6] {
+		t.Fatalf("Newest with a discarded cursor = (%+v, %v), want %+v", newest, err, cursors[6])
+	}
+
+	other := NewCapture()
+	if err := other.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{9}, 0, DirectionReceive)); err != nil {
+		t.Fatalf("append to the other capture: %v", err)
+	}
+	oldest, err = capture.Oldest(other.End(), cursors[6])
+	if err != nil || oldest != (Cursor{}) {
+		t.Fatalf("Oldest with a foreign cursor = (%+v, %v), want the zero Cursor", oldest, err)
+	}
+	newest, err = capture.Newest(other.End(), cursors[6])
+	if err != nil || newest != cursors[6] {
+		t.Fatalf("Newest with a foreign cursor = (%+v, %v), want %+v", newest, err, cursors[6])
+	}
+
+	past := capture.End()
+	past.chunk += 8
+	oldest, err = capture.Oldest(cursors[5], past)
+	if err != nil || oldest != cursors[5] {
+		t.Fatalf("Oldest ignoring a cursor past the end = (%+v, %v), want %+v", oldest, err, cursors[5])
+	}
+	newest, err = capture.Newest(cursors[5], past)
+	if err != nil || newest != cursors[5] {
+		t.Fatalf("Newest ignoring a cursor past the end = (%+v, %v), want %+v", newest, err, cursors[5])
+	}
+
+	oldest, err = capture.Oldest(cursors[0], other.End(), past)
+	if err != nil || oldest != (Cursor{}) {
+		t.Fatalf("Oldest of only unplaceable cursors = (%+v, %v), want the zero Cursor", oldest, err)
+	}
+	if newest, err = capture.Newest(cursors[0], other.End(), past); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
+		t.Fatalf("Newest of only unplaceable cursors = (%+v, %v), want ErrCursorOutOfRange", newest, err)
+	}
+}
+
 func TestCaptureNext(t *testing.T) {
 	capture := newTestCapture(8, 64)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}

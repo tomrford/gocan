@@ -567,6 +567,96 @@ func (capture *Capture) endLocked() Cursor {
 	return Cursor{}
 }
 
+var errNoCursors = errors.New("capture has no cursors to compare")
+
+// placedCursor is one input cursor together with its location in a snapshot.
+type placedCursor struct {
+	cursor   Cursor
+	chunk    int
+	boundary int
+}
+
+func (placed placedCursor) before(other placedCursor) bool {
+	return placed.chunk < other.chunk ||
+		placed.chunk == other.chunk && placed.boundary < other.boundary
+}
+
+// cursorExtremes places cursors in one snapshot and returns the earliest and
+// latest that still place. A cursor into discarded or foreign history is older
+// than every retained record. A cursor past the capture's end is ignored.
+func (capture *Capture) cursorExtremes(cursors []Cursor) (oldest, newest Cursor, haveNewest bool, err error) {
+	if len(cursors) == 0 {
+		return Cursor{}, Cursor{}, false, errNoCursors
+	}
+
+	capture.mu.RLock()
+	defer capture.mu.RUnlock()
+
+	generation := capture.generation
+	chunks := capture.chunks
+	pruneSeam := capture.pruneSeam
+
+	var (
+		oldestPlaced, newestPlaced placedCursor
+		haveOldest                 bool
+		sawOlder                   bool
+	)
+	for _, cursor := range cursors {
+		chunk, boundary, placeErr := locateCursor(cursor, generation, chunks, pruneSeam)
+		if placeErr != nil {
+			if cursor.generation == generation &&
+				int(cursor.chunk)-int(chunks[0].sequence) >= len(chunks) {
+				continue
+			}
+			sawOlder = true
+			continue
+		}
+		placed := placedCursor{cursor: cursor, chunk: chunk, boundary: boundary}
+		if !haveOldest || placed.before(oldestPlaced) {
+			oldestPlaced = placed
+			haveOldest = true
+		}
+		if !haveNewest || newestPlaced.before(placed) {
+			newestPlaced = placed
+			haveNewest = true
+		}
+	}
+	if sawOlder || !haveOldest {
+		oldest = Cursor{}
+	} else {
+		oldest = oldestPlaced.cursor
+	}
+	newest = newestPlaced.cursor
+	return oldest, newest, haveNewest, nil
+}
+
+// Oldest returns the earliest of cursors in this capture's append order.
+//
+// A cursor this capture cannot place, other than one past the end, is older
+// than every retained record. If that cursor is the earliest in the set,
+// Oldest returns the zero Cursor: the start of what is still retained. A
+// cursor past the end is ignored. Oldest reports an error only when it is
+// given no cursors.
+func (capture *Capture) Oldest(cursors ...Cursor) (Cursor, error) {
+	oldest, _, _, err := capture.cursorExtremes(cursors)
+	return oldest, err
+}
+
+// Newest returns the latest of cursors in this capture's append order.
+//
+// Unplaceable cursors are ignored. Newest reports ErrCursorOutOfRange when
+// every cursor is unplaceable, and an error when it is given no cursors.
+func (capture *Capture) Newest(cursors ...Cursor) (Cursor, error) {
+	_, newest, haveNewest, err := capture.cursorExtremes(cursors)
+	if err != nil {
+		return Cursor{}, err
+	}
+	if !haveNewest {
+		return Cursor{}, ErrCursorOutOfRange
+	}
+	return newest, nil
+}
+
 // Prune discards records at or before cursor. It is how a capture that runs
 // indefinitely releases memory; the caller owns the policy of what to keep,
 // and the zero Cursor still reads everything that survives.
