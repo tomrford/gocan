@@ -579,10 +579,14 @@ func (placed placedCursor) before(other placedCursor) bool {
 		placed.chunk == other.chunk && placed.boundary < other.boundary
 }
 
-// cursorExtremes places cursors in one snapshot and returns the earliest and
-// latest that still place. Unplaceable cursors are skipped. If none place, the
-// result is ErrCursorOutOfRange.
+// cursorExtremes places every cursor in one snapshot and returns the earliest
+// and latest. If any cursor cannot be placed, or the set is empty, the result
+// is ErrCursorOutOfRange.
 func (capture *Capture) cursorExtremes(cursors []Cursor) (oldest, newest Cursor, err error) {
+	if len(cursors) == 0 {
+		return Cursor{}, Cursor{}, ErrCursorOutOfRange
+	}
+
 	capture.mu.RLock()
 	defer capture.mu.RUnlock()
 
@@ -591,40 +595,35 @@ func (capture *Capture) cursorExtremes(cursors []Cursor) (oldest, newest Cursor,
 	pruneSeam := capture.pruneSeam
 
 	var oldestPlaced, newestPlaced placedCursor
-	var have bool
-	for _, cursor := range cursors {
+	for i, cursor := range cursors {
 		chunk, boundary, placeErr := locateCursor(cursor, generation, chunks, pruneSeam)
 		if placeErr != nil {
-			continue
+			return Cursor{}, Cursor{}, placeErr
 		}
 		placed := placedCursor{cursor: cursor, chunk: chunk, boundary: boundary}
-		if !have || placed.before(oldestPlaced) {
+		if i == 0 || placed.before(oldestPlaced) {
 			oldestPlaced = placed
 		}
-		if !have || newestPlaced.before(placed) {
+		if i == 0 || newestPlaced.before(placed) {
 			newestPlaced = placed
 		}
-		have = true
-	}
-	if !have {
-		return Cursor{}, Cursor{}, ErrCursorOutOfRange
 	}
 	return oldestPlaced.cursor, newestPlaced.cursor, nil
 }
 
-// Oldest returns the earliest of cursors that this capture can still place.
+// Oldest returns the earliest of cursors in this capture's append order.
 //
-// Unplaceable cursors are skipped. Oldest reports ErrCursorOutOfRange when
-// none of the cursors place.
+// Every cursor must place. Oldest reports ErrCursorOutOfRange when any cursor
+// is unplaceable or the set is empty.
 func (capture *Capture) Oldest(cursors ...Cursor) (Cursor, error) {
 	oldest, _, err := capture.cursorExtremes(cursors)
 	return oldest, err
 }
 
-// Newest returns the latest of cursors that this capture can still place.
+// Newest returns the latest of cursors in this capture's append order.
 //
-// Unplaceable cursors are skipped. Newest reports ErrCursorOutOfRange when
-// none of the cursors place.
+// Every cursor must place. Newest reports ErrCursorOutOfRange when any cursor
+// is unplaceable or the set is empty.
 func (capture *Capture) Newest(cursors ...Cursor) (Cursor, error) {
 	_, newest, err := capture.cursorExtremes(cursors)
 	return newest, err
