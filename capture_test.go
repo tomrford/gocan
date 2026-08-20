@@ -782,9 +782,9 @@ func TestCapturePrune(t *testing.T) {
 	runtime.KeepAlive(capture)
 }
 
-// TestCaptureOldestNewest covers picking the earliest and latest of a set of
-// cursors: argument order, a discarded oldest cursor clamping to zero, and
-// Newest failing only when nothing in the set still places.
+// TestCaptureOldestNewest covers picking the earliest and latest placeable
+// cursors from a set: argument order, skipping a discarded member, and both
+// helpers failing only when nothing in the set still places.
 func TestCaptureOldestNewest(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	var cursors []Cursor
@@ -800,11 +800,11 @@ func TestCaptureOldestNewest(t *testing.T) {
 		t.Fatal("fixture stayed inside one chunk, want it to rotate")
 	}
 
-	if _, err := capture.Oldest(); !errors.Is(err, errNoCursors) {
-		t.Fatalf("Oldest with no cursors = %v, want errNoCursors", err)
+	if oldest, err := capture.Oldest(); !errors.Is(err, ErrCursorOutOfRange) || oldest != (Cursor{}) {
+		t.Fatalf("Oldest with no cursors = (%+v, %v), want ErrCursorOutOfRange", oldest, err)
 	}
-	if _, err := capture.Newest(); !errors.Is(err, errNoCursors) {
-		t.Fatalf("Newest with no cursors = %v, want errNoCursors", err)
+	if newest, err := capture.Newest(); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
+		t.Fatalf("Newest with no cursors = (%+v, %v), want ErrCursorOutOfRange", newest, err)
 	}
 
 	early, late := cursors[1], cursors[len(cursors)-1]
@@ -826,15 +826,15 @@ func TestCaptureOldestNewest(t *testing.T) {
 		t.Fatalf("Prune at the chunk seam: %v", err)
 	}
 
-	// The discarded cursor is still the earliest in the set, so Oldest names
-	// the start of retained history instead of failing.
+	// The discarded cursor is skipped, so Oldest names the earliest that
+	// still places rather than failing the set.
 	oldest, err = capture.Oldest(cursors[0], cursors[5], cursors[6])
-	if err != nil || oldest != (Cursor{}) {
-		t.Fatalf("Oldest with a discarded cursor = (%+v, %v), want the zero Cursor", oldest, err)
+	if err != nil || oldest != cursors[5] {
+		t.Fatalf("Oldest skipping a discarded cursor = (%+v, %v), want %+v", oldest, err, cursors[5])
 	}
 	newest, err = capture.Newest(cursors[0], cursors[5], cursors[6])
 	if err != nil || newest != cursors[6] {
-		t.Fatalf("Newest with a discarded cursor = (%+v, %v), want %+v", newest, err, cursors[6])
+		t.Fatalf("Newest skipping a discarded cursor = (%+v, %v), want %+v", newest, err, cursors[6])
 	}
 
 	other := NewCapture()
@@ -842,28 +842,27 @@ func TestCaptureOldestNewest(t *testing.T) {
 		t.Fatalf("append to the other capture: %v", err)
 	}
 	oldest, err = capture.Oldest(other.End(), cursors[6])
-	if err != nil || oldest != (Cursor{}) {
-		t.Fatalf("Oldest with a foreign cursor = (%+v, %v), want the zero Cursor", oldest, err)
+	if err != nil || oldest != cursors[6] {
+		t.Fatalf("Oldest skipping a foreign cursor = (%+v, %v), want %+v", oldest, err, cursors[6])
 	}
 	newest, err = capture.Newest(other.End(), cursors[6])
 	if err != nil || newest != cursors[6] {
-		t.Fatalf("Newest with a foreign cursor = (%+v, %v), want %+v", newest, err, cursors[6])
+		t.Fatalf("Newest skipping a foreign cursor = (%+v, %v), want %+v", newest, err, cursors[6])
 	}
 
 	past := capture.End()
 	past.chunk += 8
 	oldest, err = capture.Oldest(cursors[5], past)
 	if err != nil || oldest != cursors[5] {
-		t.Fatalf("Oldest ignoring a cursor past the end = (%+v, %v), want %+v", oldest, err, cursors[5])
+		t.Fatalf("Oldest skipping a cursor past the end = (%+v, %v), want %+v", oldest, err, cursors[5])
 	}
 	newest, err = capture.Newest(cursors[5], past)
 	if err != nil || newest != cursors[5] {
-		t.Fatalf("Newest ignoring a cursor past the end = (%+v, %v), want %+v", newest, err, cursors[5])
+		t.Fatalf("Newest skipping a cursor past the end = (%+v, %v), want %+v", newest, err, cursors[5])
 	}
 
-	oldest, err = capture.Oldest(cursors[0], other.End(), past)
-	if err != nil || oldest != (Cursor{}) {
-		t.Fatalf("Oldest of only unplaceable cursors = (%+v, %v), want the zero Cursor", oldest, err)
+	if oldest, err = capture.Oldest(cursors[0], other.End(), past); !errors.Is(err, ErrCursorOutOfRange) || oldest != (Cursor{}) {
+		t.Fatalf("Oldest of only unplaceable cursors = (%+v, %v), want ErrCursorOutOfRange", oldest, err)
 	}
 	if newest, err = capture.Newest(cursors[0], other.End(), past); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest of only unplaceable cursors = (%+v, %v), want ErrCursorOutOfRange", newest, err)
