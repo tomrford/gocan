@@ -782,6 +782,67 @@ func TestCapturePrune(t *testing.T) {
 	runtime.KeepAlive(capture)
 }
 
+// TestCapturePruneFollowsSlowestCursor covers a retention owner coordinating
+// several consumers: the slowest cursor holds pruning back, advancing it
+// releases history, and a lost consumer stops pruning until it recovers.
+func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
+	capture := newTestCapture(4, 24)
+	var cursors []Cursor
+	for seq := range 8 {
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		if err := capture.Append(testDataEvent(t, testBus0, 0x100, 0, data, seq, DirectionReceive)); err != nil {
+			t.Fatalf("Append %d: %v", seq, err)
+		}
+		cursors = append(cursors, capture.End())
+	}
+	if cursors[len(cursors)-1].chunk == 0 {
+		t.Fatal("fixture stayed inside one chunk, want it to rotate")
+	}
+
+	retained := capture.Len()
+	if err := capture.Prune(); err != nil || capture.Len() != retained {
+		t.Fatalf("empty Prune = %v, retaining %d records, want %d", err, capture.Len(), retained)
+	}
+	if err := capture.Prune(cursors[5], Cursor{}); err != nil || capture.Len() != retained {
+		t.Fatalf("Prune with a zero cursor = %v, retaining %d records, want %d", err, capture.Len(), retained)
+	}
+
+	// One consumer is still inside the first chunk, so the later consumer must
+	// not cause that chunk to be discarded. Argument order is not policy.
+	if err := capture.Prune(cursors[5], cursors[1]); err != nil || capture.Len() != retained {
+		t.Fatalf("Prune behind the slowest consumer = %v, retaining %d records, want %d", err, capture.Len(), retained)
+	}
+
+	sealed := len(capture.chunks[0].records)
+	if err := capture.Prune(cursors[5], cursors[sealed-1]); err != nil {
+		t.Fatalf("Prune after the slowest consumer advanced: %v", err)
+	}
+	retained -= sealed
+	if capture.Len() != retained {
+		t.Fatalf("Prune after both consumers advanced retained %d records, want %d", capture.Len(), retained)
+	}
+
+	// Repeating the same positions is safe. The slow cursor is now the prune
+	// seam and still names the boundary before the retained history.
+	if err := capture.Prune(cursors[5], cursors[sealed-1]); err != nil || capture.Len() != retained {
+		t.Fatalf("repeated Prune = %v, retaining %d records, want %d", err, capture.Len(), retained)
+	}
+
+	// A consumer behind the prune seam has lost history. It stops the whole
+	// operation, so the retention owner can recover that consumer explicitly.
+	if err := capture.Prune(cursors[5], cursors[0]); !errors.Is(err, ErrCursorOutOfRange) || capture.Len() != retained {
+		t.Fatalf("Prune with a stale consumer = %v, retaining %d records, want ErrCursorOutOfRange and %d",
+			err, capture.Len(), retained)
+	}
+
+	// Resetting that consumer to zero is explicit recovery and holds pruning
+	// back until it catches up again.
+	if err := capture.Prune(cursors[5], Cursor{}); err != nil || capture.Len() != retained {
+		t.Fatalf("Prune with a recovered consumer = %v, retaining %d records, want %d", err, capture.Len(), retained)
+	}
+}
+
 func TestCaptureNext(t *testing.T) {
 	capture := newTestCapture(8, 64)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}

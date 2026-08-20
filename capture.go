@@ -239,11 +239,11 @@ var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
 // A cursor the capture cannot place, because Clear discarded its generation
 // or Prune discarded records after it, fails the read that carries it with
 // ErrCursorOutOfRange, as does a range whose end precedes its start. The
-// cursor Prune was given still places: it names the boundary after the last
-// discarded record. A failed read returns no records and the cursor it was
-// given, so a caller either reports the loss or resynchronises from the zero
-// Cursor or End. No read silently re-reads or skips history. A range whose
-// end equals its start is empty, not an error.
+// cursor at Prune's discarded boundary still places: it names the boundary
+// after the last discarded record. A failed read returns no records and the
+// cursor it was given, so a caller either reports the loss or resynchronises
+// from the zero Cursor or End. No read silently re-reads or skips history. A
+// range whose end equals its start is empty, not an error.
 type Cursor struct {
 	generation uint64
 	chunk      uint32
@@ -567,29 +567,47 @@ func (capture *Capture) endLocked() Cursor {
 	return Cursor{}
 }
 
-// Prune discards records at or before cursor. It is how a capture that runs
-// indefinitely releases memory; the caller owns the policy of what to keep,
-// and the zero Cursor still reads everything that survives.
+// Prune discards records at or before the earliest cursor. It is how a capture
+// that runs indefinitely releases memory; the caller owns the policy of what
+// to keep, and a zero Cursor prevents pruning. Calling Prune with no cursors is
+// a no-op.
 //
 // Pruning is chunk-granular, so it is approximate in the caller's favour: it
-// discards only whole sealed chunks that end at or before cursor and never the
-// chunk being appended to, so records after the last discarded chunk stay
-// retained however far they precede cursor. Nothing is ever discarded from
-// inside a chunk.
+// discards only whole sealed chunks that end at or before the earliest cursor
+// and never the chunk being appended to, so records after the last discarded
+// chunk stay retained however far they precede that cursor. Nothing is ever
+// discarded from inside a chunk.
 //
-// Pruning past a cursor another reader holds is allowed: a new read from that
-// cursor fails with ErrCursorOutOfRange and resynchronises. Reads already in
-// progress finish against the chunks they observed. A Next that has registered
-// its waiter has finished using the input cursor and remains subscribed to the
-// first matching append. An unplaceable cursor reports ErrCursorOutOfRange and
-// discards nothing.
-func (capture *Capture) Prune(cursor Cursor) error {
+// Every cursor must place. If any is unplaceable, Prune reports
+// ErrCursorOutOfRange and discards nothing. Pruning past a cursor another
+// reader holds is allowed: a new read from that cursor fails with
+// ErrCursorOutOfRange and resynchronises. Reads already in progress finish
+// against the chunks they observed. A Next that has registered its waiter has
+// finished using the input cursor and remains subscribed to the first matching
+// append.
+func (capture *Capture) Prune(cursors ...Cursor) error {
+	if len(cursors) == 0 {
+		return nil
+	}
+
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
-	chunk, boundary, err := locateCursor(cursor, capture.generation, capture.chunks, capture.pruneSeam)
-	if err != nil {
-		return err
+	var chunk, boundary int
+	for i, cursor := range cursors {
+		placedChunk, placedBoundary, err := locateCursor(
+			cursor,
+			capture.generation,
+			capture.chunks,
+			capture.pruneSeam,
+		)
+		if err != nil {
+			return err
+		}
+		if i == 0 || placedChunk < chunk ||
+			placedChunk == chunk && placedBoundary < boundary {
+			chunk, boundary = placedChunk, placedBoundary
+		}
 	}
 	// The cursor's own chunk goes too when the cursor names its last record and
 	// a later chunk has sealed it.
@@ -636,7 +654,7 @@ func (capture *Capture) Prune(cursor Cursor) error {
 // under the capture lock. Clear or Prune after registration cannot invalidate
 // that in-progress call: its snapshot remains readable, and if the snapshot
 // has no match the waiter returns the first later matching append directly.
-// The cursor Prune was given still places for new calls.
+// The cursor at Prune's discarded boundary still places for new calls.
 func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (FrameEvent, Cursor, error) {
 	// Registering the waiter and freezing the search in one critical section
 	// closes the only lost-wake window: an append lands either in the snapshot
