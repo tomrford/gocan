@@ -629,6 +629,27 @@ func (capture *Capture) Newest(cursors ...Cursor) (Cursor, error) {
 	return newest, err
 }
 
+// Placeable reports whether every cursor can be placed in this capture.
+//
+// It is the same placement check Oldest, Newest, Prune, and the cursor
+// reads use. Placeable reports ErrCursorOutOfRange when any cursor is
+// unplaceable or the set is empty.
+func (capture *Capture) Placeable(cursors ...Cursor) error {
+	if len(cursors) == 0 {
+		return ErrCursorOutOfRange
+	}
+
+	capture.mu.RLock()
+	defer capture.mu.RUnlock()
+
+	for _, cursor := range cursors {
+		if _, _, err := locateCursor(cursor, capture.generation, capture.chunks, capture.pruneSeam); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Prune discards records at or before cursor. It is how a capture that runs
 // indefinitely releases memory; the caller owns the policy of what to keep,
 // and the zero Cursor still reads everything that survives.

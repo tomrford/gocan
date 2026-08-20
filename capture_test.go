@@ -783,8 +783,8 @@ func TestCapturePrune(t *testing.T) {
 }
 
 // TestCaptureOldestNewest covers picking the earliest and latest of a set of
-// cursors: argument order, and both helpers failing when any member cannot
-// place, which is the signal a prune set has lost a reader.
+// cursors: argument order, Placeable as the shared placement check, and all
+// three helpers failing when any member cannot place.
 func TestCaptureOldestNewest(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	var cursors []Cursor
@@ -806,6 +806,9 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if newest, err := capture.Newest(); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest with no cursors = (%+v, %v), want ErrCursorOutOfRange", newest, err)
 	}
+	if err := capture.Placeable(); !errors.Is(err, ErrCursorOutOfRange) {
+		t.Fatalf("Placeable with no cursors = %v, want ErrCursorOutOfRange", err)
+	}
 
 	early, late := cursors[1], cursors[len(cursors)-1]
 	oldest, err := capture.Oldest(late, early, late)
@@ -821,6 +824,9 @@ func TestCaptureOldestNewest(t *testing.T) {
 	if err != nil || zero != (Cursor{}) {
 		t.Fatalf("Oldest with the zero Cursor = (%+v, %v), want the zero Cursor", zero, err)
 	}
+	if err := capture.Placeable(Cursor{}, late); err != nil {
+		t.Fatalf("Placeable of the zero Cursor and a late cursor: %v", err)
+	}
 
 	if err := capture.Prune(cursors[3]); err != nil {
 		t.Fatalf("Prune at the chunk seam: %v", err)
@@ -831,6 +837,9 @@ func TestCaptureOldestNewest(t *testing.T) {
 	}
 	if newest, err = capture.Newest(cursors[0], cursors[5], cursors[6]); !errors.Is(err, ErrCursorOutOfRange) || newest != (Cursor{}) {
 		t.Fatalf("Newest with a discarded cursor = (%+v, %v), want ErrCursorOutOfRange", newest, err)
+	}
+	if err := capture.Placeable(cursors[0], cursors[5], cursors[6]); !errors.Is(err, ErrCursorOutOfRange) {
+		t.Fatalf("Placeable with a discarded cursor = %v, want ErrCursorOutOfRange", err)
 	}
 
 	other := NewCapture()
@@ -860,6 +869,9 @@ func TestCaptureOldestNewest(t *testing.T) {
 	newest, err = capture.Newest(cursors[5], cursors[6])
 	if err != nil || newest != cursors[6] {
 		t.Fatalf("Newest of retained cursors after prune = (%+v, %v), want %+v", newest, err, cursors[6])
+	}
+	if err := capture.Placeable(cursors[5], cursors[6]); err != nil {
+		t.Fatalf("Placeable of retained cursors after prune: %v", err)
 	}
 }
 
