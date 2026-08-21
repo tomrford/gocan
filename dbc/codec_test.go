@@ -184,7 +184,27 @@ func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {
 	assertDecoded(t, classic, frame, "Value", uint64(7))
 }
 
-func TestLongJ1939MessageFailsCodecNotDatabase(t *testing.T) {
+func TestMessagesByPGNCanonicalisesPDU1Identifiers(t *testing.T) {
+	const source = "BU_: ECU\n" +
+		"BO_ 2564432256 First: 8 ECU\n" +
+		" SG_ Value : 0|8@1+ (1,0) [0|255] \"\" ECU\n" +
+		"BO_ 2564432513 Second: 8 ECU\n" +
+		" SG_ Value : 0|8@1+ (1,0) [0|255] \"\" ECU\n" +
+		"BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\n" +
+		"BA_ \"VFrameFormat\" BO_ 2564432256 3;\n" +
+		"BA_ \"VFrameFormat\" BO_ 2564432513 3;\n"
+	database, err := Parse("pdu1.dbc", source)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	matches := database.MessagesByPGN(0xda00)
+	if len(matches) != 2 || matches[0].Name != "First" || matches[1].Name != "Second" {
+		t.Fatalf("MessagesByPGN = %#v", matches)
+	}
+}
+
+func TestLongJ1939PayloadDecode(t *testing.T) {
 	source := "BU_: ECU\n" +
 		"BO_ 2566834942 LongJ1939: 1785 ECU\n" +
 		" SG_ DTC : 16|32@1+ (1,0) [0|4294967295] \"\" ECU\n" +
@@ -203,14 +223,39 @@ func TestLongJ1939MessageFailsCodecNotDatabase(t *testing.T) {
 	if long.Format != FrameFormatJ1939 || long.Length != 1785 || len(long.Signals) != 2 {
 		t.Fatalf("LongJ1939 metadata = format %d length %d signals %d", long.Format, long.Length, len(long.Signals))
 	}
-	if _, err := long.Encode(Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
+	payload := make([]byte, 201)
+	payload[2] = 0x78
+	payload[3] = 0x56
+	payload[4] = 0x34
+	payload[5] = 0x12
+	payload[193] = 0x10
+	payload[194] = 0x32
+	payload[195] = 0x54
+	payload[196] = 0x76
+	payload[197] = 0x98
+	payload[198] = 0xba
+	payload[199] = 0xdc
+	payload[200] = 0xfe
+	if value, err := long.DecodePayload(payload, "DTC"); err != nil || value != uint64(0x12345678) {
+		t.Fatalf("DecodePayload DTC = %#v, %v", value, err)
+	}
+	if value, err := long.DecodePayload(payload, "HighSignal"); err != nil || value != uint64(0xfedcba9876543210) {
+		t.Fatalf("DecodePayload HighSignal = %#v, %v", value, err)
+	}
+	if _, err := long.DecodePayload(payload[:100], "HighSignal"); err == nil || !strings.Contains(err.Error(), "not present") {
+		t.Fatalf("short DecodePayload error = %v", err)
+	}
+	if _, err := long.DecodePayload(make([]byte, 1786), "DTC"); err == nil || !strings.Contains(err.Error(), "exceeds declared length") {
+		t.Fatalf("long DecodePayload error = %v", err)
+	}
+	if _, err := long.Encode(Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
 		t.Fatalf("LongJ1939 Encode error = %v", err)
 	}
-	if _, err := long.Decode(gocan.Frame{}, "DTC"); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
+	if _, err := long.Decode(gocan.Frame{}, "DTC"); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
 		t.Fatalf("LongJ1939 Decode error = %v", err)
 	}
 	frame := gocan.Frame{}
-	if err := long.Patch(&frame, Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
+	if err := long.Patch(&frame, Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
 		t.Fatalf("LongJ1939 Patch error = %v", err)
 	}
 }
