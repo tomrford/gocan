@@ -203,6 +203,9 @@ func TestLongJ1939MessageFailsCodecNotDatabase(t *testing.T) {
 	if long.Format != FrameFormatJ1939 || long.Length != 1785 || len(long.Signals) != 2 {
 		t.Fatalf("LongJ1939 metadata = format %d length %d signals %d", long.Format, long.Length, len(long.Signals))
 	}
+	if _, ok := long.SignalByName("DTC"); !ok {
+		t.Fatal("DTC signal was not resolved")
+	}
 	if _, err := long.Encode(Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "1785-byte message exceeds the 64-byte raw frame representation") {
 		t.Fatalf("LongJ1939 Encode error = %v", err)
 	}

@@ -26,14 +26,29 @@ func TestParseCoreDatabase(t *testing.T) {
 	if len(status.Signals) != 4 || status.Signals[2].ByteOrder != ByteOrderBigEndian {
 		t.Fatalf("unexpected Status signals: %#v", status.Signals)
 	}
-	if status.Signals[3].ValueType != ValueTypeFloat32 {
-		t.Fatalf("Ratio value type = %v, want float32", status.Signals[3].ValueType)
+	ratio, ok := status.SignalByName("Ratio")
+	if !ok {
+		t.Fatal("Ratio signal was not resolved")
 	}
-	if status.Signals[1].Attributes["SPN"].Integer != 171 {
-		t.Fatalf("Temperature SPN = %v, want 171", status.Signals[1].Attributes["SPN"])
+	if ratio.ValueType != ValueTypeFloat32 {
+		t.Fatalf("Ratio value type = %v, want float32", ratio.ValueType)
 	}
-	if len(status.Signals[0].Values) != 2 || status.Signals[0].Values[1].Label != "Running" {
-		t.Fatalf("unexpected Counter choices: %v", status.Signals[0].Values)
+	temperature, ok := status.SignalByName("Temperature")
+	if !ok {
+		t.Fatal("Temperature signal was not resolved")
+	}
+	if temperature.Attributes["SPN"].Integer != 171 {
+		t.Fatalf("Temperature SPN = %v, want 171", temperature.Attributes["SPN"])
+	}
+	counter, ok := status.SignalByName("Counter")
+	if !ok {
+		t.Fatal("Counter signal was not resolved")
+	}
+	if len(counter.Values) != 2 || counter.Values[1].Label != "Running" {
+		t.Fatalf("unexpected Counter choices: %v", counter.Values)
+	}
+	if _, ok := status.SignalByName("Missing"); ok {
+		t.Fatal("unknown signal was resolved")
 	}
 	if len(status.SignalGroups) != 1 || len(status.SignalGroups[0].Signals) != 2 {
 		t.Fatalf("unexpected signal groups: %v", status.SignalGroups)
@@ -52,30 +67,46 @@ func TestParseMultiplexingAndJ1939(t *testing.T) {
 	db := parseFixture(t, "testdata/multiplex_j1939.dbc")
 
 	mux := db.Messages[0]
-	assertMux := func(signalIndex int, selector string, first, last uint64) {
+	assertMux := func(name, selector string, first, last uint64) {
 		t.Helper()
-		condition := mux.Signals[signalIndex].Multiplex
+		signal, ok := mux.SignalByName(name)
+		if !ok {
+			t.Fatalf("signal %q was not resolved", name)
+		}
+		condition := signal.Multiplex
 		if condition == nil || condition.Selector != selector || len(condition.Ranges) != 1 ||
 			condition.Ranges[0] != (MultiplexRange{First: first, Last: last}) {
-			t.Fatalf("unexpected multiplex condition for %s: %#v", mux.Signals[signalIndex].Name, condition)
+			t.Fatalf("unexpected multiplex condition for %s: %#v", name, condition)
 		}
 	}
-	if !mux.Signals[0].IsMultiplexer || mux.Signals[0].Multiplex != nil {
-		t.Fatalf("RootA is not an unconditional multiplexer: %#v", mux.Signals[0])
+	rootA, ok := mux.SignalByName("RootA")
+	if !ok {
+		t.Fatal("RootA signal was not resolved")
 	}
-	if !mux.Signals[1].IsMultiplexer {
-		t.Fatalf("ChildSelector is not a multiplexer: %#v", mux.Signals[1])
+	if !rootA.IsMultiplexer || rootA.Multiplex != nil {
+		t.Fatalf("RootA is not an unconditional multiplexer: %#v", rootA)
 	}
-	assertMux(1, "RootA", 2, 2)
-	assertMux(2, "ChildSelector", 3, 5)
-	assertMux(4, "RootB", 7, 9)
+	childSelector, ok := mux.SignalByName("ChildSelector")
+	if !ok {
+		t.Fatal("ChildSelector signal was not resolved")
+	}
+	if !childSelector.IsMultiplexer {
+		t.Fatalf("ChildSelector is not a multiplexer: %#v", childSelector)
+	}
+	assertMux("ChildSelector", "RootA", 2, 2)
+	assertMux("Leaf", "ChildSelector", 3, 5)
+	assertMux("Other", "RootB", 7, 9)
 
 	j1939 := db.Messages[1]
 	if j1939.Format != FrameFormatJ1939 || j1939.ID != 0x18feee80 || !j1939.Extended {
 		t.Fatalf("message was not resolved as J1939: %#v", j1939)
 	}
-	if j1939.Signals[0].Attributes["SPN"].Integer != 110 {
-		t.Fatalf("Coolant SPN = %v, want 110", j1939.Signals[0].Attributes["SPN"])
+	coolant, ok := j1939.SignalByName("Coolant")
+	if !ok {
+		t.Fatal("Coolant signal was not resolved")
+	}
+	if coolant.Attributes["SPN"].Integer != 110 {
+		t.Fatalf("Coolant SPN = %v, want 110", coolant.Attributes["SPN"])
 	}
 }
 
