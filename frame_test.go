@@ -1,46 +1,39 @@
 package gocan
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
-func TestDLCLengthRoundTrip(t *testing.T) {
+func TestDLCLengthMapping(t *testing.T) {
+	fdLengths := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64}
 	for _, fd := range []bool{false, true} {
-		for dlc := uint8(0); dlc <= 15; dlc++ {
-			length, err := DLCToLength(dlc, fd)
-			if err != nil {
-				t.Fatalf("DLCToLength(%d, fd=%t): %v", dlc, fd, err)
+		for dlc, length := range fdLengths {
+			wantDLC := dlc
+			if !fd {
+				length = min(length, 8)
+				wantDLC = min(dlc, 8)
 			}
-			back, err := LengthToDLC(length, fd)
-			if err != nil {
-				t.Fatalf("LengthToDLC(%d, fd=%t): %v", length, fd, err)
+			if got, err := DLCToLength(uint8(dlc), fd); err != nil || got != length {
+				t.Errorf("DLCToLength(%d, fd=%t) = %d, %v; want %d", dlc, fd, got, err, length)
 			}
-			want := dlc
-			if !fd && dlc > 8 {
-				// Classical DLCs above 8 all describe eight payload bytes.
-				want = 8
-			}
-			if back != want {
-				t.Errorf("dlc %d (fd=%t) -> length %d -> dlc %d, want %d", dlc, fd, length, back, want)
+			if got, err := LengthToDLC(length, fd); err != nil || int(got) != wantDLC {
+				t.Errorf("LengthToDLC(%d, fd=%t) = %d, %v; want %d", length, fd, got, err, wantDLC)
 			}
 		}
 
-		for length := 0; length <= MaxDataLength; length++ {
-			dlc, err := LengthToDLC(length, fd)
-			if err != nil {
-				// Lengths with no exact DLC must be rejected, never rounded.
+		for length := -1; length <= MaxDataLength+1; length++ {
+			if slices.Contains(fdLengths, length) && (fd || length <= 8) {
 				continue
 			}
-			back, err := DLCToLength(dlc, fd)
-			if err != nil || back != length {
-				t.Errorf("length %d (fd=%t) -> dlc %d -> length %d (%v)", length, fd, dlc, back, err)
+			if _, err := LengthToDLC(length, fd); err == nil {
+				t.Errorf("LengthToDLC(%d, fd=%t) accepted an unencodable length", length, fd)
 			}
 		}
 	}
 
 	if _, err := DLCToLength(16, true); err == nil {
 		t.Error("DLCToLength(16, fd=true) succeeded, want error")
-	}
-	if _, err := LengthToDLC(9, false); err == nil {
-		t.Error("LengthToDLC(9, fd=false) succeeded, want error")
 	}
 }
 

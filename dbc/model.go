@@ -8,6 +8,8 @@ import "github.com/tomrford/gocan/internal/scalar"
 //
 // Slices retain declaration order. Maps contain explicit attributes; defaults
 // remain on their definitions so callers can distinguish the two.
+// Treat the database and its nested models as read-only: lookups and codecs
+// trust the model that Parse resolved, and modifications are not revalidated.
 type Database struct {
 	Version              string
 	Nodes                []Node
@@ -27,6 +29,7 @@ type Node struct {
 }
 
 // Message is one resolved BO_ definition.
+// Treat it and its nested fields as read-only, as described by Database.
 type Message struct {
 	ID           uint32
 	Extended     bool

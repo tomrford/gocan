@@ -448,6 +448,7 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	}
 
 	pending := make(chan error, 1)
+	t.Cleanup(exchange.Close)
 	go func() {
 		_, err := exchange.Next(context.Background(), 0)
 		pending <- err
@@ -470,6 +471,21 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 		t.Fatalf("peer read %#x, want a Continue Flow Control", got)
 	}
 
+	// Retention can inspect progress while Next waits for the rest of a payload.
+	progress := make(chan gocan.Cursor, 1)
+	go func() { progress <- link.Cursor() }()
+	select {
+	case cursor := <-progress:
+		if cursor == (gocan.Cursor{}) {
+			t.Fatal("cursor did not advance past the First Frame")
+		}
+		if err := capture.Prune(cursor); err != nil {
+			t.Fatalf("Prune receive progress: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Cursor blocked behind pending reception")
+	}
+
 	closed := make(chan struct{})
 	go func() {
 		exchange.Close()
@@ -488,9 +504,11 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	}
 
 	// The link must be usable again.
-	if _, err := link.Begin(context.Background(), []byte{0x3e, 0}); err != nil {
+	next, err := link.Begin(ctx, []byte{0x3e, 0})
+	if err != nil {
 		t.Fatalf("Begin after Close: %v", err)
 	}
+	next.Close()
 }
 
 // TestSegmentationConformance covers two ISO 15765-2 rules that pull in opposite
@@ -827,6 +845,9 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	}
 	if _, err := receiver.Receive(ctx); !errors.Is(err, gocan.ErrCursorOutOfRange) {
 		t.Fatalf("first Receive after Clear = %v, want gocan.ErrCursorOutOfRange", err)
+	}
+	if receiver.Cursor() != (gocan.Cursor{}) {
+		t.Fatal("capture loss did not reset the receive cursor")
 	}
 	got, err := receiver.Receive(ctx)
 	if err != nil {

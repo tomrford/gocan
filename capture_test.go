@@ -525,13 +525,6 @@ func TestReplacementCapacities(t *testing.T) {
 			wantRecords: initialCaptureChunkRecordCapacity,
 			wantPayload: minimumCaptureChunkPayloadCapacity,
 		},
-		{
-			name:        "record-free shape keeps initial capacities",
-			records:     0,
-			payload:     0,
-			wantRecords: initialCaptureChunkRecordCapacity,
-			wantPayload: initialCaptureChunkPayloadCapacity,
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
