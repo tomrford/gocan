@@ -11,6 +11,10 @@ import (
 )
 
 func TestWriterStreamsCapture(t *testing.T) {
+	original := time.Local
+	time.Local = time.FixedZone("TEST", -4*3600)
+	t.Cleanup(func() { time.Local = original })
+
 	start := time.Date(2026, time.August, 1, 12, 34, 56, 789_000_000, time.UTC)
 	capture := gocan.NewCapture()
 
@@ -91,10 +95,10 @@ func TestWriterStreamsCapture(t *testing.T) {
 		lines = append(lines, strings.TrimSpace(line))
 	}
 	want := []string{
-		"date Sat Aug 01 12:34:56.789 2026",
+		"date Sat Aug 01 08:34:56.789 2026",
 		"base hex timestamps absolute",
 		"internal events logged",
-		"Begin Triggerblock Sat Aug 01 12:34:56.789 2026",
+		"Begin Triggerblock Sat Aug 01 08:34:56.789 2026",
 		"0.000000 Start of measurement",
 		"0.000000 1 123 Rx d 2 AA BB",
 		"0.001000 CAN 1 Status:chip status error passive - TxErr: 132 RxErr: 0",
