@@ -28,8 +28,8 @@ type Database struct {
 // Diagnostic reports a defect confined to one data identifier that leaves the
 // database safe to use. A DID is dropped from the catalog when its layout is
 // outside the supported subset, its references do not resolve, or its name or
-// identifier repeats; a DID whose execution precondition names a state the
-// document does not declare is kept with that operation unrestricted. Name is
+// identifier repeats. Unresolved execution preconditions leave the DID usable
+// for encoding and decoding, with an error on the affected Precondition. Name is
 // the QUAL of the diagnostic instance, which CDD documents may leave empty.
 type Diagnostic struct {
 	Name    string
@@ -52,23 +52,33 @@ type DID struct {
 // when the last field is variable length, in which case MaxLength is the
 // largest record.
 //
-// Sessions and SecurityLevels are the diagnostic session and security access
-// states in which the ECU executes the operation, named as in
-// Database.Sessions and Database.SecurityLevels. A nil slice places no
-// condition on that state group: the CDD lists no state of the group for the
-// service, or declares no preconditions for it at all.
+// Preconditions preserves alternative service conditions in source order.
+// Conditions from different alternatives must not be combined. Equivalent
+// resolved alternatives are retained once. An unresolved alternative has Err
+// set; it does not prevent encoding or decoding the data record.
 //
 // Treat a Record and its Fields as read-only: Encode and Decode trust the
 // layout that Parse resolved, and modifications are not revalidated.
 type Record struct {
-	Name           string
-	Length         uint32
-	MaxLength      uint32
-	Fields         []Field
-	Sessions       []string
-	SecurityLevels []string
+	Name          string
+	Length        uint32
+	MaxLength     uint32
+	Fields        []Field
+	Preconditions []Precondition
 
 	codec *recordCodec
+}
+
+// Precondition describes one service alternative's session and security
+// requirements. Both groups must match; any listed state matches within a
+// group. Names refer to Database.Sessions and Database.SecurityLevels.
+// A nil group places no restriction only when Err is nil. Err reports an
+// invalid reference or unsupported precondition form, not ECU rejection.
+// Preconditions describe metadata; callers manage the ECU's actual state.
+type Precondition struct {
+	Sessions       []string
+	SecurityLevels []string
+	Err            error
 }
 
 // Values maps DID field names to their physical values. Encoding accepts Go

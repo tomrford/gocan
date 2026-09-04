@@ -132,19 +132,22 @@ func TestParsePreconditions(t *testing.T) {
 		t.Fatalf("unexpected states: %#v %#v", database.Sessions, database.SecurityLevels)
 	}
 	thermal, _ := database.DIDByName("ThermalStatus")
-	if !reflect.DeepEqual(thermal.Read.Sessions, []string{"Default", "Extended"}) || !reflect.DeepEqual(thermal.Read.SecurityLevels, []string{"Locked"}) {
-		t.Fatalf("unexpected thermal preconditions: %#v %#v", thermal.Read.Sessions, thermal.Read.SecurityLevels)
+	if len(thermal.Read.Preconditions) != 1 || thermal.Read.Preconditions[0].Err != nil {
+		t.Fatalf("thermal preconditions = %#v", thermal.Read.Preconditions)
+	}
+	if !reflect.DeepEqual(thermal.Read.Preconditions[0].Sessions, []string{"Default", "Extended"}) || !reflect.DeepEqual(thermal.Read.Preconditions[0].SecurityLevels, []string{"Locked"}) {
+		t.Fatalf("unexpected thermal preconditions: %#v %#v", thermal.Read.Preconditions[0].Sessions, thermal.Read.Preconditions[0].SecurityLevels)
 	}
 	counter, _ := database.DIDByName("ReadWriteCounter")
-	if counter.Read.Sessions != nil || !reflect.DeepEqual(counter.Read.SecurityLevels, []string{"Locked"}) {
-		t.Fatalf("unexpected counter read preconditions: %#v %#v", counter.Read.Sessions, counter.Read.SecurityLevels)
+	if counter.Read.Preconditions[0].Sessions != nil || !reflect.DeepEqual(counter.Read.Preconditions[0].SecurityLevels, []string{"Locked"}) {
+		t.Fatalf("unexpected counter read preconditions: %#v %#v", counter.Read.Preconditions[0].Sessions, counter.Read.Preconditions[0].SecurityLevels)
 	}
-	if !reflect.DeepEqual(counter.Write.Sessions, []string{"Extended"}) || !reflect.DeepEqual(counter.Write.SecurityLevels, []string{"Unlocked"}) {
-		t.Fatalf("unexpected counter write preconditions: %#v %#v", counter.Write.Sessions, counter.Write.SecurityLevels)
+	if !reflect.DeepEqual(counter.Write.Preconditions[0].Sessions, []string{"Extended"}) || !reflect.DeepEqual(counter.Write.Preconditions[0].SecurityLevels, []string{"Unlocked"}) {
+		t.Fatalf("unexpected counter write preconditions: %#v %#v", counter.Write.Preconditions[0].Sessions, counter.Write.Preconditions[0].SecurityLevels)
 	}
 	settings, _ := database.DIDByName("WritableSettings")
-	if settings.Write.Sessions != nil || settings.Write.SecurityLevels != nil {
-		t.Fatalf("a service without mayBeExec was restricted: %#v %#v", settings.Write.Sessions, settings.Write.SecurityLevels)
+	if settings.Write.Preconditions[0].Sessions != nil || settings.Write.Preconditions[0].SecurityLevels != nil {
+		t.Fatalf("a service without mayBeExec was restricted: %#v %#v", settings.Write.Preconditions[0].Sessions, settings.Write.Preconditions[0].SecurityLevels)
 	}
 
 	source, err := os.ReadFile(path)
@@ -160,8 +163,8 @@ func TestParsePreconditions(t *testing.T) {
 		t.Fatal(err)
 	}
 	counter, ok := database.DIDByName("ReadWriteCounter")
-	if !ok || counter.Write == nil || counter.Write.Sessions != nil || counter.Write.SecurityLevels != nil {
-		t.Fatalf("an unresolved precondition did not leave the DID unrestricted: %#v", counter)
+	if !ok || counter.Write == nil || counter.Write.Preconditions[0].Err == nil || counter.Write.Preconditions[0].Sessions != nil || counter.Write.Preconditions[0].SecurityLevels != nil {
+		t.Fatalf("an unresolved precondition did not preserve the DID: %#v", counter)
 	}
 	var reported int
 	for _, diagnostic := range database.Diagnostics {
@@ -171,5 +174,75 @@ func TestParsePreconditions(t *testing.T) {
 	}
 	if reported != 1 {
 		t.Fatalf("unexpected diagnostics: %#v", database.Diagnostics)
+	}
+}
+
+func TestPreconditionsPreserveAlternatives(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Replace(string(data), `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL id="alternateRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/><DCLSRVTMPL id="modernRead"`, 1)
+	first := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(1,3,4)"/>`
+	second := `<SERVICE tmplref="alternateRead" req="0" mayBeExec="(2,5)"/>`
+	equivalent := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(4,3,1,3)"/>`
+	a := cdd.Precondition{Sessions: []string{"Default", "Extended"}, SecurityLevels: []string{"Locked"}}
+	b := cdd.Precondition{Sessions: []string{"Programming"}, SecurityLevels: []string{"Unlocked"}}
+	for _, test := range []struct {
+		services string
+		want     []cdd.Precondition
+	}{
+		{first + second + equivalent, []cdd.Precondition{a, b}},
+		{second + first + equivalent, []cdd.Precondition{b, a}},
+	} {
+		database, err := cdd.Parse("alternatives.cdd", []byte(strings.Replace(source, first, test.services, 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		did, ok := database.DIDByName("ThermalStatus")
+		if !ok || did.Read == nil {
+			t.Fatal("DID layout was lost")
+		}
+		if !reflect.DeepEqual(did.Read.Preconditions, test.want) {
+			t.Fatalf("alternatives = %#v, want %#v", did.Read.Preconditions, test.want)
+		}
+	}
+}
+
+func TestUnresolvedPreconditionsKeepTheCodec(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(4)"/>`
+	for _, test := range []struct{ name, instance, template string }{
+		{"unknown state", `mayBeExec="(9)"`, ""},
+		{"empty selection", `mayBeExec="()"`, ""},
+		{"malformed list", `mayBeExec="4"`, ""},
+		{"template only", "", `mayBeExec="(3,5)"`},
+		{"excluded template group", `mayBeExec="(4)"`, `notExecInStateGroups="(1)"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := strings.Replace(string(data), service, `<SERVICE tmplref="modernRead" req="0" `+test.instance+`/>`, 1)
+			source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL `+test.template+` id="modernRead"`, 1)
+			database, err := cdd.Parse("unresolved.cdd", []byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			did, ok := database.DIDByName("ReadWriteCounter")
+			if !ok || did.Read == nil {
+				t.Fatal("DID layout was lost")
+			}
+			if len(did.Read.Preconditions) != 1 || did.Read.Preconditions[0].Err == nil {
+				t.Fatal("unresolved rule became unrestricted")
+			}
+			values, err := did.Read.Decode([]byte{7})
+			if err != nil || values["Counter"] != uint64(7) {
+				t.Fatalf("Decode = %v, %v", values, err)
+			}
+			if did.Write.Preconditions[0].Err != nil {
+				t.Fatal("read precondition failure affected write")
+			}
+		})
 	}
 }
