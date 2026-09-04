@@ -60,6 +60,30 @@ type resolver struct {
 	ecuDoc    *element
 	byID      map[string]*element
 	datatypes map[string]*element
+	states    []state
+}
+
+// state is one entry of the flattened STATEGROUPS list that service
+// preconditions index. Group is the STATEGROUP spec, "session" or "security".
+type state struct {
+	group string
+	name  string
+}
+
+// stateGroups splits states by group into the two lists the model exposes.
+// States of any other group are not modelled.
+type stateGroups struct {
+	sessions       []string
+	securityLevels []string
+}
+
+func (groups *stateGroups) add(state state) {
+	switch state.group {
+	case "session":
+		groups.sessions = append(groups.sessions, state.name)
+	case "security":
+		groups.securityLevels = append(groups.securityLevels, state.name)
+	}
 }
 
 func newResolver(name string, ecuDoc *element) *resolver {
@@ -75,6 +99,11 @@ func newResolver(name string, ecuDoc *element) *resolver {
 			if id := datatype.attr("id"); id != "" {
 				resolver.datatypes[id] = datatype
 			}
+		}
+	}
+	for _, group := range ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
+		for _, node := range group.childrenNamed("STATE") {
+			resolver.states = append(resolver.states, state{group: group.attr("spec"), name: node.childText("QUAL")})
 		}
 	}
 	return resolver
@@ -105,22 +134,27 @@ func (resolver *resolver) resolve() (*Database, error) {
 		didsByName:       make(map[string]int),
 		didsByIdentifier: make(map[uint16]int),
 	}
+	var declared stateGroups
+	for _, state := range resolver.states {
+		declared.add(state)
+	}
+	database.Sessions, database.SecurityLevels = declared.sessions, declared.securityLevels
 	for _, class := range variant.childrenNamed("DIAGCLASS") {
 		for _, instance := range class.childrenNamed("DIAGINST") {
-			did, selected, err := resolver.resolveDID(instance)
+			did, selected, err := resolver.resolveDID(database, instance)
 			if !selected {
 				continue
 			}
 			if err != nil {
-				database.drop(instance.childText("QUAL"), err)
+				database.report(instance.childText("QUAL"), err)
 				continue
 			}
 			if previous, exists := database.didsByName[did.Name]; exists {
-				database.drop(did.Name, sourceError(resolver.name, "name repeats DID %#04x", database.DIDs[previous].Identifier))
+				database.report(did.Name, sourceError(resolver.name, "name repeats DID %#04x", database.DIDs[previous].Identifier))
 				continue
 			}
 			if previous, exists := database.didsByIdentifier[did.Identifier]; exists {
-				database.drop(did.Name, sourceError(resolver.name, "identifier %#04x is already used by DID %q", did.Identifier, database.DIDs[previous].Name))
+				database.report(did.Name, sourceError(resolver.name, "identifier %#04x is already used by DID %q", did.Identifier, database.DIDs[previous].Name))
 				continue
 			}
 			database.didsByName[did.Name] = len(database.DIDs)
@@ -131,15 +165,17 @@ func (resolver *resolver) resolve() (*Database, error) {
 	return database, nil
 }
 
-func (database *Database) drop(name string, err error) {
+func (database *Database) report(name string, err error) {
 	database.Diagnostics = append(database.Diagnostics, Diagnostic{Name: name, Message: err.Error()})
 }
 
 // resolveDID resolves one diagnostic instance. The boolean reports whether the
 // instance is a data identifier at all; an unselected instance is some other
 // diagnostic class and is not a defect. A selected instance that cannot be
-// resolved returns an error for the caller to record as a diagnostic.
-func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
+// resolved returns an error for the caller to record as a diagnostic. A
+// precondition that cannot be resolved is reported to database directly and
+// leaves that operation unrestricted.
+func (resolver *resolver) resolveDID(database *Database, instance *element) (DID, bool, error) {
 	classTemplate := resolver.byID[instance.attr("tmplref")]
 	if classTemplate == nil || classTemplate.name != "DCLTMPL" {
 		return DID{}, false, nil
@@ -179,20 +215,30 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 		if err != nil {
 			return DID{}, true, fmt.Errorf("DID %q read record: %w", name, err)
 		}
+		if err := resolver.resolvePreconditions(did.Read, bindings.readService); err != nil {
+			database.report(name, fmt.Errorf("DID %q read service: %w", name, err))
+		}
 	}
 	if bindings.writeData != nil {
 		did.Write, err = resolver.resolveDIDRecord(name, instance, classTemplate, bindings.writeData)
 		if err != nil {
 			return DID{}, true, fmt.Errorf("DID %q write record: %w", name, err)
 		}
+		if err := resolver.resolvePreconditions(did.Write, bindings.writeService); err != nil {
+			database.report(name, fmt.Errorf("DID %q write service: %w", name, err))
+		}
 	}
 	return did, true, nil
 }
 
+// didBindings holds the components each operation binds and the first SERVICE
+// element binding it, which carries the operation's execution preconditions.
 type didBindings struct {
-	identifiers map[string]struct{}
-	readData    map[string]struct{}
-	writeData   map[string]struct{}
+	identifiers  map[string]struct{}
+	readData     map[string]struct{}
+	writeData    map[string]struct{}
+	readService  *element
+	writeService *element
 }
 
 // didServiceComponents retains the message direction because a read response
@@ -216,11 +262,44 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 		switch sid {
 		case 0x22:
 			bindings.readData = collectDataComponents(protocolService.child("POS"), bindings.readData)
+			if bindings.readService == nil {
+				bindings.readService = service
+			}
 		case 0x2e:
 			bindings.writeData = collectDataComponents(protocolService.child("REQ"), bindings.writeData)
+			if bindings.writeService == nil {
+				bindings.writeService = service
+			}
 		}
 	}
 	return bindings
+}
+
+// resolvePreconditions sets the states a service may execute in from its
+// mayBeExec attribute, written as "(1,3,6)": 1-based positions in the
+// document-order list of every STATE across all STATEGROUPs. CANdela Studio
+// lists the states in which the ECU accepts the service. A state group with no
+// listed state is taken to impose no condition, which is how identification
+// DIDs that name only the locked security level stay readable in every
+// session, and a missing attribute leaves both groups unrestricted. The
+// notExecInStateGroups attribute is not read: it only names groups that have no
+// listed state, so it adds nothing to that rule.
+func (resolver *resolver) resolvePreconditions(record *Record, service *element) error {
+	list := strings.TrimSpace(service.attr("mayBeExec"))
+	list = strings.TrimSuffix(strings.TrimPrefix(list, "("), ")")
+	if list == "" {
+		return nil
+	}
+	var allowed stateGroups
+	for _, token := range strings.Split(list, ",") {
+		position, err := strconv.Atoi(strings.TrimSpace(token))
+		if err != nil || position < 1 || position > len(resolver.states) {
+			return sourceError(resolver.name, "mayBeExec %q names a state outside the %d declared states", service.attr("mayBeExec"), len(resolver.states))
+		}
+		allowed.add(resolver.states[position-1])
+	}
+	record.Sessions, record.SecurityLevels = allowed.sessions, allowed.securityLevels
+	return nil
 }
 
 func directChild(parent, candidate *element) bool {

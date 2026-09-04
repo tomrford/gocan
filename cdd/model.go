@@ -11,18 +11,26 @@ import "github.com/tomrford/gocan/internal/scalar"
 
 // Database is the resolved catalog from the first ECU and its first variant in
 // a CDD document. DIDs remain in source order.
+//
+// Sessions and SecurityLevels are the diagnostic session and security access
+// states the document declares, in document order. Record preconditions name
+// states from these lists.
 type Database struct {
-	DIDs        []DID
-	Diagnostics []Diagnostic
+	DIDs           []DID
+	Sessions       []string
+	SecurityLevels []string
+	Diagnostics    []Diagnostic
 
 	didsByName       map[string]int
 	didsByIdentifier map[uint16]int
 }
 
-// Diagnostic reports a data identifier dropped from the catalog without making
-// the database unsafe to use: layouts outside the supported subset, unresolved
-// references, and duplicate names or identifiers. Name is the QUAL of the
-// dropped diagnostic instance, which CDD documents may leave empty.
+// Diagnostic reports a defect confined to one data identifier that leaves the
+// database safe to use. A DID is dropped from the catalog when its layout is
+// outside the supported subset, its references do not resolve, or its name or
+// identifier repeats; a DID whose execution precondition names a state the
+// document does not declare is kept with that operation unrestricted. Name is
+// the QUAL of the diagnostic instance, which CDD documents may leave empty.
 type Diagnostic struct {
 	Name    string
 	Message string
@@ -44,13 +52,21 @@ type DID struct {
 // when the last field is variable length, in which case MaxLength is the
 // largest record.
 //
+// Sessions and SecurityLevels are the diagnostic session and security access
+// states in which the ECU executes the operation, named as in
+// Database.Sessions and Database.SecurityLevels. A nil slice places no
+// condition on that state group: the CDD lists no state of the group for the
+// service, or declares no preconditions for it at all.
+//
 // Treat a Record and its Fields as read-only: Encode and Decode trust the
 // layout that Parse resolved, and modifications are not revalidated.
 type Record struct {
-	Name      string
-	Length    uint32
-	MaxLength uint32
-	Fields    []Field
+	Name           string
+	Length         uint32
+	MaxLength      uint32
+	Fields         []Field
+	Sessions       []string
+	SecurityLevels []string
 
 	codec *recordCodec
 }

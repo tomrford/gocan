@@ -1,7 +1,10 @@
 package cdd_test
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -112,5 +115,61 @@ func TestParseDropsInvalidDIDs(t *testing.T) {
 		if !strings.Contains(dropped[name], text) {
 			t.Errorf("DID %q: got %q, want %q", name, dropped[name], text)
 		}
+	}
+}
+
+// TestParsePreconditions covers execution preconditions: state indexes resolve
+// to session and security names, a group with no listed state and a service
+// with no attribute both leave the operation unrestricted, and an index outside
+// the declared states is reported without costing the DID.
+func TestParsePreconditions(t *testing.T) {
+	path := filepath.Join("testdata", "records.cdd")
+	database, err := cdd.ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(database.Sessions, []string{"Default", "Programming", "Extended"}) || !reflect.DeepEqual(database.SecurityLevels, []string{"Locked", "Unlocked"}) {
+		t.Fatalf("unexpected states: %#v %#v", database.Sessions, database.SecurityLevels)
+	}
+	thermal, _ := database.DIDByName("ThermalStatus")
+	if !reflect.DeepEqual(thermal.Read.Sessions, []string{"Default", "Extended"}) || !reflect.DeepEqual(thermal.Read.SecurityLevels, []string{"Locked"}) {
+		t.Fatalf("unexpected thermal preconditions: %#v %#v", thermal.Read.Sessions, thermal.Read.SecurityLevels)
+	}
+	counter, _ := database.DIDByName("ReadWriteCounter")
+	if counter.Read.Sessions != nil || !reflect.DeepEqual(counter.Read.SecurityLevels, []string{"Locked"}) {
+		t.Fatalf("unexpected counter read preconditions: %#v %#v", counter.Read.Sessions, counter.Read.SecurityLevels)
+	}
+	if !reflect.DeepEqual(counter.Write.Sessions, []string{"Extended"}) || !reflect.DeepEqual(counter.Write.SecurityLevels, []string{"Unlocked"}) {
+		t.Fatalf("unexpected counter write preconditions: %#v %#v", counter.Write.Sessions, counter.Write.SecurityLevels)
+	}
+	settings, _ := database.DIDByName("WritableSettings")
+	if settings.Write.Sessions != nil || settings.Write.SecurityLevels != nil {
+		t.Fatalf("a service without mayBeExec was restricted: %#v %#v", settings.Write.Sessions, settings.Write.SecurityLevels)
+	}
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := bytes.Replace(source, []byte(`mayBeExec="(3,5)"`), []byte(`mayBeExec="(3,9)"`), 1)
+	if bytes.Equal(mutated, source) {
+		t.Fatal("fixture no longer carries the write precondition to corrupt")
+	}
+	database, err = cdd.Parse("records.cdd", mutated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter, ok := database.DIDByName("ReadWriteCounter")
+	if !ok || counter.Write == nil || counter.Write.Sessions != nil || counter.Write.SecurityLevels != nil {
+		t.Fatalf("an unresolved precondition did not leave the DID unrestricted: %#v", counter)
+	}
+	var reported int
+	for _, diagnostic := range database.Diagnostics {
+		if diagnostic.Name == "ReadWriteCounter" && strings.Contains(diagnostic.Message, `write service: records.cdd: mayBeExec "(3,9)" names a state outside the 5 declared states`) {
+			reported++
+		}
+	}
+	if reported != 1 {
+		t.Fatalf("unexpected diagnostics: %#v", database.Diagnostics)
 	}
 }
