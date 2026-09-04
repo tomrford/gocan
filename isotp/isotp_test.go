@@ -473,11 +473,14 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 
 	// Retention can inspect progress while Next waits for the rest of a payload.
 	progress := make(chan gocan.Cursor, 1)
-	go func() { progress <- link.Cursor() }()
+	go func() { progress <- link.RetentionCursor() }()
 	select {
 	case cursor := <-progress:
 		if cursor == (gocan.Cursor{}) {
 			t.Fatal("cursor did not advance past the First Frame")
+		}
+		if cursor != link.Cursor() || cursor == capture.End() {
+			t.Fatal("pending reception did not retain its receive position")
 		}
 		if err := capture.Prune(cursor); err != nil {
 			t.Fatalf("Prune receive progress: %v", err)
@@ -501,6 +504,9 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	}
 	if _, err := exchange.Next(context.Background(), 0); !errors.Is(err, isotp.ErrExchangeClosed) {
 		t.Fatalf("Next after Close = %v, want ErrExchangeClosed", err)
+	}
+	if link.RetentionCursor() != capture.End() {
+		t.Fatal("Close did not release receive history")
 	}
 
 	// The link must be usable again.
