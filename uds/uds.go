@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/isotp"
 )
 
@@ -75,6 +77,33 @@ type Client struct {
 	link          *isotp.Link
 	p2Timeout     time.Duration
 	p2StarTimeout time.Duration
+	retentionMu   sync.Mutex
+	operations    int
+}
+
+// RetentionCursor returns the link's receive position while Do or Send is in
+// progress, including queued calls, and the capture's end while idle. Pass it
+// with other readers' cursors to Capture.Prune. Unsolicited responses received
+// while idle are not protected. An older snapshot may retain extra history.
+func (client *Client) RetentionCursor() gocan.Cursor {
+	client.retentionMu.Lock()
+	defer client.retentionMu.Unlock()
+	if client.operations != 0 {
+		return client.link.Cursor()
+	}
+	return client.link.Capture().End()
+}
+
+func (client *Client) startOperation() {
+	client.retentionMu.Lock()
+	client.operations++
+	client.retentionMu.Unlock()
+}
+
+func (client *Client) finishOperation() {
+	client.retentionMu.Lock()
+	client.operations--
+	client.retentionMu.Unlock()
 }
 
 // New validates config and binds a raw UDS client to link.
@@ -105,6 +134,8 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		return Response{}, err
 	}
 
+	client.startOperation()
+	defer client.finishOperation()
 	exchange, err := client.link.Begin(ctx, payload)
 	if err != nil {
 		return Response{}, err
@@ -140,6 +171,8 @@ func (client *Client) Send(ctx context.Context, request Request) error {
 	if err != nil {
 		return err
 	}
+	client.startOperation()
+	defer client.finishOperation()
 	return client.link.Send(ctx, payload)
 }
 

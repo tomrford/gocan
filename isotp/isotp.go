@@ -325,6 +325,9 @@ func (link *Link) newExchange() *Exchange {
 	return &Exchange{link: link, ctx: ctx, cancel: cancel}
 }
 
+// Capture returns the capture from which the link receives frames.
+func (link *Link) Capture() *gocan.Capture { return link.capture }
+
 // Cursor returns the capture position through which the link has consumed or
 // deliberately skipped traffic. Pass it with other readers' cursors to
 // Capture.Prune. It is safe to call during an operation and does not wait for
