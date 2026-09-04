@@ -173,7 +173,14 @@ func (client *Client) Send(ctx context.Context, request Request) error {
 	}
 	client.startOperation()
 	defer client.finishOperation()
-	return client.link.Send(ctx, payload)
+	// Begin refreshes receive progress even for a single-frame request, so
+	// retention cannot pin history discarded while the client was idle.
+	exchange, err := client.link.Begin(ctx, payload)
+	if err != nil {
+		return err
+	}
+	exchange.Close()
+	return nil
 }
 
 func (request Request) payload() ([]byte, error) {
