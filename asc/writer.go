@@ -21,9 +21,10 @@ var errWriterClosed = errors.New("ASC writer is closed")
 // io.Writer. The header is written when the first record supplies the
 // measurement start time.
 //
-// The header date is written in UTC; ASC has no time zone field, so Vector
-// tools read it as local time. A record whose timestamp regresses is written
-// at the previous record's time, so offsets never decrease.
+// The header date is written in local time. ASC has no time zone field, and
+// Vector tools read the header as local time. A record whose timestamp
+// regresses is written at the previous record's time, so offsets never
+// decrease.
 type Writer struct {
 	output *bufio.Writer
 
@@ -156,7 +157,7 @@ func (writer *Writer) writeRecord(timestamp time.Time, body string) error {
 }
 
 func (writer *Writer) writeHeader(timestamp time.Time) error {
-	formatted := timestamp.UTC().Format("Mon Jan 02 15:04:05.000 2006")
+	formatted := timestamp.In(time.Local).Format("Mon Jan 02 15:04:05.000 2006")
 	if _, err := fmt.Fprintf(
 		writer.output,
 		"date %s\nbase hex timestamps absolute\ninternal events logged\nBegin Triggerblock %s\n 0.000000 Start of measurement\n",
