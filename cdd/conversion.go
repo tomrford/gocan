@@ -78,3 +78,19 @@ func validateConversionRaw(field Field, raw uint64) error {
 	}
 	return nil
 }
+
+func validateConversionRange(field Field) error {
+	minimum, maximum := uint64(0), uint64(math.MaxUint64)
+	if field.BitLength < 64 {
+		maximum = uint64(1)<<field.BitLength - 1
+		if field.Encoding == EncodingSigned {
+			half := uint64(1) << (field.BitLength - 1)
+			minimum, maximum = uint64(1)<<63-half, uint64(1)<<63+half-1
+		}
+	}
+	conversion := field.Conversion
+	if conversion.minimum != nil && *conversion.minimum > maximum || conversion.maximum != nil && *conversion.maximum < minimum {
+		return fmt.Errorf("linear conversion limits contain no representable raw values")
+	}
+	return nil
+}

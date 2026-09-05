@@ -153,6 +153,9 @@ func validateFieldEncoding(field Field) error {
 			math.IsNaN(field.Conversion.Offset) || math.IsInf(field.Conversion.Offset, 0) {
 			return fmt.Errorf("linear conversion must have a finite nonzero scale and finite offset")
 		}
+		if err := validateConversionRange(field); err != nil {
+			return err
+		}
 	}
 	if len(field.Choices) > 0 && field.Encoding != EncodingUnsigned && field.Encoding != EncodingSigned {
 		return fmt.Errorf("choices require an integer encoding")

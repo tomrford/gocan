@@ -82,6 +82,8 @@ func TestLINCOMPRejectsUnsupportedDefinitions(t *testing.T) {
 		{`f="0" o="7"`, "explicit inverse value is unsupported"},
 		{`f="1" o="0" s="5" e="4"`, "limits are reversed"},
 		{`f="1" o="0" s="bad"`, "invalid raw limit"},
+		{`f="1" o="0" s="32768"`, "no representable raw values"},
+		{`f="1" o="0" e="-32769"`, "no representable raw values"},
 	} {
 		t.Run(test.comp, func(t *testing.T) {
 			message := testCodecMessage(t, fmt.Sprintf(`<LINCOMP id="value"><CVALUETYPE bl="16" bo="21" enc="sgn"/><COMP %s/></LINCOMP>`, test.comp), `<DATAOBJ dtref="value"><QUAL>Value</QUAL></DATAOBJ>`, "")
