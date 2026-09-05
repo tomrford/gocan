@@ -119,27 +119,29 @@ func TestParseDropsInvalidDIDs(t *testing.T) {
 }
 
 // TestParsePreconditions covers execution preconditions: state indexes resolve
-// to session and security names, a group with no listed state and a service
-// with no attribute both leave the operation unrestricted, and an index outside
-// the declared states is reported without costing the DID.
+// to session and security names, permitting the locked state removes the
+// security requirement even when unlocked levels are also listed, a group with
+// no listed state and a service with no attribute both leave the operation
+// unrestricted, and an index outside the declared states is reported without
+// costing the DID.
 func TestParsePreconditions(t *testing.T) {
 	path := filepath.Join("testdata", "records.cdd")
 	database, err := cdd.ParseFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(database.Sessions, []string{"Default", "Programming", "Extended"}) || !reflect.DeepEqual(database.SecurityLevels, []string{"Locked", "Unlocked"}) {
+	if !reflect.DeepEqual(database.Sessions, []string{"Default", "Programming", "Extended"}) || !reflect.DeepEqual(database.SecurityLevels, []string{"Unlocked"}) {
 		t.Fatalf("unexpected states: %#v %#v", database.Sessions, database.SecurityLevels)
 	}
 	thermal, _ := database.DIDByName("ThermalStatus")
 	if len(thermal.Read.Preconditions) != 1 || thermal.Read.Preconditions[0].Err != nil {
 		t.Fatalf("thermal preconditions = %#v", thermal.Read.Preconditions)
 	}
-	if !reflect.DeepEqual(thermal.Read.Preconditions[0].Sessions, []string{"Default", "Extended"}) || !reflect.DeepEqual(thermal.Read.Preconditions[0].SecurityLevels, []string{"Locked"}) {
+	if !reflect.DeepEqual(thermal.Read.Preconditions[0].Sessions, []string{"Default", "Extended"}) || thermal.Read.Preconditions[0].SecurityLevels != nil {
 		t.Fatalf("unexpected thermal preconditions: %#v %#v", thermal.Read.Preconditions[0].Sessions, thermal.Read.Preconditions[0].SecurityLevels)
 	}
 	counter, _ := database.DIDByName("ReadWriteCounter")
-	if counter.Read.Preconditions[0].Sessions != nil || !reflect.DeepEqual(counter.Read.Preconditions[0].SecurityLevels, []string{"Locked"}) {
+	if counter.Read.Preconditions[0].Sessions != nil || counter.Read.Preconditions[0].SecurityLevels != nil {
 		t.Fatalf("unexpected counter read preconditions: %#v %#v", counter.Read.Preconditions[0].Sessions, counter.Read.Preconditions[0].SecurityLevels)
 	}
 	if !reflect.DeepEqual(counter.Write.Preconditions[0].Sessions, []string{"Extended"}) || !reflect.DeepEqual(counter.Write.Preconditions[0].SecurityLevels, []string{"Unlocked"}) {
@@ -154,10 +156,20 @@ func TestParsePreconditions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutated := bytes.Replace(source, []byte(`mayBeExec="(3,5)"`), []byte(`mayBeExec="(3,9)"`), 1)
+	mutated := bytes.Replace(source, []byte(`mayBeExec="(3,5)"`), []byte(`mayBeExec="(3,4,5)"`), 1)
 	if bytes.Equal(mutated, source) {
-		t.Fatal("fixture no longer carries the write precondition to corrupt")
+		t.Fatal("fixture no longer carries the write precondition to mutate")
 	}
+	database, err = cdd.Parse("records.cdd", mutated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter, _ = database.DIDByName("ReadWriteCounter")
+	if !reflect.DeepEqual(counter.Write.Preconditions[0].Sessions, []string{"Extended"}) || counter.Write.Preconditions[0].SecurityLevels != nil {
+		t.Fatalf("locked alongside an unlocked level kept a security requirement: %#v", counter.Write.Preconditions[0])
+	}
+
+	mutated = bytes.Replace(source, []byte(`mayBeExec="(3,5)"`), []byte(`mayBeExec="(3,9)"`), 1)
 	database, err = cdd.Parse("records.cdd", mutated)
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +198,7 @@ func TestPreconditionsPreserveAlternatives(t *testing.T) {
 	first := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(1,3,4)"/>`
 	second := `<SERVICE tmplref="alternateRead" req="0" mayBeExec="(2,5)"/>`
 	equivalent := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(4,3,1,3)"/>`
-	a := cdd.Precondition{Sessions: []string{"Default", "Extended"}, SecurityLevels: []string{"Locked"}}
+	a := cdd.Precondition{Sessions: []string{"Default", "Extended"}}
 	b := cdd.Precondition{Sessions: []string{"Programming"}, SecurityLevels: []string{"Unlocked"}}
 	for _, test := range []struct {
 		services string

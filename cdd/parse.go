@@ -66,23 +66,33 @@ type resolver struct {
 
 // state is one entry of the flattened STATEGROUPS list that service
 // preconditions index. Group is the STATEGROUP spec, "session" or "security".
+// Initial marks the first state of a group, which CANdela orders as the state
+// the ECU holds after reset: the default session, or locked.
 type state struct {
-	group string
-	name  string
+	group   string
+	name    string
+	initial bool
+}
+
+// locked reports whether the state is the initial state of a security group.
+// UDS defines no rejection for being unlocked, so a service permitted while
+// locked has no security requirement and the locked state is never a level.
+func (state state) locked() bool {
+	return state.group == "security" && state.initial
 }
 
 // stateGroups splits states by group into the two lists the model exposes.
-// States of any other group are not modelled.
+// States of any other group, and locked states, are not modelled.
 type stateGroups struct {
 	sessions       []string
 	securityLevels []string
 }
 
 func (groups *stateGroups) add(state state) {
-	switch state.group {
-	case "session":
+	switch {
+	case state.group == "session":
 		groups.sessions = append(groups.sessions, state.name)
-	case "security":
+	case state.group == "security" && !state.initial:
 		groups.securityLevels = append(groups.securityLevels, state.name)
 	}
 }
@@ -103,8 +113,8 @@ func newResolver(name string, ecuDoc *element) *resolver {
 		}
 	}
 	for _, group := range ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
-		for _, node := range group.childrenNamed("STATE") {
-			resolver.states = append(resolver.states, state{group: group.attr("spec"), name: node.childText("QUAL")})
+		for index, node := range group.childrenNamed("STATE") {
+			resolver.states = append(resolver.states, state{group: group.attr("spec"), name: node.childText("QUAL"), initial: index == 0})
 		}
 	}
 	return resolver
@@ -290,6 +300,9 @@ func (resolver *resolver) resolvePreconditions(database *Database, record *Recor
 }
 
 // Explicit mayBeExec lists index every STATE in document order, starting at 1.
+// Sessions are read literally. Security follows UDS: a list that permits the
+// locked state, or names no security state, imposes no security requirement,
+// and any unlocked levels listed alongside the locked state are redundant.
 // Template-only rules and excluded groups are preserved as unresolved rather
 // than guessing inheritance or interpreting an exclusion as unrestricted.
 func (resolver *resolver) servicePrecondition(service boundService) (Precondition, error) {
@@ -317,13 +330,19 @@ func (resolver *resolver) servicePrecondition(service boundService) (Preconditio
 		selected[position-1] = true
 	}
 	var allowed stateGroups
+	var locked bool
 	for index, state := range resolver.states {
-		if selected[index] {
-			if state.name == "" || state.group != "session" && state.group != "security" {
-				return Precondition{}, sourceError(resolver.name, "mayBeExec %q names unsupported state %d in group %q", value, index+1, state.group)
-			}
-			allowed.add(state)
+		if !selected[index] {
+			continue
 		}
+		if state.name == "" || state.group != "session" && state.group != "security" {
+			return Precondition{}, sourceError(resolver.name, "mayBeExec %q names unsupported state %d in group %q", value, index+1, state.group)
+		}
+		locked = locked || state.locked()
+		allowed.add(state)
+	}
+	if locked {
+		allowed.securityLevels = nil
 	}
 	return Precondition{Sessions: allowed.sessions, SecurityLevels: allowed.securityLevels}, nil
 }

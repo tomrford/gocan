@@ -12,9 +12,10 @@ import "github.com/tomrford/gocan/internal/scalar"
 // Database is the resolved catalog from the first ECU and its first variant in
 // a CDD document. DIDs remain in source order.
 //
-// Sessions and SecurityLevels are the diagnostic session and security access
-// states the document declares, in document order. Record preconditions name
-// states from these lists.
+// Sessions are the diagnostic sessions the document declares, in document
+// order. SecurityLevels are its unlocked security access levels, in document
+// order; the locked state, which CANdela declares first in the security group,
+// is implicit. Record preconditions name states from these lists.
 type Database struct {
 	DIDs           []DID
 	Sessions       []string
@@ -70,8 +71,12 @@ type Record struct {
 }
 
 // Precondition describes one service alternative's session and security
-// requirements. Both groups must match; any listed state matches within a
-// group. Names refer to Database.Sessions and Database.SecurityLevels.
+// requirements, following UDS. Sessions lists the diagnostic sessions the ECU
+// must be in, any one of which suffices; nil permits every session.
+// SecurityLevels lists the unlocked security access levels, any one of which
+// satisfies the requirement; nil means the operation is permitted while locked,
+// so no security access is needed, because UDS never rejects a request for
+// being unlocked. Names refer to Database.Sessions and Database.SecurityLevels.
 // A nil group places no restriction only when Err is nil. Err reports an
 // invalid reference or unsupported precondition form, not ECU rejection.
 // Preconditions describe metadata; callers manage the ECU's actual state.
