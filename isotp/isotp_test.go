@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -295,117 +296,155 @@ func TestExchangeStopsWithBus(t *testing.T) {
 // server-style API and checks that successive payloads are neither dropped nor
 // repeated, which is what one receive position per Link has to guarantee.
 func TestSendAndReceivePairedLinks(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network virtual.Network
-	first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
-	if err != nil {
-		t.Fatalf("Open first: %v", err)
-	}
-	t.Cleanup(func() { _ = first.Close() })
-	second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
-	if err != nil {
-		t.Fatalf("Open second: %v", err)
-	}
-	t.Cleanup(func() { _ = second.Close() })
-	third, err := network.Open(context.Background(), capture, virtual.Config{ID: 3, Name: "third"})
-	if err != nil {
-		t.Fatalf("Open third: %v", err)
-	}
-	t.Cleanup(func() { _ = third.Close() })
-
-	sender, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
-	if err != nil {
-		t.Fatalf("New sender: %v", err)
-	}
-	receiver, err := isotp.New(second, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0, AdvertisedBlockSize: 2})
-	if err != nil {
-		t.Fatalf("New receiver: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	payloads := [][]byte{
-		patternedPayload(4, 0x10),
-		patternedPayload(64, 0x20),
-		patternedPayload(7, 0x30),
-	}
-
-	received := make(chan [][]byte, 1)
-	receiveErrors := make(chan error, 1)
-	go func() {
-		var all [][]byte
-		for range payloads {
-			payload, err := receiver.Receive(ctx)
-			if err != nil {
-				receiveErrors <- err
-				return
-			}
-			all = append(all, payload)
-		}
-		received <- all
-		receiveErrors <- nil
-	}()
-
-	for index, payload := range payloads {
-		if err := sender.Send(ctx, payload); err != nil {
-			t.Fatalf("Send payload %d: %v", index, err)
-		}
-	}
-	if err := <-receiveErrors; err != nil {
-		t.Fatalf("Receive: %v", err)
-	}
-	for index, payload := range <-received {
-		if !bytes.Equal(payload, payloads[index]) {
-			t.Fatalf("payload %d = %x, want %x", index, payload, payloads[index])
-		}
-	}
-
-	functionalReceivers := make([]*isotp.Link, 2)
-	for index, bus := range []gocan.Bus{second, third} {
-		functionalReceivers[index], err = isotp.New(bus, isotp.Config{TransmitID: 0x7e8 + uint32(index), ReceiveID: 0x7df})
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network virtual.Network
+		first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
 		if err != nil {
-			t.Fatalf("New functional receiver %d: %v", index, err)
+			t.Fatalf("Open first: %v", err)
 		}
-	}
-	functional, err := isotp.NewFunctional(first, isotp.FunctionalConfig{TransmitID: 0x7df})
-	if err != nil {
-		t.Fatalf("NewFunctional: %v", err)
-	}
-	broadcast := patternedPayload(7, 0x3e)
-	if err := functional.Send(ctx, broadcast); err != nil {
-		t.Fatalf("Send functional payload: %v", err)
-	}
-	for index, receiver := range functionalReceivers {
-		payload, err := receiver.Receive(ctx)
-		if err != nil || !bytes.Equal(payload, broadcast) {
-			t.Fatalf("functional receiver %d received %x, %v", index, payload, err)
+		t.Cleanup(func() { _ = first.Close() })
+		second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
+		if err != nil {
+			t.Fatalf("Open second: %v", err)
 		}
-	}
-	if err := functional.Send(ctx, patternedPayload(8, 0x3e)); !errors.Is(err, isotp.ErrPayloadTooLarge) {
-		t.Fatalf("oversized functional Send = %v, want ErrPayloadTooLarge", err)
-	}
+		t.Cleanup(func() { _ = second.Close() })
+		third, err := network.Open(context.Background(), capture, virtual.Config{ID: 3, Name: "third"})
+		if err != nil {
+			t.Fatalf("Open third: %v", err)
+		}
+		t.Cleanup(func() { _ = third.Close() })
 
-	functionalFD, err := isotp.NewFunctional(first, isotp.FunctionalConfig{
-		TransmitID:         0x7df,
-		FrameFlags:         gocan.FrameFD,
-		TransmitDataLength: 64,
-		PadFrames:          true,
-		PaddingByte:        0xcc,
+		gate := make(chan struct{})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		blocked := &gatedBus{Bus: first, gate: gate}
+		sender, err := isotp.New(blocked, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		if err != nil {
+			t.Fatalf("New sender: %v", err)
+		}
+		receiver, err := isotp.New(second, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0, AdvertisedBlockSize: 2})
+		if err != nil {
+			t.Fatalf("New receiver: %v", err)
+		}
+
+		payloads := [][]byte{
+			patternedPayload(4, 0x10),
+			patternedPayload(64, 0x20),
+			patternedPayload(7, 0x30),
+		}
+
+		sent := make(chan error, 1)
+		for index, payload := range payloads {
+			start := capture.End()
+			go func() { sent <- sender.Send(ctx, payload) }()
+			synctest.Wait()
+			if index < 2 {
+				// Queue behind a blocked single-frame send, then behind a segmented
+				// send waiting for Flow Control. Only the latter needs history.
+				queued, cancelQueued := context.WithCancel(ctx)
+				defer cancelQueued()
+				result := make(chan error, 1)
+				go func() {
+					exchange, err := sender.Begin(queued, []byte{0x3e, 0})
+					if exchange != nil {
+						exchange.Close()
+					}
+					result <- err
+				}()
+				synctest.Wait()
+				if err := capture.AppendEvent(gocan.Event{Bus: 1, Timestamp: time.Now(), Kind: gocan.EventErrorFrame}); err != nil {
+					t.Fatal(err)
+				}
+				want := start
+				if index == 0 {
+					want = capture.End()
+				}
+				duringQueue := sender.RetentionCursor()
+				cancelQueued()
+				if err := <-result; !errors.Is(err, context.Canceled) {
+					t.Fatalf("queued Begin: %v", err)
+				}
+				if duringQueue != want || sender.RetentionCursor() != want {
+					t.Fatal("queued cancellation changed send retention")
+				}
+				if err := capture.Prune(sender.RetentionCursor(), receiver.Cursor()); err != nil {
+					t.Fatal(err)
+				}
+				if index == 0 {
+					close(gate)
+				}
+			}
+			got, err := receiver.Receive(ctx)
+			if err != nil || !bytes.Equal(got, payload) {
+				t.Fatalf("Receive payload %d = %x, %v; want %x", index, got, err, payload)
+			}
+			if err := <-sent; err != nil {
+				t.Fatalf("Send payload %d: %v", index, err)
+			}
+			if sender.RetentionCursor() != capture.End() || receiver.RetentionCursor() != capture.End() {
+				t.Fatal("completed transfer retained history")
+			}
+		}
+		// Cancellation must release a segmented send's receive ownership too.
+		sendContext, cancelSend := context.WithCancel(ctx)
+		go func() { sent <- sender.Send(sendContext, payloads[1]) }()
+		synctest.Wait()
+		cancelSend()
+		if err := <-sent; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Send: %v", err)
+		}
+		if sender.RetentionCursor() != capture.End() {
+			t.Fatal("cancelled Send retained history")
+		}
+
+		functionalReceivers := make([]*isotp.Link, 2)
+		for index, bus := range []gocan.Bus{second, third} {
+			functionalReceivers[index], err = isotp.New(bus, isotp.Config{TransmitID: 0x7e8 + uint32(index), ReceiveID: 0x7df})
+			if err != nil {
+				t.Fatalf("New functional receiver %d: %v", index, err)
+			}
+		}
+		functional, err := isotp.NewFunctional(first, isotp.FunctionalConfig{TransmitID: 0x7df})
+		if err != nil {
+			t.Fatalf("NewFunctional: %v", err)
+		}
+		broadcast := patternedPayload(7, 0x3e)
+		if err := functional.Send(ctx, broadcast); err != nil {
+			t.Fatalf("Send functional payload: %v", err)
+		}
+		for index, receiver := range functionalReceivers {
+			payload, err := receiver.Receive(ctx)
+			if err != nil || !bytes.Equal(payload, broadcast) {
+				t.Fatalf("functional receiver %d received %x, %v", index, payload, err)
+			}
+		}
+		if err := functional.Send(ctx, patternedPayload(8, 0x3e)); !errors.Is(err, isotp.ErrPayloadTooLarge) {
+			t.Fatalf("oversized functional Send = %v, want ErrPayloadTooLarge", err)
+		}
+
+		functionalFD, err := isotp.NewFunctional(first, isotp.FunctionalConfig{
+			TransmitID:         0x7df,
+			FrameFlags:         gocan.FrameFD,
+			TransmitDataLength: 64,
+			PadFrames:          true,
+			PaddingByte:        0xcc,
+		})
+		if err != nil {
+			t.Fatalf("NewFunctional FD: %v", err)
+		}
+		broadcast = patternedPayload(62, 0x2e)
+		if err := functionalFD.Send(ctx, broadcast); err != nil {
+			t.Fatalf("Send functional FD payload: %v", err)
+		}
+		payload, err := functionalReceivers[0].Receive(ctx)
+		if err != nil || !bytes.Equal(payload, broadcast) {
+			t.Fatalf("functional receiver received %x, %v", payload, err)
+		}
+		if err := functionalFD.Send(ctx, patternedPayload(63, 0x2e)); !errors.Is(err, isotp.ErrPayloadTooLarge) {
+			t.Fatalf("oversized functional FD Send = %v, want ErrPayloadTooLarge", err)
+		}
 	})
-	if err != nil {
-		t.Fatalf("NewFunctional FD: %v", err)
-	}
-	broadcast = patternedPayload(62, 0x2e)
-	if err := functionalFD.Send(ctx, broadcast); err != nil {
-		t.Fatalf("Send functional FD payload: %v", err)
-	}
-	payload, err := functionalReceivers[0].Receive(ctx)
-	if err != nil || !bytes.Equal(payload, broadcast) {
-		t.Fatalf("functional receiver received %x, %v", payload, err)
-	}
-	if err := functionalFD.Send(ctx, patternedPayload(63, 0x2e)); !errors.Is(err, isotp.ErrPayloadTooLarge) {
-		t.Fatalf("oversized functional FD Send = %v, want ErrPayloadTooLarge", err)
-	}
 }
 
 // TestCloseCancelsPendingNext asserts that Close does not wait out a protocol
@@ -448,6 +487,7 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	}
 
 	pending := make(chan error, 1)
+	t.Cleanup(exchange.Close)
 	go func() {
 		_, err := exchange.Next(context.Background(), 0)
 		pending <- err
@@ -470,6 +510,24 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 		t.Fatalf("peer read %#x, want a Continue Flow Control", got)
 	}
 
+	// Retention can inspect progress while Next waits for the rest of a payload.
+	progress := make(chan gocan.Cursor, 1)
+	go func() { progress <- link.RetentionCursor() }()
+	select {
+	case cursor := <-progress:
+		if cursor == (gocan.Cursor{}) {
+			t.Fatal("cursor did not advance past the First Frame")
+		}
+		if cursor != link.Cursor() || cursor == capture.End() {
+			t.Fatal("pending reception did not retain its receive position")
+		}
+		if err := capture.Prune(cursor); err != nil {
+			t.Fatalf("Prune receive progress: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Cursor blocked behind pending reception")
+	}
+
 	closed := make(chan struct{})
 	go func() {
 		exchange.Close()
@@ -486,11 +544,16 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	if _, err := exchange.Next(context.Background(), 0); !errors.Is(err, isotp.ErrExchangeClosed) {
 		t.Fatalf("Next after Close = %v, want ErrExchangeClosed", err)
 	}
+	if link.RetentionCursor() != capture.End() {
+		t.Fatal("Close did not release receive history")
+	}
 
 	// The link must be usable again.
-	if _, err := link.Begin(context.Background(), []byte{0x3e, 0}); err != nil {
+	next, err := link.Begin(ctx, []byte{0x3e, 0})
+	if err != nil {
 		t.Fatalf("Begin after Close: %v", err)
 	}
+	next.Close()
 }
 
 // TestSegmentationConformance covers two ISO 15765-2 rules that pull in opposite
@@ -828,6 +891,9 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	if _, err := receiver.Receive(ctx); !errors.Is(err, gocan.ErrCursorOutOfRange) {
 		t.Fatalf("first Receive after Clear = %v, want gocan.ErrCursorOutOfRange", err)
 	}
+	if receiver.Cursor() != (gocan.Cursor{}) {
+		t.Fatal("capture loss did not reset the receive cursor")
+	}
 	got, err := receiver.Receive(ctx)
 	if err != nil {
 		t.Fatalf("resynchronised Receive: %v", err)
@@ -835,4 +901,18 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("resynchronised payload = %x, want %x", got, payload)
 	}
+}
+
+type gatedBus struct {
+	gocan.Bus
+	gate <-chan struct{}
+}
+
+func (bus *gatedBus) Send(ctx context.Context, frame gocan.Frame) error {
+	select {
+	case <-bus.gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return bus.Bus.Send(ctx, frame)
 }

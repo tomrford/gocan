@@ -1,5 +1,8 @@
 package gocan
 
+// This file is intentionally large: capture storage, reads, and locking belong
+// together for now. Size alone is not a reason to split it.
+
 import (
 	"context"
 	"errors"
@@ -391,15 +394,13 @@ func (capture *Capture) rotate(payloadLength int) {
 // minimum. Scaling back up to the initial capacities on every rotation keeps
 // chunk sizes matched to observed traffic without ratcheting them down
 // permanently after a transient traffic shape.
+// The caller supplies a full chunk, which always contains at least one record.
 func replacementCapacities(records, payloadBytes int) (recordCapacity, payloadCapacity int) {
 	recordCapacity = initialCaptureChunkRecordCapacity
 	payloadCapacity = initialCaptureChunkPayloadCapacity
 	if payloadBytes*initialCaptureChunkRecordCapacity >= records*initialCaptureChunkPayloadCapacity {
-		if payloadBytes > 0 {
-			recordCapacity = records * initialCaptureChunkPayloadCapacity / payloadBytes
-		}
+		recordCapacity = records * initialCaptureChunkPayloadCapacity / payloadBytes
 	} else {
-		// records must be positive here, otherwise the payload branch was taken.
 		payloadCapacity = payloadBytes * initialCaptureChunkRecordCapacity / records
 	}
 	return max(recordCapacity, minimumCaptureChunkRecordCapacity),

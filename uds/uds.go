@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/isotp"
 )
 
@@ -75,6 +76,14 @@ type Client struct {
 	link          *isotp.Link
 	p2Timeout     time.Duration
 	p2StarTimeout time.Duration
+}
+
+// RetentionCursor returns receive progress during an active Do or segmented
+// Send, and the capture's end otherwise. Pass it with other readers' cursors
+// to Capture.Prune. Queued calls and single-frame sends do not retain history.
+// Unsolicited responses received while idle are not protected.
+func (client *Client) RetentionCursor() gocan.Cursor {
+	return client.link.RetentionCursor()
 }
 
 // New validates config and binds a raw UDS client to link.
