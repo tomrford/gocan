@@ -262,9 +262,11 @@ func decodeField(field Field, encoded []byte) (any, error) {
 	}
 	elementBytes := int(field.BitLength / 8)
 	count := len(encoded) / elementBytes
-	for index := range count {
-		if err := validateConversionRaw(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder)); err != nil {
-			return nil, err
+	if conversion := field.Conversion; conversion != nil && (conversion.minimum != nil || conversion.maximum != nil) {
+		for index := range count {
+			if err := validateConversionRaw(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder)); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if field.Count == 1 && field.Variable == nil {
