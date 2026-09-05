@@ -84,8 +84,8 @@ type SourceIdentity struct {
 
 // State is a literal CDD state and its containing group. Index is its one-based
 // position across all STATEGROUPS/STATE entries, including unsupported groups.
-// GroupIndex is the one-based position of its STATEGROUP. Index describes
-// source order only; its relationship to mayBeExec values is not established.
+// GroupIndex is the one-based position of its STATEGROUP. Parse interprets
+// mayBeExec entries as Index values, as observed in public Vector examples.
 // Neither index is a UDS subfunction. No initial state is inferred.
 type State struct {
 	Source     SourceIdentity
@@ -101,14 +101,20 @@ type State struct {
 // TemplateRef is the instance's literal tmplref.
 //
 // Check Err first: a non-nil error means unknown requirements, not ECU rejection.
-// A nil Err means no explicit CDD restriction was found on the service or its
-// template. This does not establish ECU permission. Callers manage ECU state.
+// Sessions and SecurityLevels contain the states named by an explicit instance
+// mayBeExec list, in document order with repeated references removed. States
+// retain their group identities, including when qualifiers are equal. A locked
+// state remains literal; no security hierarchy or initial state is inferred.
+// A nil list means no states were listed for that group, not ECU permission.
+// A service without a rule has nil lists and nil Err. Callers manage ECU state.
 //
 // Raw rule pointers distinguish missing attributes from explicit empty values.
-// Parse currently leaves every explicit rule unresolved because the CDD index,
-// omitted-group, exclusion and inheritance rules have not been verified.
-// Resolved restrictions are not exposed until those rules are established.
+// Exclusions (including empty attributes), template rules, malformed or empty
+// lists, and references outside the session and security groups remain unknown.
+// Unknown entries retain their source metadata and have nil resolved lists.
 type Precondition struct {
+	Sessions                     []State
+	SecurityLevels               []State
 	Service                      SourceIdentity
 	ServiceIndex                 int
 	TemplateRef                  string

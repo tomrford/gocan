@@ -60,6 +60,7 @@ type resolver struct {
 	ecuDoc    *element
 	byID      map[string]*element
 	datatypes map[string]*element
+	states    []State
 }
 
 func sourceIdentity(node *element) SourceIdentity {
@@ -128,6 +129,7 @@ func (resolver *resolver) resolve() (*Database, error) {
 			}
 		}
 	}
+	resolver.states = database.States
 	for _, class := range variant.childrenNamed("DIAGCLASS") {
 		for _, instance := range class.childrenNamed("DIAGINST") {
 			did, selected, err := resolver.resolveDID(instance)
@@ -273,8 +275,8 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 	return bindings
 }
 
-// resolvePreconditions retains rule presence and text without inferring the
-// meaning of state indexes, omitted groups, exclusions or template inheritance.
+// resolvePreconditions keeps one alternative per bound source service, with
+// raw metadata retained even when its state list cannot be resolved.
 func (resolver *resolver) resolvePreconditions(record *Record, services []boundService, operation string) {
 	for _, service := range services {
 		condition := Precondition{
@@ -286,13 +288,52 @@ func (resolver *resolver) resolvePreconditions(record *Record, services []boundS
 			TemplateMayBeExec:            attributeValue(service.template, "mayBeExec"),
 			TemplateNotExecInStateGroups: attributeValue(service.template, "notExecInStateGroups"),
 		}
-		if condition.MayBeExec != nil || condition.NotExecInStateGroups != nil ||
-			condition.TemplateMayBeExec != nil || condition.TemplateNotExecInStateGroups != nil {
-			err := sourceError(resolver.name, "CDD execution rule semantics are not verified (state indexes, omitted groups, exclusions and inheritance)")
+		if err := resolver.resolveStateList(&condition); err != nil {
 			condition.Err = fmt.Errorf("DID %q %s service %d (id %q, oid %q, template %q): %w", record.Name, operation, service.index, condition.Service.ID, condition.Service.OID, condition.TemplateRef, err)
 		}
 		record.Preconditions = append(record.Preconditions, condition)
 	}
+}
+
+func (resolver *resolver) resolveStateList(condition *Precondition) error {
+	if condition.NotExecInStateGroups != nil || condition.TemplateNotExecInStateGroups != nil {
+		return sourceError(resolver.name, "notExecInStateGroups is not supported")
+	}
+	if condition.TemplateMayBeExec != nil {
+		return sourceError(resolver.name, "template mayBeExec inheritance is not supported")
+	}
+	if condition.MayBeExec == nil {
+		return nil
+	}
+	value := *condition.MayBeExec
+	list := strings.TrimSpace(value)
+	if len(list) < 3 || list[0] != '(' || list[len(list)-1] != ')' {
+		return sourceError(resolver.name, "invalid mayBeExec list %q", value)
+	}
+	selected := make([]bool, len(resolver.states))
+	for _, token := range strings.Split(list[1:len(list)-1], ",") {
+		position, err := strconv.Atoi(strings.TrimSpace(token))
+		if err != nil || position < 1 || position > len(resolver.states) {
+			return sourceError(resolver.name, "mayBeExec %q names a state outside the %d declared states", value, len(resolver.states))
+		}
+		state := resolver.states[position-1]
+		if state.GroupSpec != "session" && state.GroupSpec != "security" {
+			return sourceError(resolver.name, "mayBeExec %q names unsupported state %d in group %q", value, position, state.GroupSpec)
+		}
+		selected[position-1] = true
+	}
+	for index, state := range resolver.states {
+		if !selected[index] {
+			continue
+		}
+		switch state.GroupSpec {
+		case "session":
+			condition.Sessions = append(condition.Sessions, state)
+		case "security":
+			condition.SecurityLevels = append(condition.SecurityLevels, state)
+		}
+	}
+	return nil
 }
 
 func attributeValue(node *element, name string) *string {
