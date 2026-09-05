@@ -83,7 +83,9 @@ func (client *Client) ReadDTCCountByStatusMask(ctx context.Context, mask DTCStat
 // ReadDTCByStatusMask sends ReadDTCInformation subfunction 0x02 for primary
 // memory (ISO 14229-1:2013; AUTOSAR CP R22-11, SWS Dcm section 7.6.2.5.2).
 // It validates the echo, complete four-byte records and status selection.
-// It does not discard zero DTC numbers or strip apparent payload padding.
+// Complete all-zero trailing records are omitted from Records as paged-response
+// padding (SWS_Dcm_00588), but remain in Raw. Zero DTC numbers with a matching
+// nonzero status remain fault records.
 // Other ReadDTCInformation subfunctions require different layouts and remain
 // available through Do; this method does not attempt to decode them.
 func (client *Client) ReadDTCByStatusMask(ctx context.Context, mask DTCStatus) (DTCListResponse, error) {
@@ -99,8 +101,14 @@ func (client *Client) ReadDTCByStatusMask(ctx context.Context, mask DTCStatus) (
 		return result, invalidServiceResponse(ServiceReadDTCInformation, "list response has %d data bytes, want 2 + 4*n", len(data))
 	}
 	availability := DTCStatus(data[1])
+	// Validate length before excluding the suffix, so incomplete records remain
+	// invalid. Interior zero records still fail the status selection check.
+	end := len(data)
+	for end > 2 && binary.BigEndian.Uint32(data[end-4:end]) == 0 {
+		end -= 4
+	}
 	var records []DTCRecord
-	for offset := 2; offset < len(data); offset += 4 {
+	for offset := 2; offset < end; offset += 4 {
 		status := DTCStatus(data[offset+3])
 		if status&mask&availability == 0 {
 			return result, invalidServiceResponse(ServiceReadDTCInformation, "DTC record %d status %#02x does not match requested supported mask %#02x", (offset-2)/4+1, status, mask&availability)

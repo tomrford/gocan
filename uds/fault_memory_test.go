@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/tomrford/gocan/uds"
@@ -87,6 +88,40 @@ func TestFaultMemoryLifecycle(t *testing.T) {
 	}
 }
 
+// SWS_Dcm_00588 permits complete zero-filled trailing records when faults
+// disappear during paged transmission. These wire vectors exercise the suffix
+// independently of the codec, including a real zero-number DTC before padding.
+func TestFaultMemoryPagedResponses(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response []byte
+		want     []uds.DTCRecord
+	}{
+		{"reported regression", []byte{0x59, 0x02, 0xff, 0x12, 0x34, 0x56, 0x01, 0, 0, 0, 0}, []uds.DTCRecord{{Number: 0x123456, Status: 0x01}}},
+		{"multiple padding records after zero-number fault", []byte{0x59, 0x02, 0xff, 0, 0, 0, 0x08, 0, 0, 0, 0, 0, 0, 0, 0}, []uds.DTCRecord{{Number: 0, Status: 0x08}}},
+		{"only padding remains", []byte{0x59, 0x02, 0xff, 0, 0, 0, 0}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, server, ctx := newSemanticPair(t)
+			done := make(chan error, 1)
+			go func() {
+				if err := receiveRequest(ctx, server, []byte{0x19, 0x02, 0x09}); err != nil {
+					done <- err
+					return
+				}
+				done <- server.Send(ctx, test.response)
+			}()
+			result, err := client.ReadDTCByStatusMask(ctx, 0x09)
+			if err != nil || result.StatusAvailabilityMask != 0xff || !slices.Equal(result.Records, test.want) || !bytes.Equal(result.Raw, test.response[1:]) {
+				t.Fatalf("result = %#v, %v; want records %#v and raw %x", result, err, test.want, test.response[1:])
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestFaultMemoryRejectsMalformedResponses(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -109,7 +144,10 @@ func TestFaultMemoryRejectsMalformedResponses(t *testing.T) {
 		{"count response to list request", 2, []byte{1, 0xff, 1, 0, 1}, uds.ErrUnexpectedResponse},
 		{"list does not match mask", 2, []byte{2, 0xff, 0x12, 0x34, 0x56, 0x04}, uds.ErrInvalidResponse},
 		{"list only unavailable match", 2, []byte{2, 0xfe, 0x12, 0x34, 0x56, 1}, uds.ErrInvalidResponse},
-		{"list zero record is not padding", 2, []byte{2, 0xff, 0, 0, 0, 0}, uds.ErrInvalidResponse},
+		{"list interior zero record", 2, []byte{2, 0xff, 0, 0, 0, 0, 0x12, 0x34, 0x56, 1}, uds.ErrInvalidResponse},
+		{"list two-byte zero suffix", 2, []byte{2, 0xff, 0x12, 0x34, 0x56, 1, 0, 0}, uds.ErrInvalidResponse},
+		{"list three-byte zero suffix", 2, []byte{2, 0xff, 0x12, 0x34, 0x56, 1, 0, 0, 0}, uds.ErrInvalidResponse},
+		{"list invalid status before padding", 2, []byte{2, 0xff, 0x12, 0x34, 0x56, 0x04, 0, 0, 0, 0}, uds.ErrInvalidResponse},
 		{"bad second record preserves all raw data", 2, []byte{2, 0xff, 0x12, 0x34, 0x56, 1, 0xab, 0xcd, 0xef, 0}, uds.ErrInvalidResponse},
 	} {
 		t.Run(test.name, func(t *testing.T) {
