@@ -336,6 +336,9 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 
 		sent := make(chan error, 1)
 		for index, payload := range payloads {
+			// Other virtual buses record RX copies after Send returns. Wait
+			// until those appends finish so retention snapshots are stable.
+			synctest.Wait()
 			start := capture.End()
 			go func() { sent <- sender.Send(ctx, payload) }()
 			synctest.Wait()
@@ -365,7 +368,10 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 				if err := <-result; !errors.Is(err, context.Canceled) {
 					t.Fatalf("queued Begin: %v", err)
 				}
-				if duringQueue != want || sender.RetentionCursor() != want {
+				if duringQueue != want {
+					t.Fatal("queued operation changed send retention")
+				}
+				if sender.RetentionCursor() != want {
 					t.Fatal("queued cancellation changed send retention")
 				}
 				if err := capture.Prune(sender.RetentionCursor(), receiver.Cursor()); err != nil {
@@ -382,6 +388,7 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 			if err := <-sent; err != nil {
 				t.Fatalf("Send payload %d: %v", index, err)
 			}
+			synctest.Wait()
 			if sender.RetentionCursor() != capture.End() || receiver.RetentionCursor() != capture.End() {
 				t.Fatal("completed transfer retained history")
 			}
@@ -394,6 +401,7 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 		if err := <-sent; !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled Send: %v", err)
 		}
+		synctest.Wait()
 		if sender.RetentionCursor() != capture.End() {
 			t.Fatal("cancelled Send retained history")
 		}
