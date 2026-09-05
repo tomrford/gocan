@@ -62,6 +62,13 @@ type resolver struct {
 	datatypes map[string]*element
 }
 
+func sourceIdentity(node *element) SourceIdentity {
+	return SourceIdentity{
+		ID: node.attr("id"), OID: node.attr("oid"),
+		TemplateOID: node.attr("temploid"), Qualifier: node.childText("QUAL"),
+	}
+}
+
 func newResolver(name string, ecuDoc *element) *resolver {
 	resolver := &resolver{
 		name:      name,
@@ -105,6 +112,22 @@ func (resolver *resolver) resolve() (*Database, error) {
 		didsByName:       make(map[string]int),
 		didsByIdentifier: make(map[uint16]int),
 	}
+	for groupIndex, group := range resolver.ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
+		identity := sourceIdentity(group)
+		for _, node := range group.childrenNamed("STATE") {
+			state := State{
+				Source: sourceIdentity(node), Index: len(database.States) + 1,
+				Group: identity, GroupIndex: groupIndex + 1, GroupSpec: group.attr("spec"),
+			}
+			database.States = append(database.States, state)
+			switch state.GroupSpec {
+			case "session":
+				database.Sessions = append(database.Sessions, state)
+			case "security":
+				database.SecurityLevels = append(database.SecurityLevels, state)
+			}
+		}
+	}
 	for _, class := range variant.childrenNamed("DIAGCLASS") {
 		for _, instance := range class.childrenNamed("DIAGINST") {
 			did, selected, err := resolver.resolveDID(instance)
@@ -112,33 +135,45 @@ func (resolver *resolver) resolve() (*Database, error) {
 				continue
 			}
 			if err != nil {
-				database.drop(instance.childText("QUAL"), err)
+				database.report(instance.childText("QUAL"), err)
 				continue
 			}
 			if previous, exists := database.didsByName[did.Name]; exists {
-				database.drop(did.Name, sourceError(resolver.name, "name repeats DID %#04x", database.DIDs[previous].Identifier))
+				database.report(did.Name, sourceError(resolver.name, "name repeats DID %#04x", database.DIDs[previous].Identifier))
 				continue
 			}
 			if previous, exists := database.didsByIdentifier[did.Identifier]; exists {
-				database.drop(did.Name, sourceError(resolver.name, "identifier %#04x is already used by DID %q", did.Identifier, database.DIDs[previous].Name))
+				database.report(did.Name, sourceError(resolver.name, "identifier %#04x is already used by DID %q", did.Identifier, database.DIDs[previous].Name))
 				continue
 			}
 			database.didsByName[did.Name] = len(database.DIDs)
 			database.didsByIdentifier[did.Identifier] = len(database.DIDs)
 			database.DIDs = append(database.DIDs, did)
+			for _, record := range []*Record{did.Read, did.Write} {
+				if record == nil {
+					continue
+				}
+				for _, condition := range record.Preconditions {
+					if condition.Err != nil {
+						database.report(did.Name, condition.Err)
+					}
+				}
+			}
 		}
 	}
 	return database, nil
 }
 
-func (database *Database) drop(name string, err error) {
+func (database *Database) report(name string, err error) {
 	database.Diagnostics = append(database.Diagnostics, Diagnostic{Name: name, Message: err.Error()})
 }
 
 // resolveDID resolves one diagnostic instance. The boolean reports whether the
 // instance is a data identifier at all; an unselected instance is some other
 // diagnostic class and is not a defect. A selected instance that cannot be
-// resolved returns an error for the caller to record as a diagnostic.
+// resolved returns an error for the caller to record as a diagnostic. A
+// precondition that cannot be resolved is retained as an unresolved alternative
+// on the operation; the caller reports it after accepting the DID.
 func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 	classTemplate := resolver.byID[instance.attr("tmplref")]
 	if classTemplate == nil || classTemplate.name != "DCLTMPL" {
@@ -179,27 +214,40 @@ func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 		if err != nil {
 			return DID{}, true, fmt.Errorf("DID %q read record: %w", name, err)
 		}
+		resolver.resolvePreconditions(did.Read, bindings.readServices, "read")
 	}
 	if bindings.writeData != nil {
 		did.Write, err = resolver.resolveDIDRecord(name, instance, classTemplate, bindings.writeData)
 		if err != nil {
 			return DID{}, true, fmt.Errorf("DID %q write record: %w", name, err)
 		}
+		resolver.resolvePreconditions(did.Write, bindings.writeServices, "write")
 	}
 	return did, true, nil
 }
 
+// didBindings holds each operation's components and service alternatives.
 type didBindings struct {
-	identifiers map[string]struct{}
-	readData    map[string]struct{}
-	writeData   map[string]struct{}
+	identifiers   map[string]struct{}
+	readData      map[string]struct{}
+	writeData     map[string]struct{}
+	readServices  []boundService
+	writeServices []boundService
+}
+
+// boundService pairs a SERVICE instance with the DCLSRVTMPL it was resolved
+// against, so precondition resolution never repeats the lookup.
+type boundService struct {
+	instance *element
+	template *element
+	index    int
 }
 
 // didServiceComponents retains the message direction because a read response
 // and write request may bind different proxies even when their layouts agree.
 func (resolver *resolver) didServiceComponents(instance, classTemplate *element) didBindings {
 	bindings := didBindings{identifiers: make(map[string]struct{})}
-	for _, service := range instance.childrenNamed("SERVICE") {
+	for index, service := range instance.childrenNamed("SERVICE") {
 		serviceTemplate := resolver.byID[service.attr("tmplref")]
 		if serviceTemplate == nil || serviceTemplate.name != "DCLSRVTMPL" || !directChild(classTemplate, serviceTemplate) {
 			continue
@@ -216,11 +264,43 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 		switch sid {
 		case 0x22:
 			bindings.readData = collectDataComponents(protocolService.child("POS"), bindings.readData)
+			bindings.readServices = append(bindings.readServices, boundService{service, serviceTemplate, index + 1})
 		case 0x2e:
 			bindings.writeData = collectDataComponents(protocolService.child("REQ"), bindings.writeData)
+			bindings.writeServices = append(bindings.writeServices, boundService{service, serviceTemplate, index + 1})
 		}
 	}
 	return bindings
+}
+
+// resolvePreconditions retains rule presence and text without inferring the
+// meaning of state indexes, omitted groups, exclusions or template inheritance.
+func (resolver *resolver) resolvePreconditions(record *Record, services []boundService, operation string) {
+	for _, service := range services {
+		condition := Precondition{
+			Service:                      sourceIdentity(service.instance),
+			ServiceIndex:                 service.index,
+			TemplateRef:                  service.instance.attr("tmplref"),
+			MayBeExec:                    attributeValue(service.instance, "mayBeExec"),
+			NotExecInStateGroups:         attributeValue(service.instance, "notExecInStateGroups"),
+			TemplateMayBeExec:            attributeValue(service.template, "mayBeExec"),
+			TemplateNotExecInStateGroups: attributeValue(service.template, "notExecInStateGroups"),
+		}
+		if condition.MayBeExec != nil || condition.NotExecInStateGroups != nil ||
+			condition.TemplateMayBeExec != nil || condition.TemplateNotExecInStateGroups != nil {
+			err := sourceError(resolver.name, "CDD execution rule semantics are not verified (state indexes, omitted groups, exclusions and inheritance)")
+			condition.Err = fmt.Errorf("DID %q %s service %d (id %q, oid %q, template %q): %w", record.Name, operation, service.index, condition.Service.ID, condition.Service.OID, condition.TemplateRef, err)
+		}
+		record.Preconditions = append(record.Preconditions, condition)
+	}
+}
+
+func attributeValue(node *element, name string) *string {
+	value, present := node.attrs[name]
+	if !present {
+		return nil
+	}
+	return &value
 }
 
 func directChild(parent, candidate *element) bool {
