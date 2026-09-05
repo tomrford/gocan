@@ -82,13 +82,16 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 	return nil
 }
 
-// Attribute IDs are document-local. ENUMDEF.QUAL identifies the behaviour;
-// ENUM.attrref selects that declaration and ENUM.v overrides ENUMDEF.v.
+// Attribute IDs are document-local. Within DEFATTS/DATATYPEATTS, ENUMDEF.QUAL
+// identifies the behaviour; ENUM.attrref selects that declaration and ENUM.v
+// overrides ENUMDEF.v.
 func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) {
 	var declaration *element
 	var candidates []*element
 	if definitions := resolver.ecuDoc.child("DEFATTS"); definitions != nil {
-		candidates = definitions.children
+		for _, scope := range definitions.childrenNamed("DATATYPEATTS") {
+			candidates = append(candidates, scope.children...)
+		}
 	}
 	for _, candidate := range candidates {
 		switch candidate.childText("QUAL") {

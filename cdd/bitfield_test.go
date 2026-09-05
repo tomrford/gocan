@@ -124,9 +124,9 @@ func TestPackedArrayByteReversal(t *testing.T) {
 		wire                          []byte
 	}{
 		{"default mapping", "", "", []byte{0, 0, 0x91, 0xb5}},
-		{"declared default", `<DEFATTS><ENUMDEF id="reverse-setting" v="1"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF></DEFATTS>`, "", []byte{0xb5, 0x91, 0, 0}},
-		{"explicit reverse", `<DEFATTS><ENUMDEF id="different-id" v="0"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF></DEFATTS>`, `<ENUM attrref="different-id" v="2"/>`, []byte{0xb5, 0x91, 0, 0}},
-		{"explicit normal", `<DEFATTS><ENUMDEF id="different-id" v="1"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF></DEFATTS>`, `<ENUM attrref="different-id" v="0"/>`, []byte{0, 0, 0x91, 0xb5}},
+		{"declared default", `<DEFATTS><DATATYPEATTS><ENUMDEF id="reverse-setting" v="1"><QUAL>ReverseBitfieldBytes</QUAL></ENUMDEF></DATATYPEATTS></DEFATTS>`, "", []byte{0xb5, 0x91, 0, 0}},
+		{"explicit reverse", `<DEFATTS><DATATYPEATTS><ENUMDEF id="different-id" v="0"><QUAL>ReverseBitfieldBytes</QUAL></ENUMDEF></DATATYPEATTS></DEFATTS>`, `<ENUM attrref="different-id" v="2"/>`, []byte{0xb5, 0x91, 0, 0}},
+		{"explicit normal", `<DEFATTS><DATATYPEATTS><ENUMDEF id="different-id" v="1"><QUAL>ReverseBitfieldBytes</QUAL></ENUMDEF></DATATYPEATTS></DEFATTS>`, `<ENUM attrref="different-id" v="0"/>`, []byte{0, 0, 0x91, 0xb5}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// bo=12 on one-byte elements must not reverse the array by itself.
@@ -147,7 +147,7 @@ func TestPackedReversalQualifier(t *testing.T) {
 		{"reversebitfieldbytes", []byte{0x91, 0xb5}},
 	} {
 		t.Run(test.qualifier, func(t *testing.T) {
-			declarations := `<DEFATTS><ENUMDEF id="reverse" v="0"><QUAL>` + test.qualifier + `</QUAL></ENUMDEF></DEFATTS>`
+			declarations := `<DEFATTS><DATATYPEATTS><ENUMDEF id="reverse" v="0"><QUAL>` + test.qualifier + `</QUAL></ENUMDEF></DATATYPEATTS></DEFATTS>`
 			datatype := `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="2" maxsz="2"/><ENUM attrref="reverse" v="1"/></IDENT>`
 			record := packedRecord(t, datatype, packedChild("seven", "A")+packedChild("nine", "B"), declarations)
 			// CANdelaStudio 17's Special Attributes table uses ReverseBitfieldBytes.
@@ -200,7 +200,7 @@ func TestPackedRejectsUnresolvedReversal(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			datatype := `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="2" maxsz="2"/>` + test.attributes + `</IDENT>`
-			message := testCodecMessage(t, packedTypes+datatype, `<STRUCT dtref="container">`+packedChild("seven", "A")+`</STRUCT>`, `<DEFATTS>`+test.definitions+`</DEFATTS>`)
+			message := testCodecMessage(t, packedTypes+datatype, `<STRUCT dtref="container">`+packedChild("seven", "A")+`</STRUCT>`, `<DEFATTS><DATATYPEATTS>`+test.definitions+`</DATATYPEATTS></DEFATTS>`)
 			if message.Err == nil || !strings.Contains(message.Err.Error(), test.error) {
 				t.Fatalf("error = %v, want %q", message.Err, test.error)
 			}
