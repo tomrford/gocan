@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -61,39 +60,13 @@ type resolver struct {
 	ecuDoc    *element
 	byID      map[string]*element
 	datatypes map[string]*element
-	states    []state
+	states    []State
 }
 
-// state is one entry of the flattened STATEGROUPS list that service
-// preconditions index. Group is the STATEGROUP spec, "session" or "security".
-// Initial marks the first state of a group, which CANdela orders as the state
-// the ECU holds after reset: the default session, or locked.
-type state struct {
-	group   string
-	name    string
-	initial bool
-}
-
-// locked reports whether the state is the initial state of a security group.
-// UDS defines no rejection for being unlocked, so a service permitted while
-// locked has no security requirement and the locked state is never a level.
-func (state state) locked() bool {
-	return state.group == "security" && state.initial
-}
-
-// stateGroups splits states by group into the two lists the model exposes.
-// States of any other group, and locked states, are not modelled.
-type stateGroups struct {
-	sessions       []string
-	securityLevels []string
-}
-
-func (groups *stateGroups) add(state state) {
-	switch {
-	case state.group == "session":
-		groups.sessions = append(groups.sessions, state.name)
-	case state.group == "security" && !state.initial:
-		groups.securityLevels = append(groups.securityLevels, state.name)
+func sourceIdentity(node *element) SourceIdentity {
+	return SourceIdentity{
+		ID: node.attr("id"), OID: node.attr("oid"),
+		TemplateOID: node.attr("temploid"), Qualifier: node.childText("QUAL"),
 	}
 }
 
@@ -112,9 +85,12 @@ func newResolver(name string, ecuDoc *element) *resolver {
 			}
 		}
 	}
-	for _, group := range ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
-		for index, node := range group.childrenNamed("STATE") {
-			resolver.states = append(resolver.states, state{group: group.attr("spec"), name: node.childText("QUAL"), initial: index == 0})
+	for groupIndex, group := range ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
+		for _, node := range group.childrenNamed("STATE") {
+			resolver.states = append(resolver.states, State{
+				Source: sourceIdentity(node), Index: len(resolver.states) + 1,
+				Group: sourceIdentity(group), GroupIndex: groupIndex + 1, GroupSpec: group.attr("spec"),
+			})
 		}
 	}
 	return resolver
@@ -142,17 +118,21 @@ func (resolver *resolver) resolve() (*Database, error) {
 	}
 
 	database := &Database{
+		States:           resolver.states,
 		didsByName:       make(map[string]int),
 		didsByIdentifier: make(map[uint16]int),
 	}
-	var declared stateGroups
 	for _, state := range resolver.states {
-		declared.add(state)
+		switch state.GroupSpec {
+		case "session":
+			database.Sessions = append(database.Sessions, state)
+		case "security":
+			database.SecurityLevels = append(database.SecurityLevels, state)
+		}
 	}
-	database.Sessions, database.SecurityLevels = declared.sessions, declared.securityLevels
 	for _, class := range variant.childrenNamed("DIAGCLASS") {
 		for _, instance := range class.childrenNamed("DIAGINST") {
-			did, selected, err := resolver.resolveDID(database, instance)
+			did, selected, err := resolver.resolveDID(instance)
 			if !selected {
 				continue
 			}
@@ -171,6 +151,16 @@ func (resolver *resolver) resolve() (*Database, error) {
 			database.didsByName[did.Name] = len(database.DIDs)
 			database.didsByIdentifier[did.Identifier] = len(database.DIDs)
 			database.DIDs = append(database.DIDs, did)
+			for _, record := range []*Record{did.Read, did.Write} {
+				if record == nil {
+					continue
+				}
+				for _, condition := range record.Preconditions {
+					if condition.Err != nil {
+						database.report(did.Name, condition.Err)
+					}
+				}
+			}
 		}
 	}
 	return database, nil
@@ -184,9 +174,9 @@ func (database *Database) report(name string, err error) {
 // instance is a data identifier at all; an unselected instance is some other
 // diagnostic class and is not a defect. A selected instance that cannot be
 // resolved returns an error for the caller to record as a diagnostic. A
-// precondition that cannot be resolved is reported to database and retained as
-// an unresolved alternative on the operation.
-func (resolver *resolver) resolveDID(database *Database, instance *element) (DID, bool, error) {
+// precondition that cannot be resolved is retained as an unresolved alternative
+// on the operation; the caller reports it after accepting the DID.
+func (resolver *resolver) resolveDID(instance *element) (DID, bool, error) {
 	classTemplate := resolver.byID[instance.attr("tmplref")]
 	if classTemplate == nil || classTemplate.name != "DCLTMPL" {
 		return DID{}, false, nil
@@ -226,14 +216,14 @@ func (resolver *resolver) resolveDID(database *Database, instance *element) (DID
 		if err != nil {
 			return DID{}, true, fmt.Errorf("DID %q read record: %w", name, err)
 		}
-		resolver.resolvePreconditions(database, did.Read, bindings.readServices, "read")
+		resolver.resolvePreconditions(did.Read, bindings.readServices, "read")
 	}
 	if bindings.writeData != nil {
 		did.Write, err = resolver.resolveDIDRecord(name, instance, classTemplate, bindings.writeData)
 		if err != nil {
 			return DID{}, true, fmt.Errorf("DID %q write record: %w", name, err)
 		}
-		resolver.resolvePreconditions(database, did.Write, bindings.writeServices, "write")
+		resolver.resolvePreconditions(did.Write, bindings.writeServices, "write")
 	}
 	return did, true, nil
 }
@@ -252,13 +242,14 @@ type didBindings struct {
 type boundService struct {
 	instance *element
 	template *element
+	index    int
 }
 
 // didServiceComponents retains the message direction because a read response
 // and write request may bind different proxies even when their layouts agree.
 func (resolver *resolver) didServiceComponents(instance, classTemplate *element) didBindings {
 	bindings := didBindings{identifiers: make(map[string]struct{})}
-	for _, service := range instance.childrenNamed("SERVICE") {
+	for index, service := range instance.childrenNamed("SERVICE") {
 		serviceTemplate := resolver.byID[service.attr("tmplref")]
 		if serviceTemplate == nil || serviceTemplate.name != "DCLSRVTMPL" || !directChild(classTemplate, serviceTemplate) {
 			continue
@@ -275,76 +266,50 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 		switch sid {
 		case 0x22:
 			bindings.readData = collectDataComponents(protocolService.child("POS"), bindings.readData)
-			bindings.readServices = append(bindings.readServices, boundService{service, serviceTemplate})
+			bindings.readServices = append(bindings.readServices, boundService{service, serviceTemplate, index + 1})
 		case 0x2e:
 			bindings.writeData = collectDataComponents(protocolService.child("REQ"), bindings.writeData)
-			bindings.writeServices = append(bindings.writeServices, boundService{service, serviceTemplate})
+			bindings.writeServices = append(bindings.writeServices, boundService{service, serviceTemplate, index + 1})
 		}
 	}
 	return bindings
 }
 
-func (resolver *resolver) resolvePreconditions(database *Database, record *Record, services []boundService, operation string) {
+func (resolver *resolver) resolvePreconditions(record *Record, services []boundService, operation string) {
 	for _, service := range services {
 		condition, err := resolver.servicePrecondition(service)
+		condition.Service = sourceIdentity(service.instance)
+		condition.ServiceIndex = service.index
+		condition.TemplateRef = service.instance.attr("tmplref")
 		if err != nil {
-			condition = Precondition{Err: fmt.Errorf("DID %q %s service: %w", record.Name, operation, err)}
-			database.report(record.Name, condition.Err)
-		} else if slices.ContainsFunc(record.Preconditions, func(previous Precondition) bool {
-			return previous.Err == nil && slices.Equal(previous.Sessions, condition.Sessions) && slices.Equal(previous.SecurityLevels, condition.SecurityLevels)
-		}) {
-			continue
+			condition.Err = fmt.Errorf("DID %q %s service %d (id %q, oid %q, template %q): %w", record.Name, operation, service.index, condition.Service.ID, condition.Service.OID, condition.TemplateRef, err)
 		}
 		record.Preconditions = append(record.Preconditions, condition)
 	}
 }
 
-// Explicit mayBeExec lists index every STATE in document order, starting at 1.
-// Sessions are read literally. Security follows UDS: a list that permits the
-// locked state, or names no security state, imposes no security requirement,
-// and any unlocked levels listed alongside the locked state are redundant.
-// Template-only rules and excluded groups are preserved as unresolved rather
-// than guessing inheritance or interpreting an exclusion as unrestricted.
+// servicePrecondition retains rule presence and text without inferring the
+// meaning of state indexes, omitted groups, exclusions or template inheritance.
 func (resolver *resolver) servicePrecondition(service boundService) (Precondition, error) {
-	instance, template := service.instance, service.template
-	if instance.attr("notExecInStateGroups") != "" || template.attr("notExecInStateGroups") != "" {
-		return Precondition{}, sourceError(resolver.name, "notExecInStateGroups is not supported")
+	condition := Precondition{
+		MayBeExec:                    attributeValue(service.instance, "mayBeExec"),
+		NotExecInStateGroups:         attributeValue(service.instance, "notExecInStateGroups"),
+		TemplateMayBeExec:            attributeValue(service.template, "mayBeExec"),
+		TemplateNotExecInStateGroups: attributeValue(service.template, "notExecInStateGroups"),
 	}
-	value, present := instance.attrs["mayBeExec"]
+	if condition.MayBeExec != nil || condition.NotExecInStateGroups != nil ||
+		condition.TemplateMayBeExec != nil || condition.TemplateNotExecInStateGroups != nil {
+		return condition, sourceError(resolver.name, "CDD execution rule semantics are not verified (state indexes, omitted groups, exclusions and inheritance)")
+	}
+	return condition, nil
+}
+
+func attributeValue(node *element, name string) *string {
+	value, present := node.attrs[name]
 	if !present {
-		if _, declared := template.attrs["mayBeExec"]; declared {
-			return Precondition{}, sourceError(resolver.name, "template-only mayBeExec requires unsupported inheritance resolution")
-		}
-		return Precondition{}, nil
+		return nil
 	}
-	list := strings.TrimSpace(value)
-	if !strings.HasPrefix(list, "(") || !strings.HasSuffix(list, ")") {
-		return Precondition{}, sourceError(resolver.name, "invalid mayBeExec list %q", value)
-	}
-	selected := make([]bool, len(resolver.states))
-	for _, token := range strings.Split(list[1:len(list)-1], ",") {
-		position, err := strconv.Atoi(strings.TrimSpace(token))
-		if err != nil || position < 1 || position > len(resolver.states) {
-			return Precondition{}, sourceError(resolver.name, "mayBeExec %q names a state outside the %d declared states", value, len(resolver.states))
-		}
-		selected[position-1] = true
-	}
-	var allowed stateGroups
-	var locked bool
-	for index, state := range resolver.states {
-		if !selected[index] {
-			continue
-		}
-		if state.name == "" || state.group != "session" && state.group != "security" {
-			return Precondition{}, sourceError(resolver.name, "mayBeExec %q names unsupported state %d in group %q", value, index+1, state.group)
-		}
-		locked = locked || state.locked()
-		allowed.add(state)
-	}
-	if locked {
-		allowed.securityLevels = nil
-	}
-	return Precondition{Sessions: allowed.sessions, SecurityLevels: allowed.securityLevels}, nil
+	return &value
 }
 
 func directChild(parent, candidate *element) bool {

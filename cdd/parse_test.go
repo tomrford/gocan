@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -85,7 +84,13 @@ func TestParseRecordLayouts(t *testing.T) {
 // TestParseDropsInvalidDIDs checks that unsupported records cost those records,
 // not the usable catalog around them.
 func TestParseDropsInvalidDIDs(t *testing.T) {
-	database, err := cdd.ParseFile(filepath.Join("testdata", "records.cdd"))
+	source, err := os.ReadFile(filepath.Join("testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rejected layouts and duplicate DIDs must not also emit orphan rule errors.
+	source = bytes.ReplaceAll(source, []byte(`<SERVICE tmplref="modernRead" req="0"/>`), []byte(`<SERVICE tmplref="modernRead" req="0" mayBeExec="(9)"/>`))
+	database, err := cdd.Parse("rejected.cdd", source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +106,12 @@ func TestParseDropsInvalidDIDs(t *testing.T) {
 
 	dropped := make(map[string]string, len(database.Diagnostics))
 	for _, diagnostic := range database.Diagnostics {
-		dropped[diagnostic.Name] = diagnostic.Message
+		if _, accepted := database.DIDByName(diagnostic.Name); !accepted {
+			if _, exists := dropped[diagnostic.Name]; exists {
+				t.Fatalf("orphan precondition diagnostic: %#v", diagnostic)
+			}
+			dropped[diagnostic.Name] = diagnostic.Message
+		}
 	}
 	checks := map[string]string{
 		"ThermalStatusMirror": "identifier 0xf190 is already used",
@@ -118,105 +128,49 @@ func TestParseDropsInvalidDIDs(t *testing.T) {
 	}
 }
 
-// TestParsePreconditions covers execution preconditions: state indexes resolve
-// to session and security names, permitting the locked state removes the
-// security requirement even when unlocked levels are also listed, a group with
-// no listed state and a service with no attribute both leave the operation
-// unrestricted, and an index outside the declared states is reported without
-// costing the DID.
-func TestParsePreconditions(t *testing.T) {
-	path := filepath.Join("testdata", "records.cdd")
-	database, err := cdd.ParseFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(database.Sessions, []string{"Default", "Programming", "Extended"}) || !reflect.DeepEqual(database.SecurityLevels, []string{"Unlocked"}) {
-		t.Fatalf("unexpected states: %#v %#v", database.Sessions, database.SecurityLevels)
-	}
-	thermal, _ := database.DIDByName("ThermalStatus")
-	if len(thermal.Read.Preconditions) != 1 || thermal.Read.Preconditions[0].Err != nil {
-		t.Fatalf("thermal preconditions = %#v", thermal.Read.Preconditions)
-	}
-	if !reflect.DeepEqual(thermal.Read.Preconditions[0].Sessions, []string{"Default", "Extended"}) || thermal.Read.Preconditions[0].SecurityLevels != nil {
-		t.Fatalf("unexpected thermal preconditions: %#v %#v", thermal.Read.Preconditions[0].Sessions, thermal.Read.Preconditions[0].SecurityLevels)
-	}
-	counter, _ := database.DIDByName("ReadWriteCounter")
-	if counter.Read.Preconditions[0].Sessions != nil || counter.Read.Preconditions[0].SecurityLevels != nil {
-		t.Fatalf("unexpected counter read preconditions: %#v %#v", counter.Read.Preconditions[0].Sessions, counter.Read.Preconditions[0].SecurityLevels)
-	}
-	if !reflect.DeepEqual(counter.Write.Preconditions[0].Sessions, []string{"Extended"}) || !reflect.DeepEqual(counter.Write.Preconditions[0].SecurityLevels, []string{"Unlocked"}) {
-		t.Fatalf("unexpected counter write preconditions: %#v %#v", counter.Write.Preconditions[0].Sessions, counter.Write.Preconditions[0].SecurityLevels)
-	}
-	settings, _ := database.DIDByName("WritableSettings")
-	if settings.Write.Preconditions[0].Sessions != nil || settings.Write.Preconditions[0].SecurityLevels != nil {
-		t.Fatalf("a service without mayBeExec was restricted: %#v %#v", settings.Write.Preconditions[0].Sessions, settings.Write.Preconditions[0].SecurityLevels)
-	}
-
-	source, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mutated := bytes.Replace(source, []byte(`mayBeExec="(3,5)"`), []byte(`mayBeExec="(3,4,5)"`), 1)
-	if bytes.Equal(mutated, source) {
-		t.Fatal("fixture no longer carries the write precondition to mutate")
-	}
-	database, err = cdd.Parse("records.cdd", mutated)
-	if err != nil {
-		t.Fatal(err)
-	}
-	counter, _ = database.DIDByName("ReadWriteCounter")
-	if !reflect.DeepEqual(counter.Write.Preconditions[0].Sessions, []string{"Extended"}) || counter.Write.Preconditions[0].SecurityLevels != nil {
-		t.Fatalf("locked alongside an unlocked level kept a security requirement: %#v", counter.Write.Preconditions[0])
-	}
-
-	mutated = bytes.Replace(source, []byte(`mayBeExec="(3,5)"`), []byte(`mayBeExec="(3,9)"`), 1)
-	database, err = cdd.Parse("records.cdd", mutated)
-	if err != nil {
-		t.Fatal(err)
-	}
-	counter, ok := database.DIDByName("ReadWriteCounter")
-	if !ok || counter.Write == nil || counter.Write.Preconditions[0].Err == nil || counter.Write.Preconditions[0].Sessions != nil || counter.Write.Preconditions[0].SecurityLevels != nil {
-		t.Fatalf("an unresolved precondition did not preserve the DID: %#v", counter)
-	}
-	var reported int
-	for _, diagnostic := range database.Diagnostics {
-		if diagnostic.Name == "ReadWriteCounter" && strings.Contains(diagnostic.Message, `write service: records.cdd: mayBeExec "(3,9)" names a state outside the 5 declared states`) {
-			reported++
-		}
-	}
-	if reported != 1 {
-		t.Fatalf("unexpected diagnostics: %#v", database.Diagnostics)
-	}
-}
-
-func TestPreconditionsPreserveAlternatives(t *testing.T) {
+func TestPreconditionsPreserveSources(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "records.cdd"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := strings.Replace(string(data), `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL id="alternateRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/><DCLSRVTMPL id="modernRead"`, 1)
-	first := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(1,3,4)"/>`
-	second := `<SERVICE tmplref="alternateRead" req="0" mayBeExec="(2,5)"/>`
-	equivalent := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(4,3,1,3)"/>`
-	a := cdd.Precondition{Sessions: []string{"Default", "Extended"}}
-	b := cdd.Precondition{Sessions: []string{"Programming"}, SecurityLevels: []string{"Unlocked"}}
-	for _, test := range []struct {
-		services string
-		want     []cdd.Precondition
-	}{
-		{first + second + equivalent, []cdd.Precondition{a, b}},
-		{second + first + equivalent, []cdd.Precondition{b, a}},
-	} {
-		database, err := cdd.Parse("alternatives.cdd", []byte(strings.Replace(source, first, test.services, 1)))
-		if err != nil {
-			t.Fatal(err)
+	source := strings.Replace(string(data), `<STATEGROUPS>`, `<STATEGROUPS><STATEGROUP spec="none"><STATE><QUAL>Other</QUAL></STATE></STATEGROUP>`, 1)
+	source = strings.Replace(source, `<STATEGROUP spec="security">`, `<STATEGROUP id="security" oid="group-oid" temploid="group-template" spec="security">`, 1)
+	source = strings.Replace(source, `<STATE><QUAL>Locked</QUAL></STATE>`, `<STATE id="locked" oid="state-oid" temploid="state-template"><QUAL>Same</QUAL></STATE>`, 1)
+	source = strings.Replace(source, `<STATE><QUAL>Unlocked</QUAL></STATE>`, `<STATE id="unlocked"><QUAL>Same</QUAL></STATE>`, 1)
+	service := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(1,3,4)"/>`
+	source = strings.Replace(source, service, `<SERVICE tmplref="unsupported"/><SERVICE id="a" oid="service-oid" temploid="service-template" tmplref="modernRead" mayBeExec="(1,3,4)"><QUAL>Read</QUAL></SERVICE><SERVICE id="b" tmplref="modernRead" mayBeExec="(1,3,4)"/><SERVICE tmplref="modernRead"/>`, 1)
+	database, err := cdd.Parse("sources.cdd", []byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(database.States) != 6 || database.States[0].Source.Qualifier != "Other" || database.States[0].GroupSpec != "none" || len(database.Sessions) != 3 || database.Sessions[0].Index != 2 || len(database.SecurityLevels) != 2 {
+		t.Fatalf("state order was lost: %#v, %#v", database.Sessions, database.SecurityLevels)
+	}
+	state := database.SecurityLevels[0]
+	if state.Source != (cdd.SourceIdentity{ID: "locked", OID: "state-oid", TemplateOID: "state-template", Qualifier: "Same"}) || state.Index != 5 || state.GroupIndex != 3 || state.GroupSpec != "security" || state.Group != (cdd.SourceIdentity{ID: "security", OID: "group-oid", TemplateOID: "group-template", Qualifier: "SecurityAccess"}) {
+		t.Fatalf("state identity = %#v", state)
+	}
+	if database.SecurityLevels[1].Source.ID != "unlocked" || database.SecurityLevels[1].Source.Qualifier != state.Source.Qualifier {
+		t.Fatal("equal qualifiers lost distinct state identities")
+	}
+	did, _ := database.DIDByName("ThermalStatus")
+	conditions := did.Read.Preconditions
+	if len(conditions) != 3 {
+		t.Fatalf("lost service alternatives: %#v", conditions)
+	}
+	if conditions[0].Service != (cdd.SourceIdentity{ID: "a", OID: "service-oid", TemplateOID: "service-template", Qualifier: "Read"}) || conditions[1].Service.ID != "b" {
+		t.Fatalf("service identities = %#v", conditions)
+	}
+	for i, condition := range conditions {
+		if condition.ServiceIndex != i+2 || condition.TemplateRef != "modernRead" {
+			t.Fatalf("source order = %#v", condition)
 		}
-		did, ok := database.DIDByName("ThermalStatus")
-		if !ok || did.Read == nil {
-			t.Fatal("DID layout was lost")
-		}
-		if !reflect.DeepEqual(did.Read.Preconditions, test.want) {
-			t.Fatalf("alternatives = %#v, want %#v", did.Read.Preconditions, test.want)
+		if i < 2 {
+			if condition.Err == nil || condition.MayBeExec == nil || *condition.MayBeExec != "(1,3,4)" {
+				t.Fatalf("explicit rule was interpreted without evidence: %#v", condition)
+			}
+		} else if condition.Err != nil || condition.MayBeExec != nil {
+			t.Fatalf("absent rule did not remain unrestricted: %#v", condition)
 		}
 	}
 }
@@ -228,29 +182,56 @@ func TestUnresolvedPreconditionsKeepTheCodec(t *testing.T) {
 	}
 	service := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(4)"/>`
 	for _, test := range []struct{ name, instance, template string }{
+		{"explicit states", `mayBeExec="(3,5)"`, ""},
 		{"unknown state", `mayBeExec="(9)"`, ""},
 		{"empty selection", `mayBeExec="()"`, ""},
+		{"empty attribute", `mayBeExec=""`, ""},
 		{"malformed list", `mayBeExec="4"`, ""},
 		{"template only", "", `mayBeExec="(3,5)"`},
+		{"instance and template", `mayBeExec="(1,4)"`, `mayBeExec="(3,5)"`},
 		{"excluded instance group", `notExecInStateGroups="(1)"`, ""},
+		{"empty instance exclusion", `notExecInStateGroups=""`, ""},
 		{"excluded template group", `mayBeExec="(4)"`, `notExecInStateGroups="(1)"`},
+		{"empty template exclusion", "", `notExecInStateGroups=""`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			source := strings.Replace(string(data), service, `<SERVICE tmplref="modernRead" req="0" `+test.instance+`/>`, 1)
-			// Give the same operation an independent, valid service alternative.
-			source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL id="independentRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/><DCLSRVTMPL id="modernRead"`, 1)
-			source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL `+test.template+` id="modernRead"`, 1)
-			source = strings.Replace(source, `<QUAL>ReadWriteCounter</QUAL>`, `<QUAL>ReadWriteCounter</QUAL><SERVICE tmplref="independentRead" mayBeExec="(1,4)"/>`, 1)
+			source := strings.Replace(string(data), service, `<SERVICE id="affected" tmplref="modernRead" `+test.instance+`/>`, 1)
+			source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL id="independentRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/><DCLSRVTMPL `+test.template+` id="modernRead"`, 1)
+			source = strings.Replace(source, `<QUAL>ReadWriteCounter</QUAL>`, `<QUAL>ReadWriteCounter</QUAL><SERVICE tmplref="independentRead"/>`, 1)
+			source = strings.Replace(source, `<SERVICE tmplref="modernWrite" req="0" mayBeExec="(3,5)"/>`, `<SERVICE tmplref="modernWrite" req="0"/>`, 1)
 			database, err := cdd.Parse("unresolved.cdd", []byte(source))
 			if err != nil {
 				t.Fatal(err)
 			}
 			did, ok := database.DIDByName("ReadWriteCounter")
-			if !ok || did.Read == nil {
+			if !ok || did.Read == nil || did.Write == nil {
 				t.Fatal("DID layout was lost")
 			}
 			if len(did.Read.Preconditions) != 2 || did.Read.Preconditions[0].Err != nil || did.Read.Preconditions[1].Err == nil {
-				t.Fatal("unresolved rule became unrestricted")
+				t.Fatalf("rule isolation failed: %#v", did.Read.Preconditions)
+			}
+			condition := did.Read.Preconditions[1]
+			if condition.Service.ID != "affected" || condition.ServiceIndex != 2 {
+				t.Fatalf("unknown requirement identity = %#v", condition)
+			}
+			for _, rule := range []struct {
+				attrs, name string
+				value       *string
+			}{
+				{test.instance, "mayBeExec", condition.MayBeExec},
+				{test.instance, "notExecInStateGroups", condition.NotExecInStateGroups},
+				{test.template, "mayBeExec", condition.TemplateMayBeExec},
+				{test.template, "notExecInStateGroups", condition.TemplateNotExecInStateGroups},
+			} {
+				if rule.attrs == "" {
+					if rule.value != nil {
+						t.Fatalf("absent rule became present: %#v", condition)
+					}
+				} else if strings.HasPrefix(rule.attrs, rule.name+`="`) {
+					if rule.value == nil || rule.name+`="`+*rule.value+`"` != rule.attrs {
+						t.Fatalf("raw rule was lost: %#v", condition)
+					}
+				}
 			}
 			for _, record := range []*cdd.Record{did.Read, did.Write} {
 				payload, err := record.Encode(cdd.Values{"Counter": uint64(7)})
@@ -269,7 +250,7 @@ func TestUnresolvedPreconditionsKeepTheCodec(t *testing.T) {
 			for _, diagnostic := range database.Diagnostics {
 				if diagnostic.Name == did.Name {
 					reported++
-					if diagnostic.Message != did.Read.Preconditions[1].Err.Error() {
+					if diagnostic.Message != condition.Err.Error() {
 						t.Fatalf("diagnostic does not identify the failed alternative: %#v", diagnostic)
 					}
 				}

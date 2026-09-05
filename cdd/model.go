@@ -12,14 +12,15 @@ import "github.com/tomrford/gocan/internal/scalar"
 // Database is the resolved catalog from the first ECU and its first variant in
 // a CDD document. DIDs remain in source order.
 //
-// Sessions are the diagnostic sessions the document declares, in document
-// order. SecurityLevels are its unlocked security access levels, in document
-// order; the locked state, which CANdela declares first in the security group,
-// is implicit. Record preconditions name states from these lists.
+// States retains every declared state in document order. Sessions and
+// SecurityLevels contain the states of the corresponding CDD groups, including
+// any locked state. These are literal document metadata, not UDS subfunctions
+// or a hierarchy of access privileges.
 type Database struct {
 	DIDs           []DID
-	Sessions       []string
-	SecurityLevels []string
+	States         []State
+	Sessions       []State
+	SecurityLevels []State
 	Diagnostics    []Diagnostic
 
 	didsByName       map[string]int
@@ -54,9 +55,10 @@ type DID struct {
 // largest record.
 //
 // Preconditions preserves alternative service conditions in source order.
-// Conditions from different alternatives must not be combined. Equivalent
-// resolved alternatives are retained once. An unresolved alternative has Err
-// set; it does not prevent encoding or decoding the data record.
+// There is one entry per source service bound to this supported record
+// operation, even when conditions are equivalent.
+// Conditions from different alternatives must not be combined. An unresolved
+// alternative has Err set; it does not prevent encoding or decoding the record.
 //
 // Treat a Record and its Fields as read-only: Encode and Decode trust the
 // layout that Parse resolved, and modifications are not revalidated.
@@ -70,20 +72,51 @@ type Record struct {
 	codec *recordCodec
 }
 
-// Precondition describes one service alternative's session and security
-// requirements, following UDS. Sessions lists the diagnostic sessions the ECU
-// must be in, any one of which suffices; nil permits every session.
-// SecurityLevels lists the unlocked security access levels, any one of which
-// satisfies the requirement; nil means the operation is permitted while locked,
-// so no security access is needed, because UDS never rejects a request for
-// being unlocked. Names refer to Database.Sessions and Database.SecurityLevels.
-// A nil group places no restriction only when Err is nil. Err reports an
-// invalid reference or unsupported precondition form, not ECU rejection.
-// Preconditions describe metadata; callers manage the ECU's actual state.
+// SourceIdentity retains the XML id, oid, temploid and QUAL of a CDD object.
+// Missing attributes remain empty; qualifiers need not be unique. These values
+// identify document objects and must not be used as UDS subfunctions.
+type SourceIdentity struct {
+	ID          string
+	OID         string
+	TemplateOID string
+	Qualifier   string
+}
+
+// State is a literal CDD state and its containing group. Index is its one-based
+// position across all STATEGROUPS/STATE entries, including unsupported groups.
+// GroupIndex is the one-based position of its STATEGROUP. Index describes
+// source order only; its relationship to mayBeExec values is not established.
+// Neither index is a UDS subfunction. No initial state is inferred.
+type State struct {
+	Source     SourceIdentity
+	Index      int
+	Group      SourceIdentity
+	GroupIndex int
+	GroupSpec  string
+}
+
+// Precondition describes one source service's execution requirements.
+// ServiceIndex is its one-based position among all SERVICE children of the
+// diagnostic instance, including services outside the supported DID subset.
+// TemplateRef is the instance's literal tmplref.
+//
+// Check Err first: a non-nil error means unknown requirements, not ECU rejection.
+// A nil Err means no explicit CDD restriction was found on the service or its
+// template. This does not establish ECU permission. Callers manage ECU state.
+//
+// Raw rule pointers distinguish missing attributes from explicit empty values.
+// Parse currently leaves every explicit rule unresolved because the CDD index,
+// omitted-group, exclusion and inheritance rules have not been verified.
+// Resolved restrictions are not exposed until those rules are established.
 type Precondition struct {
-	Sessions       []string
-	SecurityLevels []string
-	Err            error
+	Service                      SourceIdentity
+	ServiceIndex                 int
+	TemplateRef                  string
+	MayBeExec                    *string
+	NotExecInStateGroups         *string
+	TemplateMayBeExec            *string
+	TemplateNotExecInStateGroups *string
+	Err                          error
 }
 
 // Values maps DID field names to their physical values. Encoding accepts Go
