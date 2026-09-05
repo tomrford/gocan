@@ -60,7 +60,6 @@ type resolver struct {
 	ecuDoc    *element
 	byID      map[string]*element
 	datatypes map[string]*element
-	states    []State
 }
 
 func sourceIdentity(node *element) SourceIdentity {
@@ -83,14 +82,6 @@ func newResolver(name string, ecuDoc *element) *resolver {
 			if id := datatype.attr("id"); id != "" {
 				resolver.datatypes[id] = datatype
 			}
-		}
-	}
-	for groupIndex, group := range ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
-		for _, node := range group.childrenNamed("STATE") {
-			resolver.states = append(resolver.states, State{
-				Source: sourceIdentity(node), Index: len(resolver.states) + 1,
-				Group: sourceIdentity(group), GroupIndex: groupIndex + 1, GroupSpec: group.attr("spec"),
-			})
 		}
 	}
 	return resolver
@@ -118,16 +109,23 @@ func (resolver *resolver) resolve() (*Database, error) {
 	}
 
 	database := &Database{
-		States:           resolver.states,
 		didsByName:       make(map[string]int),
 		didsByIdentifier: make(map[uint16]int),
 	}
-	for _, state := range resolver.states {
-		switch state.GroupSpec {
-		case "session":
-			database.Sessions = append(database.Sessions, state)
-		case "security":
-			database.SecurityLevels = append(database.SecurityLevels, state)
+	for groupIndex, group := range resolver.ecuDoc.child("STATEGROUPS").childrenNamed("STATEGROUP") {
+		identity := sourceIdentity(group)
+		for _, node := range group.childrenNamed("STATE") {
+			state := State{
+				Source: sourceIdentity(node), Index: len(database.States) + 1,
+				Group: identity, GroupIndex: groupIndex + 1, GroupSpec: group.attr("spec"),
+			}
+			database.States = append(database.States, state)
+			switch state.GroupSpec {
+			case "session":
+				database.Sessions = append(database.Sessions, state)
+			case "security":
+				database.SecurityLevels = append(database.SecurityLevels, state)
+			}
 		}
 	}
 	for _, class := range variant.childrenNamed("DIAGCLASS") {
@@ -275,33 +273,26 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 	return bindings
 }
 
+// resolvePreconditions retains rule presence and text without inferring the
+// meaning of state indexes, omitted groups, exclusions or template inheritance.
 func (resolver *resolver) resolvePreconditions(record *Record, services []boundService, operation string) {
 	for _, service := range services {
-		condition, err := resolver.servicePrecondition(service)
-		condition.Service = sourceIdentity(service.instance)
-		condition.ServiceIndex = service.index
-		condition.TemplateRef = service.instance.attr("tmplref")
-		if err != nil {
+		condition := Precondition{
+			Service:                      sourceIdentity(service.instance),
+			ServiceIndex:                 service.index,
+			TemplateRef:                  service.instance.attr("tmplref"),
+			MayBeExec:                    attributeValue(service.instance, "mayBeExec"),
+			NotExecInStateGroups:         attributeValue(service.instance, "notExecInStateGroups"),
+			TemplateMayBeExec:            attributeValue(service.template, "mayBeExec"),
+			TemplateNotExecInStateGroups: attributeValue(service.template, "notExecInStateGroups"),
+		}
+		if condition.MayBeExec != nil || condition.NotExecInStateGroups != nil ||
+			condition.TemplateMayBeExec != nil || condition.TemplateNotExecInStateGroups != nil {
+			err := sourceError(resolver.name, "CDD execution rule semantics are not verified (state indexes, omitted groups, exclusions and inheritance)")
 			condition.Err = fmt.Errorf("DID %q %s service %d (id %q, oid %q, template %q): %w", record.Name, operation, service.index, condition.Service.ID, condition.Service.OID, condition.TemplateRef, err)
 		}
 		record.Preconditions = append(record.Preconditions, condition)
 	}
-}
-
-// servicePrecondition retains rule presence and text without inferring the
-// meaning of state indexes, omitted groups, exclusions or template inheritance.
-func (resolver *resolver) servicePrecondition(service boundService) (Precondition, error) {
-	condition := Precondition{
-		MayBeExec:                    attributeValue(service.instance, "mayBeExec"),
-		NotExecInStateGroups:         attributeValue(service.instance, "notExecInStateGroups"),
-		TemplateMayBeExec:            attributeValue(service.template, "mayBeExec"),
-		TemplateNotExecInStateGroups: attributeValue(service.template, "notExecInStateGroups"),
-	}
-	if condition.MayBeExec != nil || condition.NotExecInStateGroups != nil ||
-		condition.TemplateMayBeExec != nil || condition.TemplateNotExecInStateGroups != nil {
-		return condition, sourceError(resolver.name, "CDD execution rule semantics are not verified (state indexes, omitted groups, exclusions and inheritance)")
-	}
-	return condition, nil
 }
 
 func attributeValue(node *element, name string) *string {
