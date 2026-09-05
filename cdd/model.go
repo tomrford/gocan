@@ -222,10 +222,15 @@ const (
 	EncodingDouble   Encoding = "dbl"
 )
 
-// LinearConversion maps a coded numeric value to its physical value.
+// LinearConversion maps physical = raw*Scale + Offset. Scale is the CDD
+// factor divided by its divisor; Offset is outside the division.
 type LinearConversion struct {
 	Scale  float64
 	Offset float64
+
+	// Raw limits use ordered integer keys, preserving all 64 bits even for
+	// identity conversions. They are independent of physical scaling.
+	minimum, maximum *uint64
 }
 
 // Choice assigns a label to one exact coded integer value. It shares its

@@ -245,12 +245,12 @@ func (resolver *resolver) resolveField(data *element, offset uint32) (Field, err
 		field.Unit = physical.childText("UNIT")
 	}
 	if comp := datatype.child("COMP"); comp != nil {
-		scale, scaleErr := strconv.ParseFloat(comp.attr("f"), 64)
-		offset, offsetErr := strconv.ParseFloat(comp.attr("o"), 64)
-		if scaleErr != nil || offsetErr != nil {
-			return Field{}, sourceError(resolver.name, "field %q has invalid linear conversion", name)
+		field.Conversion, err = parseConversion(comp, encoding == EncodingSigned)
+		if err != nil {
+			return Field{}, sourceError(resolver.name, "field %q: %v", name, err)
 		}
-		field.Conversion = &LinearConversion{Scale: scale, Offset: offset}
+	} else if datatype.name == "LINCOMP" {
+		return Field{}, sourceError(resolver.name, "field %q: LINCOMP has no COMP", name)
 	}
 	for _, textMap := range datatype.childrenNamed("TEXTMAP") {
 		first, firstErr := parseBound(textMap.attr("s"))
