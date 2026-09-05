@@ -233,8 +233,15 @@ type didBindings struct {
 	identifiers   map[string]struct{}
 	readData      map[string]struct{}
 	writeData     map[string]struct{}
-	readServices  []*element
-	writeServices []*element
+	readServices  []boundService
+	writeServices []boundService
+}
+
+// boundService pairs a SERVICE instance with the DCLSRVTMPL it was resolved
+// against, so precondition resolution never repeats the lookup.
+type boundService struct {
+	instance *element
+	template *element
 }
 
 // didServiceComponents retains the message direction because a read response
@@ -258,16 +265,16 @@ func (resolver *resolver) didServiceComponents(instance, classTemplate *element)
 		switch sid {
 		case 0x22:
 			bindings.readData = collectDataComponents(protocolService.child("POS"), bindings.readData)
-			bindings.readServices = append(bindings.readServices, service)
+			bindings.readServices = append(bindings.readServices, boundService{service, serviceTemplate})
 		case 0x2e:
 			bindings.writeData = collectDataComponents(protocolService.child("REQ"), bindings.writeData)
-			bindings.writeServices = append(bindings.writeServices, service)
+			bindings.writeServices = append(bindings.writeServices, boundService{service, serviceTemplate})
 		}
 	}
 	return bindings
 }
 
-func (resolver *resolver) resolvePreconditions(database *Database, record *Record, services []*element, operation string) {
+func (resolver *resolver) resolvePreconditions(database *Database, record *Record, services []boundService, operation string) {
 	for _, service := range services {
 		condition, err := resolver.servicePrecondition(service)
 		if err != nil {
@@ -285,12 +292,12 @@ func (resolver *resolver) resolvePreconditions(database *Database, record *Recor
 // Explicit mayBeExec lists index every STATE in document order, starting at 1.
 // Template-only rules and excluded groups are preserved as unresolved rather
 // than guessing inheritance or interpreting an exclusion as unrestricted.
-func (resolver *resolver) servicePrecondition(service *element) (Precondition, error) {
-	template := resolver.byID[service.attr("tmplref")]
-	if service.attr("notExecInStateGroups") != "" || template.attr("notExecInStateGroups") != "" {
+func (resolver *resolver) servicePrecondition(service boundService) (Precondition, error) {
+	instance, template := service.instance, service.template
+	if instance.attr("notExecInStateGroups") != "" || template.attr("notExecInStateGroups") != "" {
 		return Precondition{}, sourceError(resolver.name, "notExecInStateGroups is not supported")
 	}
-	value, present := service.attrs["mayBeExec"]
+	value, present := instance.attrs["mayBeExec"]
 	if !present {
 		if _, declared := template.attrs["mayBeExec"]; declared {
 			return Precondition{}, sourceError(resolver.name, "template-only mayBeExec requires unsupported inheritance resolution")
