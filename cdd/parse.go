@@ -128,13 +128,14 @@ func (resolver *resolver) appendFields(
 			if err != nil {
 				return sourceError(resolver.name, "GAPDATAOBJ has invalid bit length %q", item.attr("bl"))
 			}
+			if gap%8 != 0 || *offset%8 != 0 {
+				return sourceError(resolver.name, "top-level GAPDATAOBJ is not byte-aligned")
+			}
 			*offset += gap
 		case "STRUCT":
-			start := len(*fields)
-			if err := resolver.appendFields(item, fields, offset, activeReferences, depth+1); err != nil {
+			if err := resolver.appendBitfield(item, fields, offset); err != nil {
 				return err
 			}
-			prependGroup((*fields)[start:], metadata(item))
 		case "DIDDATAREF":
 			reference := item.attr("didRef")
 			shared := resolver.byID[reference]
@@ -175,9 +176,16 @@ func (resolver *resolver) resolveField(data *element, offset uint32) (Field, err
 	if name == "" {
 		return Field{}, sourceError(resolver.name, "DATAOBJ has no QUAL")
 	}
+	return resolver.resolveFieldDatatype(data, name, offset)
+}
+
+func (resolver *resolver) resolveFieldDatatype(data *element, name string, offset uint32) (Field, error) {
 	datatype := resolver.datatypes[data.attr("dtref")]
 	if datatype == nil {
 		return Field{}, sourceError(resolver.name, "field %q references unknown datatype %q", name, data.attr("dtref"))
+	}
+	if len(datatype.childrenNamed("CVALUETYPE")) > 1 || len(datatype.childrenNamed("COMP")) > 1 {
+		return Field{}, sourceError(resolver.name, "field %q has ambiguous coded type or conversion declarations", name)
 	}
 	coded := datatype.child("CVALUETYPE")
 	if coded == nil {

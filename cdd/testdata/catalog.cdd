@@ -95,7 +95,7 @@
             <SERVICE id="measurementRead" tmplref="readValue"><QUAL>Read</QUAL></SERVICE>
             <STATICVALUE shstaticref="didValue" v="61840"/>
             <SIMPLECOMPCONT shproxyref="readProxy"><NAME><TUV lang="en-GB">Sample record</TUV></NAME>
-              <STRUCT id="sample"><NAME><TUV lang="en-GB">Sample</TUV></NAME><QUAL>Sample</QUAL>
+              <STRUCT id="sample" dtref="u8"><NAME><TUV lang="en-GB">Sample</TUV></NAME><QUAL>Sample</QUAL>
                 <DATAOBJ oid="value-object" dtref="u8"><NAME><TUV lang="de-DE">Wert</TUV><TUV lang="en-GB">Value</TUV></NAME><DESC><TUV lang="en-GB">Measured value.</TUV></DESC><QUAL>Value</QUAL></DATAOBJ>
               </STRUCT>
             </SIMPLECOMPCONT>

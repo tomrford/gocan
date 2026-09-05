@@ -42,6 +42,14 @@ func (record *Record) Encode(values Values) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("CDD record %q requires field %q", record.Name, field.Name)
 		}
+		if field.Bitfield != nil {
+			raw, err := encodeScalar(field, value, true)
+			if err != nil {
+				return nil, fmt.Errorf("encode CDD field %q: %w", field.Name, err)
+			}
+			writePacked(payload, field, raw)
+			continue
+		}
 		encoded, err := encodeField(field, value)
 		if err != nil {
 			return nil, fmt.Errorf("encode CDD field %q: %w", field.Name, err)
@@ -71,6 +79,14 @@ func (record *Record) Decode(payload []byte) (Values, error) {
 	}
 	values := make(Values, len(record.Fields))
 	for _, field := range record.Fields {
+		if field.Bitfield != nil {
+			raw := readPacked(payload, field)
+			if err := validateConversionRaw(field, raw); err != nil {
+				return nil, fmt.Errorf("decode CDD field %q: %w", field.Name, err)
+			}
+			values[field.Name] = decodeScalar(field, raw, true)
+			continue
+		}
 		start := int(field.BitOffset / 8)
 		end := start + int(field.BitSize()/8)
 		if field.Variable != nil {
@@ -106,7 +122,7 @@ func compileRecordCodec(record *Record) *recordCodec {
 			return codec
 		}
 		codec.fieldsByName[field.Name] = struct{}{}
-		if field.BitOffset%8 != 0 || field.BitLength%8 != 0 {
+		if field.Bitfield == nil && (field.BitOffset%8 != 0 || field.BitLength%8 != 0) {
 			codec.err = fmt.Errorf("field %q is not byte-aligned", field.Name)
 			return codec
 		}
