@@ -86,7 +86,9 @@ func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) 
 		candidates = definitions.children
 	}
 	for _, candidate := range candidates {
-		if candidate.childText("QUAL") != "ReverseBitFieldBytes" {
+		switch candidate.childText("QUAL") {
+		case "ReverseBitfieldBytes", "ReverseBitFieldBytes":
+		default:
 			continue
 		}
 		if declaration != nil || candidate.name != "ENUMDEF" {

@@ -110,6 +110,26 @@ func TestPackedArrayByteReversal(t *testing.T) {
 	}
 }
 
+func TestPackedReversalQualifier(t *testing.T) {
+	for _, test := range []struct {
+		qualifier string
+		wire      []byte
+	}{
+		{"ReverseBitfieldBytes", []byte{0xb5, 0x91}},
+		{"ReverseBitFieldBytes", []byte{0xb5, 0x91}},
+		{"reversebitfieldbytes", []byte{0x91, 0xb5}},
+	} {
+		t.Run(test.qualifier, func(t *testing.T) {
+			declarations := `<DEFATTS><ENUMDEF id="reverse" v="0"><QUAL>` + test.qualifier + `</QUAL></ENUMDEF></DEFATTS>`
+			datatype := `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="2" maxsz="2"/><ENUM attrref="reverse" v="1"/></IDENT>`
+			record := packedRecord(t, datatype, packedChild("seven", "A")+packedChild("nine", "B"), declarations)
+			// CANdelaStudio 17's Special Attributes table uses ReverseBitfieldBytes.
+			// The documented packing rules give logical 0x91b5 for these children.
+			assertCodecReference(t, record, cdd.Values{"A": uint64(0x35), "B": uint64(0x123)}, test.wire)
+		})
+	}
+}
+
 func TestPackedEncodingWidth(t *testing.T) {
 	record := packedRecord(t, `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns"/></IDENT>`, packedChild("four", "A")+packedChild("signedFour", "B"), "")
 	for _, values := range []cdd.Values{
@@ -136,12 +156,15 @@ func TestPackedWideArrayInteger(t *testing.T) {
 
 func TestPackedRejectsUnresolvedReversal(t *testing.T) {
 	const declaration = `<ENUMDEF id="reverse" v="0"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`
+	const documentedDeclaration = `<ENUMDEF id="documented" v="0"><QUAL>ReverseBitfieldBytes</QUAL></ENUMDEF>`
 	for _, test := range []struct{ name, definitions, attributes, error string }{
 		{"unknown reference", declaration, `<ENUM attrref="missing" v="1"/>`, "does not resolve"},
 		{"missing reference", declaration, `<ENUM v="1"/>`, "does not resolve"},
 		{"duplicate values", declaration, `<ENUM attrref="reverse" v="0"/><ENUM attrref="reverse" v="1"/>`, "repeated"},
 		{"duplicate IDs", declaration + declaration, "", "ambiguous"},
 		{"duplicate qualifiers", declaration + `<ENUMDEF id="another" v="1"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`, "", "ambiguous"},
+		{"duplicate aliases", declaration + documentedDeclaration, "", "ambiguous"},
+		{"duplicate aliases reversed", documentedDeclaration + declaration, "", "ambiguous"},
 		{"wrong definition", `<UNSDEF id="reverse" v="1"><QUAL>ReverseBitFieldBytes</QUAL></UNSDEF>`, "", "not an enumeration"},
 		{"wrong value type", declaration, `<UNS attrref="reverse" v="1"/>`, "requires an ENUM"},
 		{"missing default", `<ENUMDEF id="reverse"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`, "", "invalid ReverseBitFieldBytes"},
