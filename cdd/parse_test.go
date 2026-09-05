@@ -232,11 +232,15 @@ func TestUnresolvedPreconditionsKeepTheCodec(t *testing.T) {
 		{"empty selection", `mayBeExec="()"`, ""},
 		{"malformed list", `mayBeExec="4"`, ""},
 		{"template only", "", `mayBeExec="(3,5)"`},
+		{"excluded instance group", `notExecInStateGroups="(1)"`, ""},
 		{"excluded template group", `mayBeExec="(4)"`, `notExecInStateGroups="(1)"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := strings.Replace(string(data), service, `<SERVICE tmplref="modernRead" req="0" `+test.instance+`/>`, 1)
+			// Give the same operation an independent, valid service alternative.
+			source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL id="independentRead" tmplref="readByIdentifier" dtref="identifier16" conv="req"/><DCLSRVTMPL id="modernRead"`, 1)
 			source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL `+test.template+` id="modernRead"`, 1)
+			source = strings.Replace(source, `<QUAL>ReadWriteCounter</QUAL>`, `<QUAL>ReadWriteCounter</QUAL><SERVICE tmplref="independentRead" mayBeExec="(1,4)"/>`, 1)
 			database, err := cdd.Parse("unresolved.cdd", []byte(source))
 			if err != nil {
 				t.Fatal(err)
@@ -245,15 +249,33 @@ func TestUnresolvedPreconditionsKeepTheCodec(t *testing.T) {
 			if !ok || did.Read == nil {
 				t.Fatal("DID layout was lost")
 			}
-			if len(did.Read.Preconditions) != 1 || did.Read.Preconditions[0].Err == nil {
+			if len(did.Read.Preconditions) != 2 || did.Read.Preconditions[0].Err != nil || did.Read.Preconditions[1].Err == nil {
 				t.Fatal("unresolved rule became unrestricted")
 			}
-			values, err := did.Read.Decode([]byte{7})
-			if err != nil || values["Counter"] != uint64(7) {
-				t.Fatalf("Decode = %v, %v", values, err)
+			for _, record := range []*cdd.Record{did.Read, did.Write} {
+				payload, err := record.Encode(cdd.Values{"Counter": uint64(7)})
+				if err != nil || !bytes.Equal(payload, []byte{7}) {
+					t.Fatalf("Encode = %x, %v", payload, err)
+				}
+				values, err := record.Decode(payload)
+				if err != nil || values["Counter"] != uint64(7) {
+					t.Fatalf("Decode = %v, %v", values, err)
+				}
 			}
 			if did.Write.Preconditions[0].Err != nil {
 				t.Fatal("read precondition failure affected write")
+			}
+			var reported int
+			for _, diagnostic := range database.Diagnostics {
+				if diagnostic.Name == did.Name {
+					reported++
+					if diagnostic.Message != did.Read.Preconditions[1].Err.Error() {
+						t.Fatalf("diagnostic does not identify the failed alternative: %#v", diagnostic)
+					}
+				}
+			}
+			if reported != 1 {
+				t.Fatalf("got %d diagnostics for the affected DID, want 1", reported)
 			}
 		})
 	}
