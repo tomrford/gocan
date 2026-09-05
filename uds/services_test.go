@@ -136,7 +136,11 @@ func serveSemanticLifecycle(ctx context.Context, link *isotp.Link) error {
 }
 
 func TestCDDDataIdentifierLifecycle(t *testing.T) {
-	database, err := cdd.ParseFile(filepath.Join("..", "cdd", "testdata", "records.cdd"))
+	document, err := cdd.ParseFile(filepath.Join("..", "cdd", "testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := document.Select(cdd.Selection{ECU: 1, Variant: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +163,7 @@ func TestCDDDataIdentifierLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDataByIdentifier: %v", err)
 	}
-	values, err := thermal.Read.Decode(payload)
+	values, err := thermal.Read[0].PositiveResponse.Record.Decode(payload)
 	if err != nil {
 		t.Fatalf("decode ThermalStatus: %v", err)
 	}
@@ -167,7 +171,7 @@ func TestCDDDataIdentifierLifecycle(t *testing.T) {
 		t.Fatalf("ThermalStatus values = %#v", values)
 	}
 
-	payload, err = writable.Write.Encode(cdd.Values{"Setting": uint8(0x2a)})
+	payload, err = writable.Write[0].Request.Record.Encode(cdd.Values{"Setting": uint8(0x2a)})
 	if err != nil {
 		t.Fatalf("encode WritableSettings: %v", err)
 	}
