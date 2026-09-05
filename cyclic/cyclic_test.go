@@ -85,51 +85,62 @@ func TestTaskLifecycle(t *testing.T) {
 }
 
 func TestStopWaitsForSendInProgress(t *testing.T) {
-	bus := &blockingBus{
-		sendStarted: make(chan struct{}, 1),
-		releaseSend: make(chan struct{}),
-	}
-	t.Cleanup(func() {
-		select {
-		case <-bus.releaseSend:
-		default:
+	for _, name := range []string{"fixed", "generated"} {
+		t.Run(name, func(t *testing.T) {
+			bus := &blockingBus{
+				sendStarted: make(chan struct{}, 1),
+				releaseSend: make(chan struct{}),
+			}
+			t.Cleanup(func() {
+				select {
+				case <-bus.releaseSend:
+				default:
+					close(bus.releaseSend)
+				}
+			})
+			frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
+			if err != nil {
+				t.Fatalf("NewFrame: %v", err)
+			}
+			var task *cyclic.Task
+			if name == "fixed" {
+				task, err = cyclic.Start(context.Background(), bus, frame, time.Millisecond)
+			} else {
+				task, err = cyclic.StartFunc(context.Background(), bus, func() (gocan.Frame, error) {
+					return frame, nil
+				}, time.Millisecond)
+			}
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+
+			select {
+			case <-bus.sendStarted:
+			case <-time.After(time.Second):
+				t.Fatal("recurring send did not start")
+			}
+
+			stopped := make(chan struct{})
+			go func() {
+				task.Stop()
+				close(stopped)
+			}()
+			select {
+			case <-stopped:
+				t.Fatal("Stop returned while Send was still in progress")
+			case <-time.After(10 * time.Millisecond):
+			}
+
 			close(bus.releaseSend)
-		}
-	})
-	frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	task, err := cyclic.Start(context.Background(), bus, frame, time.Millisecond)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	select {
-	case <-bus.sendStarted:
-	case <-time.After(time.Second):
-		t.Fatal("recurring send did not start")
-	}
-
-	stopped := make(chan struct{})
-	go func() {
-		task.Stop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-		t.Fatal("Stop returned while Send was still in progress")
-	case <-time.After(10 * time.Millisecond):
-	}
-
-	close(bus.releaseSend)
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after Send completed")
-	}
-	if err := task.Err(); err != nil {
-		t.Fatalf("Err after Stop = %v, want nil", err)
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("Stop did not return after Send completed")
+			}
+			if err := task.Err(); err != nil {
+				t.Fatalf("Err after Stop = %v, want nil", err)
+			}
+		})
 	}
 }
 
