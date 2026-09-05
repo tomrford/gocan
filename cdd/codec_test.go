@@ -10,7 +10,7 @@ import (
 )
 
 func TestDIDCodecLifecycle(t *testing.T) {
-	database, err := cdd.ParseFile(filepath.Join("testdata", "records.cdd"))
+	database, err := parseCatalogFile(filepath.Join("testdata", "records.cdd"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("ThermalStatus DID was not resolved")
 	}
-	payload, err := thermal.Read.Encode(cdd.Values{
+	payload, err := thermal.Read[0].PositiveResponse.Record.Encode(cdd.Values{
 		"Heater":  "On",
 		"Coolant": 25.0,
 		"Cycles":  uint8(7),
@@ -30,7 +30,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if want := []byte{0x01, 0x00, 0x82, 0x00, 0x07}; !bytes.Equal(payload, want) {
 		t.Fatalf("thermal payload = %x, want %x", payload, want)
 	}
-	values, err := thermal.Read.Decode(payload)
+	values, err := thermal.Read[0].PositiveResponse.Record.Decode(payload)
 	if err != nil {
 		t.Fatalf("Decode ThermalStatus: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	}
 
 	// An off-grid physical value is quantized to the nearest raw value.
-	payload, err = thermal.Read.Encode(cdd.Values{
+	payload, err = thermal.Read[0].PositiveResponse.Record.Encode(cdd.Values{
 		"Heater":  "On",
 		"Coolant": 25.3,
 		"Cycles":  uint8(7),
@@ -47,7 +47,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode off-grid Coolant: %v", err)
 	}
-	values, err = thermal.Read.Decode(payload)
+	values, err = thermal.Read[0].PositiveResponse.Record.Decode(payload)
 	if err != nil || values["Coolant"] != 25.5 {
 		t.Fatalf("quantized Coolant = %#v, %v", values["Coolant"], err)
 	}
@@ -62,7 +62,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 		"Gain":         0.25,
 		"ExactCounter": uint64(1<<53) + 1,
 	}
-	payload, err = nameplate.Read.Encode(nameplateValues)
+	payload, err = nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues)
 	if err != nil {
 		t.Fatalf("Encode Nameplate: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if !bytes.Equal(payload, wantNameplate) {
 		t.Fatalf("nameplate payload = %x, want %x", payload, wantNameplate)
 	}
-	values, err = nameplate.Read.Decode(payload)
+	values, err = nameplate.Read[0].PositiveResponse.Record.Decode(payload)
 	if err != nil {
 		t.Fatalf("Decode Nameplate: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("UploadBuffer DID was not resolved")
 	}
-	payload, err = buffer.Read.Encode(cdd.Values{
+	payload, err = buffer.Read[0].PositiveResponse.Record.Encode(cdd.Values{
 		"BlockNumber": uint16(0x1234),
 		"Buffer":      []uint8{0xaa, 0xbb, 0xcc},
 	})
@@ -98,7 +98,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if want := []byte{0x12, 0x34, 0xaa, 0xbb, 0xcc}; !bytes.Equal(payload, want) {
 		t.Fatalf("buffer payload = %x, want %x", payload, want)
 	}
-	values, err = buffer.Read.Decode(payload)
+	values, err = buffer.Read[0].PositiveResponse.Record.Decode(payload)
 	if err != nil {
 		t.Fatalf("Decode UploadBuffer: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if !ok || writable.Read != nil || writable.Write == nil {
 		t.Fatalf("unexpected writable DID: %#v", writable)
 	}
-	payload, err = writable.Write.Encode(cdd.Values{"Setting": uint8(0x2a)})
+	payload, err = writable.Write[0].Request.Record.Encode(cdd.Values{"Setting": uint8(0x2a)})
 	if err != nil || !bytes.Equal(payload, []byte{0x2a}) {
 		t.Fatalf("encode writable record = %x, %v", payload, err)
 	}
@@ -119,11 +119,11 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if !ok || asymmetric.Read == nil || asymmetric.Write == nil {
 		t.Fatalf("unexpected asymmetric DID: %#v", asymmetric)
 	}
-	values, err = asymmetric.Read.Decode([]byte{0x07})
+	values, err = asymmetric.Read[0].PositiveResponse.Record.Decode([]byte{0x07})
 	if err != nil || values["Counter"] != uint64(7) {
 		t.Fatalf("decode asymmetric read record = %#v, %v", values, err)
 	}
-	payload, err = asymmetric.Write.Encode(cdd.Values{"Counter": []uint8{1, 2, 3, 4}})
+	payload, err = asymmetric.Write[0].Request.Record.Encode(cdd.Values{"Counter": []uint8{1, 2, 3, 4}})
 	if err != nil || !bytes.Equal(payload, []byte{1, 2, 3, 4}) {
 		t.Fatalf("encode asymmetric write record = %x, %v", payload, err)
 	}

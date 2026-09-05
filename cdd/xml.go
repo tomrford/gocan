@@ -15,6 +15,7 @@ type element struct {
 	attrs    map[string]string
 	children []*element
 	text     strings.Builder
+	inText   bool
 }
 
 func decodeXML(name string, source []byte) (*element, error) {
@@ -43,6 +44,7 @@ func decodeXML(name string, source []byte) (*element, error) {
 		switch token := token.(type) {
 		case xml.StartElement:
 			node := &element{name: token.Name.Local, attrs: make(map[string]string, len(token.Attr))}
+			node.inText = node.name == "TUV" || len(stack) > 0 && stack[len(stack)-1].inText
 			for _, attr := range token.Attr {
 				node.attrs[attr.Name.Local] = attr.Value
 			}
@@ -61,7 +63,18 @@ func decodeXML(name string, source []byte) (*element, error) {
 				stack[len(stack)-1].text.Write(token)
 			}
 		case xml.EndElement:
+			node := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			if len(stack) > 0 && stack[len(stack)-1].inText {
+				parent := stack[len(stack)-1]
+				if node.name == "PARA" {
+					parent.text.WriteString("\n\n")
+				}
+				parent.text.WriteString(node.text.String())
+				if node.name == "PARA" || node.name == "BR" {
+					parent.text.WriteString("\n\n")
+				}
+			}
 		}
 	}
 	if root == nil {
