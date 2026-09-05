@@ -91,6 +91,33 @@ func TestPackedContainerBoundariesAndReservedBits(t *testing.T) {
 	}
 }
 
+func TestPackedTextTableContainers(t *testing.T) {
+	const stateType = `<TEXTTBL id="state"><CVALUETYPE bl="3" bo="12" enc="uns"/><TEXTMAP s="5" e="5"><TEXT><TUV>Active</TUV></TEXT></TEXTMAP></TEXTTBL>`
+	for _, test := range []struct {
+		name, order, children string
+		bits, containerValue  int
+		values                cdd.Values
+		wire, reserved        []byte
+	}{
+		{"two-bit state", "21", packedChild("two", "State") + `<GAPDATAOBJ bl="6"/>`, 8, 2, cdd.Values{"State": uint64(2)}, []byte{2}, []byte{0xfe}},
+		{"three-bit choice", "12", packedChild("state", "State") + `<GAPDATAOBJ bl="5"/>`, 8, 5, cdd.Values{"State": "Active"}, []byte{5}, []byte{0xfd}},
+		{"Motorola", "21", packedChild("seven", "A") + packedChild("nine", "B"), 16, 0x91b5, cdd.Values{"A": uint64(0x35), "B": uint64(0x123)}, []byte{0x91, 0xb5}, nil},
+		{"Intel", "12", packedChild("seven", "A") + packedChild("nine", "B"), 16, 0x91b5, cdd.Values{"A": uint64(0x35), "B": uint64(0x123)}, []byte{0xb5, 0x91}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			datatype := fmt.Sprintf(`<TEXTTBL id="container"><CVALUETYPE bl="%d" bo="%s" enc="uns" qty="atom"/><TEXTMAP s="%d" e="%d"><TEXT><TUV>Container label</TUV></TEXT></TEXTMAP></TEXTTBL>`, test.bits, test.order, test.containerValue, test.containerValue)
+			record := packedRecord(t, stateType+datatype, test.children, "")
+			assertCodecReference(t, record, test.values, test.wire)
+			if test.reserved != nil {
+				decoded, err := record.Decode(test.reserved)
+				if err != nil || !reflect.DeepEqual(decoded, test.values) {
+					t.Fatalf("reserved bits affected values: %#v, %v", decoded, err)
+				}
+			}
+		})
+	}
+}
+
 func TestPackedArrayByteReversal(t *testing.T) {
 	for _, test := range []struct {
 		name, declarations, attribute string
@@ -196,6 +223,8 @@ func TestPackedUnsupportedLayouts(t *testing.T) {
 		{"unaligned container", `<IDENT id="container"><CVALUETYPE bl="14" bo="21" enc="uns"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "byte-aligned"},
 		{"unicode array", `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="utf" qty="field" minsz="2" maxsz="2"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "arrays other than"},
 		{"variable container", `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="1" maxsz="4"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "fixed"},
+		{"text table array", `<TEXTTBL id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="1" maxsz="1"/></TEXTTBL>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "array containers require IDENT"},
+		{"text table overfull", `<TEXTTBL id="container"><CVALUETYPE bl="8" bo="21" enc="uns"/></TEXTTBL>`, `<STRUCT dtref="container">` + packedChild("nine", "A") + `</STRUCT>`, "", "exceed"},
 		{"float child", box + `<IDENT id="float"><CVALUETYPE bl="32" bo="21" enc="flt"/></IDENT>`, `<STRUCT dtref="container">` + packedChild("float", "A") + `</STRUCT>`, "", "atomic integer"},
 		{"array child", box + `<IDENT id="array"><CVALUETYPE bl="1" bo="21" enc="uns" qty="field" minsz="1" maxsz="1"/></IDENT>`, `<STRUCT dtref="container">` + packedChild("array", "A") + `</STRUCT>`, "", "atomic integer"},
 		{"ambiguous byte order", `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="uns"/><CVALUETYPE bl="16" bo="12" enc="uns"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "ambiguous coded type"},

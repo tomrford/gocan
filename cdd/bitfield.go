@@ -17,14 +17,17 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 		return err
 	}
 	datatype := resolver.datatypes[node.attr("dtref")]
-	if datatype.name != "IDENT" || container.Conversion != nil || len(container.Choices) != 0 || container.Variable != nil || container.BitSize()%8 != 0 || *offset%8 != 0 {
-		return sourceError(resolver.name, "STRUCT requires a fixed, byte-aligned IDENT container")
+	if (datatype.name != "IDENT" && datatype.name != "TEXTTBL") || container.Conversion != nil || container.Variable != nil || container.BitSize()%8 != 0 || *offset%8 != 0 {
+		return sourceError(resolver.name, "STRUCT requires a fixed, byte-aligned IDENT or TEXTTBL container")
 	}
 	if *offset+uint64(container.BitSize()) > math.MaxUint32 {
 		return sourceError(resolver.name, "STRUCT exceeds the supported record bit length")
 	}
 	order := container.ByteOrder
 	if datatype.child("CVALUETYPE").attr("qty") == "field" {
+		if datatype.name != "IDENT" {
+			return sourceError(resolver.name, "STRUCT array containers require IDENT")
+		}
 		if container.BitLength != 8 || (container.Encoding != EncodingUnsigned && container.Encoding != EncodingSigned && container.Encoding != EncodingASCII) {
 			return sourceError(resolver.name, "STRUCT arrays other than one-byte integer/ASCII elements are unsupported")
 		}
@@ -39,6 +42,8 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 	} else if container.BitLength > 64 || (container.Encoding != EncodingUnsigned && container.Encoding != EncodingSigned) {
 		return sourceError(resolver.name, "STRUCT atomic containers require integers up to 64 bits")
 	}
+	// Only the enclosing coded representation controls packing; choice labels
+	// belong to each child's datatype, not the container's text table.
 	bitfield := &Bitfield{Datatype: container.Datatype, BitOffset: uint32(*offset), BitLength: container.BitSize(), ByteOrder: order}
 	var position uint64
 	start := len(*fields)
