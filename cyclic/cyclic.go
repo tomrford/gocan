@@ -16,19 +16,21 @@ var ErrStopped = errors.New("cyclic task is stopped")
 
 var errStopRequested = errors.New("cyclic task stop requested")
 
-// Task repeatedly sends one complete raw CAN frame.
+// Task repeatedly sends fixed or generated complete raw CAN frames.
 //
 // A Task sends immediately when started, then retains that schedule's original
 // phase. If transmission falls behind, missed occurrences are skipped rather
-// than sent as a burst. Update replaces the complete frame atomically; a send
-// observes either the old frame or the new frame.
+// than sent as a burst. For fixed frames, Update replaces the complete frame
+// atomically; a send observes either the old frame or the new frame.
 //
-// Any send error stops the Task. Stop is idempotent and waits until no further
-// sends can start. Err reports the terminal error, or nil after Stop.
+// Any generation, validation, or send error stops the Task. Stop is idempotent
+// and waits for any active callback or send to finish. Err reports the terminal
+// error, or nil after Stop.
 type Task struct {
-	bus    gocan.Bus
-	period time.Duration
-	frame  gocan.Frame
+	bus      gocan.Bus
+	period   time.Duration
+	frame    gocan.Frame
+	generate func() (gocan.Frame, error)
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -42,35 +44,53 @@ type Task struct {
 // Start sends frame once, then starts recurring transmission every period.
 // It returns only after the first send has been accepted by bus.
 func Start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, period time.Duration) (*Task, error) {
+	return start(ctx, bus, frame, nil, period)
+}
+
+// StartFunc calls generate before each send, validates the returned frame, and
+// sends it every period. It returns only after the first frame has been generated
+// and accepted by bus. A failure before then returns a nil Task and the error.
+//
+// Calls to generate and Send are serial; missed periods do not call generate.
+// The schedule starts before the first call to generate. Callbacks must return
+// promptly, since cancellation and Stop cannot interrupt them. Callers must
+// synchronise any state shared with the callback. A callback must not call Stop
+// on its own Task, since Stop waits for the callback to return.
+func StartFunc(ctx context.Context, bus gocan.Bus, generate func() (gocan.Frame, error), period time.Duration) (*Task, error) {
+	if generate == nil {
+		return nil, errors.New("cyclic task requires a frame callback")
+	}
+	return start(ctx, bus, gocan.Frame{}, generate, period)
+}
+
+func start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, generate func() (gocan.Frame, error), period time.Duration) (*Task, error) {
 	if bus == nil {
 		return nil, errors.New("cyclic task requires a bus")
 	}
 	if period <= 0 {
 		return nil, fmt.Errorf("cyclic task period must be positive: %s", period)
 	}
-	if err := frame.Validate(); err != nil {
-		return nil, err
-	}
-
-	anchor := time.Now()
-	if err := bus.Send(ctx, frame); err != nil {
-		return nil, err
-	}
-
 	taskContext, cancel := context.WithCancelCause(ctx)
 	task := &Task{
-		bus:    bus,
-		period: period,
-		frame:  frame,
-		ctx:    taskContext,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		bus:      bus,
+		period:   period,
+		frame:    frame,
+		generate: generate,
+		ctx:      taskContext,
+		cancel:   cancel,
+		done:     make(chan struct{}),
+	}
+	anchor := time.Now()
+	if err := task.send(); err != nil {
+		cancel(err)
+		return nil, err
 	}
 	go task.run(anchor)
 	return task, nil
 }
 
 // Update atomically replaces the complete frame used by later sends.
+// It returns an error for a Task created with StartFunc.
 func (task *Task) Update(frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {
 		return err
@@ -81,6 +101,9 @@ func (task *Task) Update(frame gocan.Frame) error {
 	if err := task.operationErrorLocked(); err != nil {
 		return err
 	}
+	if task.generate != nil {
+		return errors.New("cannot update a cyclic task with a frame callback")
+	}
 	task.frame = frame
 	return nil
 }
@@ -88,15 +111,18 @@ func (task *Task) Update(frame gocan.Frame) error {
 // Frame returns a snapshot of the complete frame used by later sends.
 // The returned value can be passed to a semantic codec, then replaced with
 // Update without retaining the frame originally passed to Start.
+// For a Task created with StartFunc, Frame returns the last valid generated
+// frame, even if its send failed.
 func (task *Task) Frame() gocan.Frame {
 	task.mu.Lock()
 	defer task.mu.Unlock()
 	return task.frame
 }
 
-// Stop stops recurring transmission and waits until no further sends can
-// start. A native send already in progress is allowed to reach its definite
-// result before Stop returns.
+// Stop stops recurring transmission and waits for any active callback or send
+// to finish. A callback's result is not sent if Stop was requested while it ran.
+// A native send already in progress is allowed to reach its definite result
+// before Stop returns.
 func (task *Task) Stop() {
 	task.mu.Lock()
 	if !task.stopping {
@@ -130,10 +156,7 @@ func (task *Task) run(anchor time.Time) {
 	for {
 		select {
 		case <-task.ctx.Done():
-			cause := context.Cause(task.ctx)
-			if !errors.Is(cause, errStopRequested) {
-				runErr = cause
-			}
+			runErr = context.Cause(task.ctx)
 			return
 
 		case <-task.bus.Done():
@@ -144,20 +167,7 @@ func (task *Task) run(anchor time.Time) {
 			return
 
 		case <-timer.C:
-			task.mu.Lock()
-			if task.stopping {
-				task.mu.Unlock()
-				return
-			}
-			if task.ctx.Err() != nil {
-				runErr = context.Cause(task.ctx)
-				task.mu.Unlock()
-				return
-			}
-			frame := task.frame
-			err := task.bus.Send(task.ctx, frame)
-			task.mu.Unlock()
-			if err != nil {
+			if err := task.send(); err != nil {
 				runErr = err
 				return
 			}
@@ -168,7 +178,42 @@ func (task *Task) run(anchor time.Time) {
 	}
 }
 
+func (task *Task) send() error {
+	if err := context.Cause(task.ctx); err != nil {
+		return err
+	}
+
+	// Run user code without the state lock so Stop can request cancellation and
+	// the callback can inspect the Task. The single send loop prevents overlap.
+	var generated gocan.Frame
+	if task.generate != nil {
+		var err error
+		generated, err = task.generate()
+		if err != nil {
+			return err
+		}
+		if err := generated.Validate(); err != nil {
+			return err
+		}
+	}
+
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.generate != nil {
+		task.frame = generated
+	} else if err := task.frame.Validate(); err != nil {
+		return err
+	}
+	if err := context.Cause(task.ctx); err != nil {
+		return err
+	}
+	return task.bus.Send(task.ctx, task.frame)
+}
+
 func (task *Task) finish(err error) {
+	if errors.Is(err, errStopRequested) {
+		err = nil
+	}
 	task.cancel(err)
 	task.mu.Lock()
 	task.err = err
