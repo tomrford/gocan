@@ -10,18 +10,20 @@ import (
 const suppressPositiveResponse byte = 0x80
 
 const (
-	ServiceDiagnosticSessionControl ServiceID = 0x10
-	ServiceECUReset                 ServiceID = 0x11
-	ServiceReadDataByIdentifier     ServiceID = 0x22
-	ServiceSecurityAccess           ServiceID = 0x27
-	ServiceCommunicationControl     ServiceID = 0x28
-	ServiceWriteDataByIdentifier    ServiceID = 0x2e
-	ServiceRoutineControl           ServiceID = 0x31
-	ServiceRequestDownload          ServiceID = 0x34
-	ServiceTransferData             ServiceID = 0x36
-	ServiceRequestTransferExit      ServiceID = 0x37
-	ServiceTesterPresent            ServiceID = 0x3e
-	ServiceControlDTCSetting        ServiceID = 0x85
+	ServiceDiagnosticSessionControl   ServiceID = 0x10
+	ServiceECUReset                   ServiceID = 0x11
+	ServiceClearDiagnosticInformation ServiceID = 0x14
+	ServiceReadDTCInformation         ServiceID = 0x19
+	ServiceReadDataByIdentifier       ServiceID = 0x22
+	ServiceSecurityAccess             ServiceID = 0x27
+	ServiceCommunicationControl       ServiceID = 0x28
+	ServiceWriteDataByIdentifier      ServiceID = 0x2e
+	ServiceRoutineControl             ServiceID = 0x31
+	ServiceRequestDownload            ServiceID = 0x34
+	ServiceTransferData               ServiceID = 0x36
+	ServiceRequestTransferExit        ServiceID = 0x37
+	ServiceTesterPresent              ServiceID = 0x3e
+	ServiceControlDTCSetting          ServiceID = 0x85
 )
 
 // Session identifies a diagnostic session-control subfunction.
