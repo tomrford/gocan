@@ -42,6 +42,14 @@ func (record *Record) Encode(values Values) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("CDD record %q requires field %q", record.Name, field.Name)
 		}
+		if field.Bitfield != nil {
+			raw, err := encodeScalar(field, value, true)
+			if err != nil {
+				return nil, fmt.Errorf("encode CDD field %q: %w", field.Name, err)
+			}
+			writePacked(payload, field, raw)
+			continue
+		}
 		encoded, err := encodeField(field, value)
 		if err != nil {
 			return nil, fmt.Errorf("encode CDD field %q: %w", field.Name, err)
@@ -71,6 +79,14 @@ func (record *Record) Decode(payload []byte) (Values, error) {
 	}
 	values := make(Values, len(record.Fields))
 	for _, field := range record.Fields {
+		if field.Bitfield != nil {
+			raw := readPacked(payload, field)
+			if err := validateConversionRaw(field, raw); err != nil {
+				return nil, fmt.Errorf("decode CDD field %q: %w", field.Name, err)
+			}
+			values[field.Name] = decodeScalar(field, raw, true)
+			continue
+		}
 		start := int(field.BitOffset / 8)
 		end := start + int(field.BitSize()/8)
 		if field.Variable != nil {
@@ -106,7 +122,7 @@ func compileRecordCodec(record *Record) *recordCodec {
 			return codec
 		}
 		codec.fieldsByName[field.Name] = struct{}{}
-		if field.BitOffset%8 != 0 || field.BitLength%8 != 0 {
+		if field.Bitfield == nil && (field.BitOffset%8 != 0 || field.BitLength%8 != 0) {
 			codec.err = fmt.Errorf("field %q is not byte-aligned", field.Name)
 			return codec
 		}
@@ -146,9 +162,15 @@ func validateFieldEncoding(field Field) error {
 		if field.Encoding != EncodingUnsigned && field.Encoding != EncodingSigned {
 			return fmt.Errorf("linear conversion requires an integer encoding")
 		}
-		if field.Conversion.Scale == 0 || math.IsNaN(field.Conversion.Scale) || math.IsInf(field.Conversion.Scale, 0) ||
+		if field.Conversion.Scale == 0 {
+			return fmt.Errorf("zero-factor linear conversion with an explicit inverse value is unsupported")
+		}
+		if math.IsNaN(field.Conversion.Scale) || math.IsInf(field.Conversion.Scale, 0) ||
 			math.IsNaN(field.Conversion.Offset) || math.IsInf(field.Conversion.Offset, 0) {
 			return fmt.Errorf("linear conversion must have a finite nonzero scale and finite offset")
+		}
+		if err := validateConversionRange(field); err != nil {
+			return err
 		}
 	}
 	if len(field.Choices) > 0 && field.Encoding != EncodingUnsigned && field.Encoding != EncodingSigned {
@@ -240,6 +262,13 @@ func decodeField(field Field, encoded []byte) (any, error) {
 	}
 	elementBytes := int(field.BitLength / 8)
 	count := len(encoded) / elementBytes
+	if conversion := field.Conversion; conversion != nil && (conversion.minimum != nil || conversion.maximum != nil) {
+		for index := range count {
+			if err := validateConversionRaw(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if field.Count == 1 && field.Variable == nil {
 		return decodeScalar(field, readRaw(encoded, field.ByteOrder), true), nil
 	}
@@ -278,6 +307,14 @@ func validateElementCount(field Field, count int) error {
 }
 
 func encodeScalar(field Field, value any, allowLabel bool) (uint64, error) {
+	raw, err := encodeScalarValue(field, value, allowLabel)
+	if err != nil {
+		return 0, err
+	}
+	return raw, validateConversionRaw(field, raw)
+}
+
+func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) {
 	if label, ok := scalar.StringValue(value); ok {
 		if !allowLabel {
 			return 0, fmt.Errorf("choice labels are supported only for scalar fields")

@@ -285,19 +285,15 @@
               <DATAOBJ spec="no" dtref="serial12">
                 <QUAL>SerialNumber</QUAL>
               </DATAOBJ>
-              <STRUCT>
-                <QUAL>Calibration</QUAL>
-                <DESC><TUV lang="en-US">Calibration values</TUV></DESC>
-                <DATAOBJ spec="no" dtref="block4">
-                  <QUAL>Coefficients</QUAL>
-                </DATAOBJ>
-                <DATAOBJ spec="no" dtref="ratio32">
-                  <QUAL>Gain</QUAL>
-                </DATAOBJ>
-                <DATAOBJ spec="no" dtref="wideCounter64">
-                  <QUAL>ExactCounter</QUAL>
-                </DATAOBJ>
-              </STRUCT>
+              <DATAOBJ spec="no" dtref="block4">
+                <QUAL>Coefficients</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="ratio32">
+                <QUAL>Gain</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="wideCounter64">
+                <QUAL>ExactCounter</QUAL>
+              </DATAOBJ>
             </SIMPLECOMPCONT>
           </DIAGINST>
         </DIAGCLASS>

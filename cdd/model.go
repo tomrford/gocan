@@ -222,10 +222,15 @@ const (
 	EncodingDouble   Encoding = "dbl"
 )
 
-// LinearConversion maps a coded numeric value to its physical value.
+// LinearConversion maps physical = raw*Scale + Offset. Scale is the CDD
+// factor divided by its divisor; Offset is outside the division.
 type LinearConversion struct {
 	Scale  float64
 	Offset float64
+
+	// Raw limits use ordered integer keys, preserving all 64 bits even for
+	// identity conversions. They are independent of physical scaling.
+	minimum, maximum *uint64
 }
 
 // Choice assigns a label to one exact coded integer value. It shares its
@@ -233,8 +238,9 @@ type LinearConversion struct {
 // between the two catalogs without conversion.
 type Choice = scalar.Choice
 
-// Field describes one fixed-size coded field. BitOffset is a linear offset
-// from the start of the service data record; it does not use DBC bit numbering.
+// Field describes one coded field. Outside a Bitfield, BitOffset is the bit
+// offset from the start of the record. Inside a Bitfield, it is the logical
+// offset from the container's least-significant bit, before byte mapping.
 //
 // BitLength is the width of a single element and Count its repetition, so the
 // field occupies BitLength*Count bits. Count is 1 for scalars and greater for
@@ -261,6 +267,17 @@ type Field struct {
 	Conversion *LinearConversion
 	Unit       string
 	Choices    []Choice
+	Bitfield   *Bitfield
+}
+
+// Bitfield retains a STRUCT's enclosing datatype and wire layout. Children
+// share this container; their own ByteOrder does not affect bit positioning.
+// Unoccupied bits are reserved: ignored on decode and zero on encode.
+type Bitfield struct {
+	Datatype  Metadata
+	BitOffset uint32 // byte-aligned offset from the start of the record
+	BitLength uint32 // total container size, including reserved bits
+	ByteOrder ByteOrder
 }
 
 // Extent bounds the element count of a variable-length field. A field carrying
