@@ -123,10 +123,11 @@ func testRecording(t *testing.T, compression bool) []byte {
 		t.Fatal(err)
 	}
 	appendFrame(gocan.FrameEvent{Bus: 1, Timestamp: start.Add(2 * time.Millisecond), Direction: gocan.DirectionTransmit, Frame: remote})
-	// Many small frames cross the writer's buffer boundary. The final short
-	// payload cannot leak FD data from another bus.
+	// Repeated coarse-clock timestamps, including the initial timestamp already
+	// flushed by Start, must survive recording and cross the buffer boundary.
+	// The final short payload cannot leak FD data from another bus.
 	for i := 0; i < 800; i++ {
-		appendFrame(frame(1, time.Duration(i+3)*time.Millisecond, 0x123, 0, 42))
+		appendFrame(frame(1, time.Duration(i/2)*time.Millisecond, 0x123, 0, 42))
 	}
 	appendFrame(frame(1, 803*time.Millisecond, 0x123, 0, 44))
 	appendFrame(frame(2, 803*time.Millisecond, 0x124, 0, 60, 0, 0, 0, 0, 0, 0, 0))
@@ -167,7 +168,17 @@ func testRecording(t *testing.T, compression bool) []byte {
 	if attachment != 0 {
 		t.Fatal("unexpected extra attachment")
 	}
-	return readRecords(t, f, compression)
+	records := readRecords(t, f, compression)
+	// Skip the initial classical, FD and remote records. Each pair must retain
+	// its shared timestamp without adjustment, including across data chunks.
+	for i := 0; i < 800; i++ {
+		offset := 89 + 89 + 22 + i*89
+		seconds := math.Float64frombits(binary.LittleEndian.Uint64(records[offset+4:]))
+		if seconds != float64(i/2)/1000 {
+			t.Fatalf("frame %d timestamp changed: %g", i, seconds)
+		}
+	}
+	return records
 }
 
 // Follow the MDF data links and inflate with the standard zlib reader. This
@@ -426,8 +437,8 @@ func TestWriterFailures(t *testing.T) {
 	if err := w.WriteFrame(frame(1, 0, 1, 0)); err != nil {
 		t.Fatal("validation poisoned writer", err)
 	}
-	if err := w.WriteFrame(frame(1, 0, 2, 0)); err == nil {
-		t.Fatal("duplicate time accepted")
+	if err := w.WriteFrame(frame(1, 0, 2, 0)); err != nil {
+		t.Fatal("duplicate time rejected", err)
 	}
 	if err := w.WriteFrame(frame(1, time.Hour, 2, 0)); err != nil {
 		t.Fatal(err)
@@ -441,8 +452,8 @@ func TestWriterFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	late.Timestamp = late.Timestamp.Add(time.Nanosecond)
-	if err := w.WriteFrame(late); err == nil {
-		t.Fatal("indistinguishable encoded time accepted")
+	if err := w.WriteFrame(late); err != nil {
+		t.Fatal("indistinguishable encoded time rejected", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)

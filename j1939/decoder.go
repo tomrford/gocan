@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	transportControlPGN PGN = 0xec00
-	transportDataPGN    PGN = 0xeb00
+	transportControlPGN         PGN = 0xec00
+	transportDataPGN            PGN = 0xeb00
+	extendedTransportControlPGN PGN = 0xc800
+	extendedTransportDataPGN    PGN = 0xc700
 
 	transportRTS   byte = 0x10
 	transportCTS   byte = 0x11
@@ -86,7 +88,7 @@ type sessionKey struct {
 type session struct {
 	message   Message
 	size      int
-	packets   uint8
+	packets   int
 	next      int
 	lastAt    time.Time
 	deadline  time.Time
@@ -124,7 +126,7 @@ func (decoder *Decoder) Push(event gocan.FrameEvent) (message Message, complete 
 	if err != nil {
 		return Message{}, false, err
 	}
-	if header.EDP() != 0 || header.PGN == 0xc700 || header.PGN == 0xc800 {
+	if header.EDP() != 0 || header.PGN == extendedTransportDataPGN || header.PGN == extendedTransportControlPGN {
 		return Message{}, false, fmt.Errorf("%w: EDP or extended transport PGN %#x", ErrUnsupported, header.PGN)
 	}
 	switch header.PGN {
@@ -226,9 +228,10 @@ func (decoder *Decoder) pushControl(event gocan.FrameEvent, header Header) (Mess
 	case transportCTS:
 		return Message{}, false, decoder.clearToSend(event, header, data)
 	case transportEOMA:
-		size := int(binary.LittleEndian.Uint16(data[1:3]))
-		if header.Source >= NullAddress || header.Destination >= NullAddress || data[4] != 0xff ||
-			size <= 8 || size > maximumTransportPayload || int(data[3]) != (size+6)/7 {
+		if _, _, err := transportSize(data); err != nil {
+			return Message{}, false, err
+		}
+		if header.Source >= NullAddress || header.Destination >= NullAddress {
 			return Message{}, false, fmt.Errorf("%w: malformed TP acknowledgement", ErrProtocol)
 		}
 		pgn, err := controlPGN(data)
@@ -261,21 +264,13 @@ func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data
 	if !broadcast && header.Destination == GlobalAddress {
 		return fmt.Errorf("%w: TP.RTS destination must be specific", ErrProtocol)
 	}
-	if broadcast && data[4] != 0xff {
-		return fmt.Errorf("%w: TP.BAM reserved byte is %#02x, want 0xff", ErrProtocol, data[4])
-	}
 	if !broadcast && data[4] == 0 {
 		return fmt.Errorf("%w: TP.RTS permits zero packets per CTS", ErrProtocol)
 	}
 
-	size := int(binary.LittleEndian.Uint16(data[1:3]))
-	packets := data[3]
-	if size <= 8 || size > maximumTransportPayload {
-		return fmt.Errorf("%w: TP payload length %d is outside 9 through %d", ErrProtocol, size, maximumTransportPayload)
-	}
-	wantPackets := (size + 6) / 7
-	if int(packets) != wantPackets {
-		return fmt.Errorf("%w: TP packet count %d does not match %d-byte payload", ErrProtocol, packets, size)
+	size, packets, err := transportSize(data)
+	if err != nil {
+		return err
 	}
 	pgn, err := controlPGN(data)
 	if err != nil {
@@ -300,12 +295,12 @@ func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data
 		packets:   packets,
 		next:      1,
 		lastAt:    event.Timestamp,
-		deadline:  event.Timestamp.Add(1250 * time.Millisecond),
+		deadline:  event.Timestamp.Add(responseTimeout),
 		maxWindow: data[4],
 	}
 	if broadcast {
-		decoder.sessions[key].windowEnd = int(packets)
-		decoder.sessions[key].deadline = event.Timestamp.Add(750 * time.Millisecond)
+		decoder.sessions[key].windowEnd = packets
+		decoder.sessions[key].deadline = event.Timestamp.Add(consecutiveTimeout)
 	}
 	if previous != nil {
 		return fmt.Errorf(
@@ -362,9 +357,9 @@ func (decoder *Decoder) pushData(event gocan.FrameEvent, header Header) (Message
 	active.message.Payload = append(active.message.Payload, payload...)
 	active.next++
 	active.lastAt = event.Timestamp
-	active.deadline = event.Timestamp.Add(750 * time.Millisecond)
+	active.deadline = event.Timestamp.Add(consecutiveTimeout)
 	if header.Destination != GlobalAddress && sequence == active.windowEnd {
-		active.deadline = event.Timestamp.Add(1250 * time.Millisecond)
+		active.deadline = event.Timestamp.Add(responseTimeout)
 	}
 	if len(active.message.Payload) < active.size {
 		return Message{}, false, nil
@@ -409,22 +404,26 @@ func (decoder *Decoder) clearToSend(event gocan.FrameEvent, header Header, data 
 		return fmt.Errorf("%w: TP.CTS has no observed RTS", ErrProtocol)
 	}
 	count, next := int(data[1]), int(data[2])
-	if key.destination == GlobalAddress || data[3] != 0xff || data[4] != 0xff ||
-		count > int(active.maxWindow) || (count != 0 && (next < 1 || next > active.next || next+count-1 > int(active.packets))) {
+	if active.next <= active.windowEnd {
+		delete(decoder.sessions, key)
+		return fmt.Errorf("%w: TP.CTS during DT window", ErrProtocol)
+	}
+	if key.destination == GlobalAddress ||
+		count > int(active.maxWindow) || (count != 0 && (next < 1 || next > active.next || next+count-1 > active.packets)) {
 		delete(decoder.sessions, key)
 		return fmt.Errorf("%w: invalid TP.CTS window", ErrProtocol)
 	}
 	active.lastAt = event.Timestamp
 	if count == 0 {
 		active.windowEnd = 0
-		active.deadline = event.Timestamp.Add(1050 * time.Millisecond)
+		active.deadline = event.Timestamp.Add(holdTimeout)
 		return nil
 	}
 	// A CTS may request retransmission of an already observed contiguous prefix.
 	active.message.Payload = active.message.Payload[:(next-1)*7]
 	active.next = next
 	active.windowEnd = next + count - 1
-	active.deadline = event.Timestamp.Add(1250 * time.Millisecond)
+	active.deadline = event.Timestamp.Add(responseTimeout)
 	return nil
 }
 
@@ -458,6 +457,15 @@ func (decoder *Decoder) abortSession(event gocan.FrameEvent, header Header, data
 	return aborted
 }
 
+func transportSize(data []byte) (int, int, error) {
+	size := int(binary.LittleEndian.Uint16(data[1:3]))
+	packets := int(data[3])
+	if size <= 8 || size > maximumTransportPayload || packets != (size+6)/7 {
+		return 0, 0, fmt.Errorf("%w: invalid TP size %d or packet count %d", ErrProtocol, size, packets)
+	}
+	return size, packets, nil
+}
+
 func transportData(frame gocan.Frame, name string) ([]byte, error) {
 	if frame.DataLength() != 8 {
 		return nil, fmt.Errorf("%w: %s frame has %d data bytes, want 8", ErrProtocol, name, frame.DataLength())
@@ -470,7 +478,7 @@ func controlPGN(data []byte) (PGN, error) {
 	if err := pgn.validate(); err != nil {
 		return 0, fmt.Errorf("%w: TP connection-management target: %v", ErrProtocol, err)
 	}
-	if pgn == transportControlPGN || pgn == transportDataPGN || pgn == 0xc700 || pgn == 0xc800 || pgn&0x20000 != 0 {
+	if pgn == transportControlPGN || pgn == transportDataPGN || pgn == extendedTransportDataPGN || pgn == extendedTransportControlPGN || pgn&0x20000 != 0 {
 		return 0, fmt.Errorf("%w: TP target PGN %#x", ErrUnsupported, pgn)
 	}
 	return pgn, nil

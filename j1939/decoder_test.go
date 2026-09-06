@@ -140,7 +140,8 @@ func TestDecoderReferenceTransportAndRecovery(t *testing.T) {
 	// test/test_ecu.py, test_broadcast_receive_long and test_peer_to_peer_receive_long.
 	for _, destination := range []byte{0xff, 2} {
 		t.Run(fmt.Sprintf("destination_%02x", destination), func(t *testing.T) {
-			start := frameEvent(t, 0, 0x00ecff01, []byte{32, 20, 0, 3, 255, 176, 254, 0})
+			// Unused receive bytes need not contain the FF emitted by our sender.
+			start := frameEvent(t, 0, 0x00ecff01, []byte{32, 20, 0, 3, 0, 176, 254, 0})
 			if destination == 2 {
 				start.Frame.ID = 0x00ec0201
 				start.Frame.Data[0] = 16
@@ -153,7 +154,7 @@ func TestDecoderReferenceTransportAndRecovery(t *testing.T) {
 			var message j1939.Message
 			for packet := byte(1); packet <= 3; packet++ {
 				if destination == 2 {
-					cts := frameEvent(t, time.Duration(packet)*50-1, 0x1cec0102, []byte{17, 1, packet, 255, 255, 176, 254, 0})
+					cts := frameEvent(t, time.Duration(packet)*50-1, 0x1cec0102, []byte{17, 1, packet, 0, 0, 176, 254, 0})
 					cts.Direction = gocan.DirectionTransmit
 					if _, _, err := decoder.Push(cts); err != nil {
 						t.Fatal(err)
@@ -177,7 +178,7 @@ func TestDecoderReferenceTransportAndRecovery(t *testing.T) {
 				t.Fatalf("message = %#v", message)
 			}
 			if destination == 2 {
-				ack := frameEvent(t, 151, 0x1cec0102, []byte{19, 20, 0, 3, 255, 176, 254, 0})
+				ack := frameEvent(t, 151, 0x1cec0102, []byte{19, 20, 0, 3, 0, 176, 254, 0})
 				ack.Direction = gocan.DirectionTransmit
 				if _, complete, err := decoder.Push(ack); err != nil || complete {
 					t.Fatalf("EOMA: %v, %v", complete, err)
@@ -268,6 +269,27 @@ func TestDecoderCTSRetryAndPause(t *testing.T) {
 	}
 }
 
+func TestDecoderRejectsCTSBeforeWindowCompletes(t *testing.T) {
+	var decoder j1939.Decoder
+	frames := []gocan.FrameEvent{
+		frameEvent(t, 0, 0x18ec2180, []byte{16, 20, 0, 3, 3, 0xca, 0xfe, 0}),
+		frameEvent(t, 1, 0x18ec8021, []byte{17, 3, 1, 255, 255, 0xca, 0xfe, 0}),
+		frameEvent(t, 2, 0x18eb2180, []byte{1, 1, 2, 3, 4, 5, 6, 7}),
+		frameEvent(t, 3, 0x18ec8021, []byte{17, 2, 2, 255, 255, 0xca, 0xfe, 0}),
+		frameEvent(t, 4, 0x18eb2180, []byte{2, 8, 9, 10, 11, 12, 13, 14}),
+		frameEvent(t, 5, 0x18eb2180, []byte{3, 15, 16, 17, 18, 19, 20, 255}),
+	}
+	messages, diagnostics := decoder.PushBatch(frames)
+	if len(messages) != 0 || len(diagnostics) != 3 || diagnostics[0].Timestamp != frames[3].Timestamp || !errors.Is(diagnostics[0], j1939.ErrProtocol) {
+		t.Fatalf("overlapping CTS: %v, %v", messages, diagnostics)
+	}
+	// The invalid grant must not prevent a fresh session from succeeding.
+	messages, diagnostics = decoder.PushBatch(append(frames[:3:3], frames[4:]...))
+	if len(messages) != 1 || len(diagnostics) != 0 {
+		t.Fatalf("recovery: %v, %v", messages, diagnostics)
+	}
+}
+
 func TestDecoderInterleavedMaximumBAM(t *testing.T) {
 	// J1939-21 permits 255 packets of 7 bytes. Keep the final packet number
 	// and padding bytes in the payload, and isolate peers, buses and directions.
@@ -345,7 +367,7 @@ func TestDecoderReportsBrokenTransportLifecycle(t *testing.T) {
 
 	rts := frameEvent(t, 0, 0x18ec2180, []byte{16, 9, 0, 2, 2, 202, 254, 0})
 	decoder.PushBatch([]gocan.FrameEvent{rts})
-	abort := frameEvent(t, 2, 0x18ec8021, []byte{0xff, 3, 0xff, 0xff, 0xff, 0xca, 0xfe, 0x00})
+	abort := frameEvent(t, 2, 0x18ec8021, []byte{0xff, 3, 0, 0, 0, 0xca, 0xfe, 0x00})
 	abort.Direction = gocan.DirectionTransmit
 	_, diagnostics = decoder.PushBatch([]gocan.FrameEvent{abort})
 	if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) {

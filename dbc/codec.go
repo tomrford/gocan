@@ -313,11 +313,19 @@ func (codec *messageCodec) signalConstraints(message *Message, index int, visiti
 }
 
 func (codec *messageCodec) validateOverlaps(message *Message) error {
-	bits := make([]map[uint32]struct{}, len(message.Signals))
+	// A signal of at most 64 bits touches at most two adjacent 64-bit words,
+	// including Motorola bit ordering. Keep its absolute word offset separate
+	// so sparse transported messages do not allocate by declared payload size.
+	type signalMask struct {
+		first uint32
+		words [2]uint64
+	}
+	bits := make([]signalMask, len(message.Signals))
 	for index, signal := range message.Signals {
-		bits[index] = make(map[uint32]struct{}, signal.BitLength)
+		bits[index].first = signal.StartBit / 64
+		signal.StartBit %= 64
 		visitSignalBits(signal, func(bit uint32) {
-			bits[index][bit] = struct{}{}
+			bits[index].words[bit/64] |= uint64(1) << (bit % 64)
 		})
 	}
 	for left := range message.Signals {
@@ -325,10 +333,14 @@ func (codec *messageCodec) validateOverlaps(message *Message) error {
 			if !constraintsCompatible(codec.constraints[left], codec.constraints[right]) {
 				continue
 			}
-			for bit := range bits[left] {
-				if _, overlaps := bits[right][bit]; overlaps {
-					return fmt.Errorf("signals %q and %q overlap while active", message.Signals[left].Name, message.Signals[right].Name)
-				}
+			a, b := bits[left], bits[right]
+			if a.first > b.first {
+				a, b = b, a
+			}
+			distance := b.first - a.first
+			if distance == 0 && (a.words[0]&b.words[0]|a.words[1]&b.words[1]) != 0 ||
+				distance == 1 && a.words[1]&b.words[0] != 0 {
+				return fmt.Errorf("signals %q and %q overlap while active", message.Signals[left].Name, message.Signals[right].Name)
 			}
 		}
 	}

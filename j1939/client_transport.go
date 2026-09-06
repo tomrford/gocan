@@ -3,6 +3,7 @@ package j1939
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 
@@ -201,17 +202,13 @@ func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) 
 		if c.rx != nil || c.tx != nil && c.tx.request.destination == h.Source {
 			return c.abort(h.Source, pgn, 1)
 		}
-		size := int(binary.LittleEndian.Uint16(data[1:3]))
-		packets := int(data[3])
-		if size <= 8 || size > maximumTransportPayload || packets != (size+6)/7 || data[4] == 0 || activePGN(pgn) != nil || pgn == AddressClaimPGN || pgn == RequestPGN {
+		size, packets, err := transportSize(data)
+		if err != nil || data[4] == 0 || activePGN(pgn) != nil || pgn == AddressClaimPGN || pgn == RequestPGN {
 			return c.abort(h.Source, pgn, 2)
 		}
 		c.rx = &reception{source: h.Source, pgn: pgn, size: size, packets: packets, next: 1, window: int(data[4])}
 		return c.grant()
 	case transportAbort:
-		if data[2] != 0xff || data[3] != 0xff || data[4] != 0xff {
-			return nil
-		}
 		if c.rx != nil && c.rx.source == h.Source && c.rx.pgn == pgn {
 			c.rx = nil
 		}
@@ -228,7 +225,7 @@ func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) 
 		}
 		packets := (len(t.request.payload) + 6) / 7
 		if data[0] == transportEOMA {
-			if t.sent != packets || t.end != 0 || int(binary.LittleEndian.Uint16(data[1:3])) != len(t.request.payload) || int(data[3]) != packets || data[4] != 0xff {
+			if t.sent != packets || t.end != 0 || int(binary.LittleEndian.Uint16(data[1:3])) != len(t.request.payload) || int(data[3]) != packets {
 				return c.failSend(fmt.Errorf("%w: invalid or premature EOMA", ErrProtocol), 2)
 			}
 			c.finishSend(nil)
@@ -238,7 +235,7 @@ func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) 
 		if t.end != 0 {
 			return c.failSend(fmt.Errorf("%w: CTS during DT window", ErrProtocol), 4)
 		}
-		if data[3] != 0xff || data[4] != 0xff || count > packets || count != 0 && (next < 1 || next > t.sent+1 || next+count-1 > packets) {
+		if count > packets || count != 0 && (next < 1 || next > t.sent+1 || next+count-1 > packets) {
 			return c.failSend(fmt.Errorf("%w: invalid CTS window", ErrProtocol), 2)
 		}
 		if count == 0 {
@@ -248,6 +245,7 @@ func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) 
 		t.next = next
 		t.end = next + count - 1
 		t.due = now
+		t.deadline = now.Add(responseTimeout)
 	}
 	return nil
 }
@@ -278,7 +276,7 @@ func (c *Client) expireTransport(at time.Time) error {
 			return err
 		}
 	}
-	if c.tx != nil && c.tx.due.IsZero() && !at.Before(c.tx.deadline) {
+	if c.tx != nil && (c.tx.due.IsZero() || c.tx.request.destination != GlobalAddress) && !at.Before(c.tx.deadline) {
 		return c.failSend(ErrTimeout, 3)
 	}
 	return nil
@@ -305,6 +303,12 @@ func (c *Client) tickTransport(now time.Time) error {
 	data := [8]byte{byte(t.next), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	copy(data[1:], r.payload[(t.next-1)*7:])
 	if err := c.sendFrame(r, transportDataPGN, 7, data[:]); err != nil {
+		if r.destination != GlobalAddress && errors.Is(err, gocan.ErrTransmitQueueFull) {
+			// Retry rejected data without advancing sequence or extending the
+			// peer's first/consecutive-packet deadline.
+			t.due = time.Now().Add(5 * time.Millisecond)
+			return nil
+		}
 		return c.failSend(err, 2)
 	}
 	// A native send can finish after its context expires. Check acceptance
@@ -327,6 +331,7 @@ func (c *Client) tickTransport(now time.Time) error {
 		t.deadline = time.Now().Add(responseTimeout)
 	} else {
 		t.due = time.Now()
+		t.deadline = time.Now().Add(consecutiveTimeout)
 	}
 	return nil
 }

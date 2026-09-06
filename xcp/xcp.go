@@ -164,15 +164,16 @@ func New(bus gocan.Bus, config Config) (*Client, error) {
 // Close is idempotent. An already accepted native send cannot be revoked.
 func (client *Client) Close() { client.cancel(ErrClosed) }
 
-// RetentionCursor protects only active receive progress. Pass it alongside other
-// readers' cursors to Capture.Prune. Idle clients retain no unsolicited traffic.
+// RetentionCursor protects active receive progress and an unanswered SYNCH.
+// Pass it alongside other readers' cursors to Capture.Prune. Otherwise idle
+// clients retain no unsolicited traffic.
 // An unplaceable active cursor fails the command visibly. Capture's zero cursor
 // (an initially empty capture) survives Clear, so loss at that initial frontier
 // cannot be detected. Avoid clearing captures during protocol operations.
 func (client *Client) RetentionCursor() gocan.Cursor {
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if client.retaining {
+	if client.retaining && client.ctx.Err() == nil {
 		return client.cursor
 	}
 	return client.capture.End()
@@ -204,7 +205,7 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 	}
 	finish := func() {
 		client.mu.Lock()
-		client.retaining = false
+		client.retaining = client.pending == CommandSynch
 		client.mu.Unlock()
 		client.gate <- struct{}{}
 		cleanup()
@@ -268,6 +269,8 @@ func (client *Client) Disconnect(ctx context.Context) error {
 
 // Synchronize discards late RES/ERR packets until ERR_CMD_SYNCH is observed.
 // Failure leaves ordinary commands blocked; it never retries an earlier request.
+// Retrying Synchronize resumes waiting for the same accepted SYNCH, retaining
+// its capture cursor until the acknowledgement arrives or the client closes.
 // It rejects known-disconnected sessions and unanswered CONNECT/DISCONNECTs
 // without sending: a disconnected ECU need not answer SYNCH. Use Connect instead.
 func (client *Client) Synchronize(ctx context.Context) error {

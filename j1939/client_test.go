@@ -17,13 +17,16 @@ import (
 // Wire fixtures are specified independently of the active client's helpers.
 // TP layouts/timers: Linux J1939 and python-can-j1939, pinned in .repos/.lock.
 type activeBus struct {
-	capture *gocan.Capture
-	sent    chan gocan.Frame
-	done    chan struct{}
-	mu      sync.Mutex
-	failure error
-	delayID uint32
-	delay   time.Duration
+	capture   *gocan.Capture
+	sent      chan gocan.Frame
+	done      chan struct{}
+	mu        sync.Mutex
+	failure   error
+	delayID   uint32
+	delay     time.Duration
+	fullID    uint32
+	fullUntil time.Time
+	fullAfter byte
 }
 
 func newActiveBus() *activeBus {
@@ -42,6 +45,9 @@ func (b *activeBus) Send(ctx context.Context, f gocan.Frame) error {
 	b.mu.Lock()
 	err := b.failure
 	delayID, delay := b.delayID, b.delay
+	if f.ID == b.fullID && f.Data[0] > b.fullAfter && time.Now().Before(b.fullUntil) {
+		err = gocan.ErrTransmitQueueFull
+	}
 	b.mu.Unlock()
 	if err != nil {
 		return err
@@ -130,6 +136,11 @@ func TestActiveClaimRequestAndAddressLoss(t *testing.T) {
 			t.Fatal(err)
 		}
 		wire(t, b, 0x18ea2280, 0xca, 0xfe, 0)
+		if err := c.Request(context.Background(), j1939.GlobalAddress, j1939.AddressClaimPGN); err != nil {
+			t.Fatal(err)
+		}
+		wire(t, b, 0x18eaff80, 0, 0xee, 0)
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 		b.inject(t, 0x18eaff22, 0, 0xee, 0)
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 		// Higher NAME loses; our client must defend the configured address.
@@ -196,10 +207,11 @@ func TestActiveDirectedSendWindowsPauseRetransmitAndAcknowledgement(t *testing.T
 		b.inject(t, 0x1cec8023, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0) // wrong peer
 		time.Sleep(20 * time.Millisecond)
 		quiet(t, b)
-		b.inject(t, 0x1cec8022, 0x11, 0, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
+		// Receive unused bytes permissively, as Linux and python-can-j1939 do.
+		b.inject(t, 0x1cec8022, 0x11, 0, 0xff, 0, 0, 0xca, 0xfe, 0)
 		time.Sleep(500 * time.Millisecond)
 		quiet(t, b)
-		b.inject(t, 0x1cec8022, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		b.inject(t, 0x1cec8022, 0x11, 2, 1, 0, 0, 0xca, 0xfe, 0)
 		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
 		wire(t, b, 0x1ceb2280, 2, 8, 9, 10, 11, 12, 13, 14)
 		b.inject(t, 0x1cec8022, 0x11, 2, 2, 0xff, 0xff, 0xca, 0xfe, 0)
@@ -217,7 +229,7 @@ func TestActiveDirectedSendWindowsPauseRetransmitAndAcknowledgement(t *testing.T
 		if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) || len(messages) != 2 || !bytes.Equal(messages[1].Payload, activePayload) {
 			t.Fatalf("passive = %v, %v", messages, diagnostics)
 		}
-		b.inject(t, 0x1cec8022, 0x13, 20, 0, 3, 0xff, 0xca, 0xfe, 0)
+		b.inject(t, 0x1cec8022, 0x13, 20, 0, 3, 0, 0xca, 0xfe, 0)
 		resultIs(t, r, nil)
 	})
 }
@@ -274,15 +286,15 @@ func TestActiveSendFailuresCancelAndRecover(t *testing.T) {
 				case "early_ack":
 					b.inject(t, 0x1cec8022, 0x13, 20, 0, 3, 0xff, 0xca, 0xfe, 0)
 				case "abort":
-					b.inject(t, 0x1cec8022, 0xff, 2, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
+					b.inject(t, 0x1cec8022, 0xff, 2, 0, 0, 0, 0xca, 0xfe, 0)
 				case "bad_cts":
 					b.inject(t, 0x1cec8022, 0x11, 3, 2, 0xff, 0xff, 0xca, 0xfe, 0)
 				case "send_failure":
 					b.mu.Lock()
-					b.failure = gocan.ErrTransmitQueueFull
+					b.failure = gocan.ErrHardwareDisconnected
 					b.mu.Unlock()
 					b.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
-					want = gocan.ErrTransmitQueueFull
+					want = gocan.ErrHardwareDisconnected
 				}
 				resultIs(t, r, want)
 				if mode == "send_failure" {
@@ -415,13 +427,99 @@ func TestActiveMaximumPayloadAndFirstDTTimeout(t *testing.T) {
 		payload := bytes.Repeat([]byte{1, 2, 3, 4, 5, 6, 7}, 255)
 		r := sendActive(c, context.Background(), 0x22, payload)
 		wire(t, b, 0x18ec2280, 0x10, 0xf9, 6, 0xff, 0xff, 0xca, 0xfe, 0)
+		start := time.Now()
 		b.inject(t, 0x1cec8022, 0x11, 0xff, 1, 0xff, 0xff, 0xca, 0xfe, 0)
 		for seq := 1; seq <= 255; seq++ {
 			wire(t, b, 0x1ceb2280, byte(seq), 1, 2, 3, 4, 5, 6, 7)
 		}
+		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+			t.Fatalf("unblocked directed transfer took %v", elapsed)
+		}
 		b.inject(t, 0x1cec8022, 0x13, 0xf9, 6, 0xff, 0xff, 0xca, 0xfe, 0)
 		resultIs(t, r, nil)
 	})
+}
+
+func TestActiveDirectedQueueBackpressure(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		fullFor  time.Duration
+		after    byte
+		deadline time.Duration
+	}{
+		{"temporary", 30 * time.Millisecond, 0, 0},
+		{"first packet timeout", 2 * time.Second, 0, 1250 * time.Millisecond},
+		{"consecutive packet timeout", 2 * time.Second, 1, 750 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b := newActiveBus()
+				c := openActive(t, b)
+				r := sendActive(c, context.Background(), 0x22, activePayload)
+				wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
+				start := time.Now()
+				b.mu.Lock()
+				b.fullID, b.fullUntil, b.fullAfter = 0x1ceb2280, start.Add(test.fullFor), test.after
+				b.mu.Unlock()
+				b.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+				if test.after == 1 {
+					wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
+					start = time.Now()
+				}
+				if test.deadline != 0 {
+					resultIs(t, r, j1939.ErrTimeout)
+					wire(t, b, 0x1cec2280, 0xff, 3, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
+					if elapsed := time.Since(start); elapsed < test.deadline || elapsed > test.deadline+10*time.Millisecond {
+						t.Fatalf("queue-full timeout after %v", elapsed)
+					}
+					b.mu.Lock()
+					b.fullUntil = time.Time{}
+					b.mu.Unlock()
+					r = sendActive(c, context.Background(), 0x22, activePayload)
+					wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
+					b.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+				}
+				wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
+				wire(t, b, 0x1ceb2280, 2, 8, 9, 10, 11, 12, 13, 14)
+				wire(t, b, 0x1ceb2280, 3, 15, 16, 17, 18, 19, 20, 0xff)
+				b.inject(t, 0x1cec8022, 0x13, 20, 0, 3, 0xff, 0xca, 0xfe, 0)
+				resultIs(t, r, nil)
+				quiet(t, b)
+			})
+		})
+	}
+}
+
+func TestActiveDirectedDrainChecksCaptureAndCancellation(t *testing.T) {
+	for _, loss := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cancelled", true: "address lost"}[loss], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b := newActiveBus()
+				c := openActive(t, b)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				b.delayID, b.delay = 0x1ceb2280, 100*time.Millisecond
+				r := sendActive(c, ctx, 0x22, activePayload)
+				wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
+				b.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+				time.Sleep(10 * time.Millisecond) // first DT is inside native Send
+				if loss {
+					b.inject(t, 0x18eeff80, 1, 0, 0, 0, 0, 0, 0, 0)
+				} else {
+					cancel()
+				}
+				wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
+				if loss {
+					resultIs(t, r, j1939.ErrAddressLost)
+					wire(t, b, 0x18eefffe, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+				} else {
+					resultIs(t, r, context.Canceled)
+					wire(t, b, 0x1cec2280, 0xff, 2, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
+				}
+				quiet(t, b)
+			})
+		})
+	}
 }
 
 func TestActiveClaimCancellationAndLossWhileOpening(t *testing.T) {

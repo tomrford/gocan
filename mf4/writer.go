@@ -6,6 +6,10 @@
 // Non-frame Capture observations are exported as timestamped event markers.
 // This package does not write decoded channels, recover interrupted files,
 // or append to existing measurements.
+//
+// To preserve captures from clocks with limited resolution, Writer accepts
+// equal encoded timestamps within a time master. This relaxes MDF 4.1's strict
+// ordering requirement; readers enforcing it may reject such files.
 package mf4
 
 import (
@@ -95,10 +99,10 @@ var _ gocan.RecordWriter = (*Writer)(nil)
 
 // NewWriter creates a measurement starting at start, which must be between
 // the Unix epoch and the end of Go's int64 nanosecond range. Frames and events
-// before start are rejected. MDF time masters must increase strictly:
-// duplicate/regressing encoded timestamps within one bus and frame kind
-// (data or remote) are errors. Different buses may share timestamps.
-// Accepted frames retain append order.
+// before start are rejected. Encoded timestamps within one bus and frame kind
+// (data or remote) must not regress. Equal timestamps are retained, with the
+// conformance limitation described in the package documentation. Accepted
+// frames retain append order.
 // Times are stored as float64 seconds relative to start, with its UTC epoch
 // nanoseconds in the header. Relative time precision decreases for long runs.
 // Each bus may have one DBC attachment, linked from both frame structures.
@@ -208,8 +212,8 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 	}
 	group := w.groups[key]
 	seconds := float64(event.Timestamp.UnixNano()-w.start.UnixNano()) / 1e9
-	if group != nil && group.cycles != 0 && seconds <= group.lastTime {
-		return fmt.Errorf("MF4 bus %d time master must increase strictly", event.Bus)
+	if group != nil && group.cycles != 0 && seconds < group.lastTime {
+		return fmt.Errorf("MF4 bus %d time master must not regress", event.Bus)
 	}
 	if group == nil {
 		group = w.addGroup(event.Bus, remote)
