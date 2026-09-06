@@ -48,6 +48,9 @@ type Config struct {
 // Send returns ErrAddressLost. Close and open a new client to change configuration.
 // Background send failure, bus failure or capture cursor loss stops the client.
 // Calls are safe concurrently. Native sends already accepted cannot be revoked.
+// BAM needs frame acceptance within 50..200 ms intervals. Blocking native sends
+// or mandatory protocol replies can exceed that budget; Send reports ErrTimeout
+// even if the late frame was accepted. This is not a wire-timing guarantee.
 type Client struct {
 	bus      gocan.Bus
 	config   Config
@@ -130,6 +133,8 @@ func (c *Client) RetentionCursor() gocan.Cursor { c.mu.Lock(); defer c.mu.Unlock
 // complete when the bus accepts their frames; directed TP requires matching
 // EOMA. A caller deadline bounds the entire transfer, including repeated CTS
 // pauses/retransmissions. Busy is returned without starting another TP session.
+// While BAM is outgoing, all other Send/Request calls return ErrBusy so caller
+// traffic cannot delay its DT packets. Mandatory protocol replies still run.
 // PDU2 can be directed only when transported (more than eight bytes).
 // Network-management and transport PGNs are owned by the client.
 func (c *Client) Send(ctx context.Context, priority uint8, pgn PGN, destination Address, payload []byte) error {
@@ -259,14 +264,7 @@ func (c *Client) poll() error {
 	c.mu.Lock()
 	c.cursor = next
 	c.mu.Unlock()
-	if !c.claimAt.IsZero() && !cutoff.Before(c.claimAt) {
-		c.claimAt = time.Time{}
-		c.claimed = true
-		c.mu.Lock()
-		c.address = c.config.Address
-		c.mu.Unlock()
-		c.ready <- nil
-	}
+	c.completeClaim(cutoff)
 	// Sends while processing this batch may have allowed new responses into
 	// Capture. Only expire through the instant preceding this snapshot.
 	return c.expireTransport(cutoff)
@@ -293,8 +291,10 @@ func (c *Client) handle(event gocan.FrameEvent, h Header) error {
 			}
 		}
 		if h.Source < NullAddress && c.peers[h.Source] != name {
+			if c.peers[h.Source] != 0 {
+				c.invalidatePeer(h.Source)
+			}
 			c.peers[h.Source] = name
-			c.invalidatePeer(h.Source)
 		}
 		return nil
 	}
@@ -309,10 +309,22 @@ func (c *Client) handle(event gocan.FrameEvent, h Header) error {
 			}
 		}
 	}
+	c.completeClaim(event.Timestamp)
 	if !c.claimed || h.Source >= NullAddress || h.Destination != c.config.Address || h.Source == c.config.Address {
 		return nil
 	}
 	return c.handleTransport(event, h, data)
+}
+
+func (c *Client) completeClaim(at time.Time) {
+	if !c.claimAt.IsZero() && !at.Before(c.claimAt) {
+		c.claimAt = time.Time{}
+		c.claimed = true
+		c.mu.Lock()
+		c.address = c.config.Address
+		c.mu.Unlock()
+		c.ready <- nil
+	}
 }
 
 func (c *Client) claim(address Address) error {

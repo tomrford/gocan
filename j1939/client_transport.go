@@ -50,6 +50,10 @@ func (c *Client) startSend(r *sendRequest) {
 		r.result <- ErrAddressLost
 		return
 	}
+	if c.tx != nil && c.tx.request.destination == GlobalAddress {
+		r.result <- ErrBusy
+		return
+	}
 	if len(r.payload) <= 8 {
 		r.result <- c.sendFrame(r, r.pgn, r.priority, r.payload)
 		return
@@ -126,7 +130,7 @@ func (c *Client) failReceive(reason byte) error {
 }
 
 func (c *Client) invalidatePeer(peer Address) {
-	// A new/different claim or NAME move breaks transport identity. Do not send
+	// A changed known NAME or NAME move breaks transport identity. Do not send
 	// an abort to an address that may now belong to a different controller.
 	if c.tx != nil && c.tx.request.destination == peer {
 		c.finishSend(fmt.Errorf("%w: transport peer address changed", ErrProtocol))
@@ -302,6 +306,11 @@ func (c *Client) tickTransport(now time.Time) error {
 	copy(data[1:], r.payload[(t.next-1)*7:])
 	if err := c.sendFrame(r, transportDataPGN, 7, data[:]); err != nil {
 		return c.failSend(err, 2)
+	}
+	// A native send can finish after its context expires. Check acceptance
+	// timing too, including the final packet, before reporting BAM success.
+	if r.destination == GlobalAddress && time.Since(t.due) > 150*time.Millisecond {
+		return c.failSend(ErrTimeout, 3)
 	}
 	t.barrier = c.sent
 	t.sent = max(t.sent, t.next)

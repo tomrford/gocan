@@ -602,3 +602,116 @@ func TestActiveClaimConflictArrivingDuringDefence(t *testing.T) {
 		resultIs(t, result, j1939.ErrAddressLost)
 	})
 }
+
+func TestActiveFirstPeerClaimPreservesTransport(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := newActiveBus()
+		c := openActive(t, b)
+		r := sendActive(c, context.Background(), 0x22, activePayload)
+		wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
+		// This peer may have claimed before Open. Its first observed reannouncement
+		// establishes a NAME association without proving any identity change.
+		b.inject(t, 0x18eeff22, 0x45, 0x23, 0, 0, 0, 0, 0, 0)
+		b.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
+		wire(t, b, 0x1ceb2280, 2, 8, 9, 10, 11, 12, 13, 14)
+		wire(t, b, 0x1ceb2280, 3, 15, 16, 17, 18, 19, 20, 0xff)
+		b.inject(t, 0x1cec8022, 0x13, 20, 0, 3, 0xff, 0xca, 0xfe, 0)
+		resultIs(t, r, nil)
+		// Once known, a different NAME at the same address does invalidate transport.
+		r = sendActive(c, context.Background(), 0x22, activePayload)
+		wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
+		b.inject(t, 0x18eeff22, 0x46, 0x23, 0, 0, 0, 0, 0, 0)
+		resultIs(t, r, j1939.ErrProtocol)
+		quiet(t, b)
+	})
+}
+
+func TestActiveAcceptsRTSAtEndOfClaimWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := newActiveBus()
+		opened := make(chan *j1939.Client, 1)
+		go func() {
+			c, err := j1939.Open(context.Background(), b, j1939.Config{Name: 0x1234, Address: 0x80})
+			if err != nil {
+				t.Error(err)
+			}
+			opened <- c
+		}()
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		time.Sleep(240 * time.Millisecond)
+		b.mu.Lock()
+		b.delayID = 0x18eeff80
+		b.delay = 100 * time.Millisecond
+		b.mu.Unlock()
+		b.inject(t, 0x18eeff80, 0x35, 0x12, 0, 0, 0, 0, 0, 0)
+		time.Sleep(20 * time.Millisecond)
+		// Arrival follows the arbitration deadline but precedes the first poll
+		// that can settle it, because the defence send is still in progress.
+		b.inject(t, 0x18ec8022, 0x10, 9, 0, 2, 2, 0xca, 0xfe, 0)
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		wire(t, b, 0x1cec2280, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		c := <-opened
+		if c == nil {
+			t.Fatal("Open failed")
+		}
+		defer c.Close()
+		b.inject(t, 0x1ceb8022, 1, 1, 2, 3, 4, 5, 6, 7)
+		b.inject(t, 0x1ceb8022, 2, 8, 9, 0xff, 0xff, 0xff, 0xff, 0xff)
+		wire(t, b, 0x1cec2280, 0x13, 9, 0, 2, 0xff, 0xca, 0xfe, 0)
+	})
+}
+
+func TestActiveBAMRejectsCompetingApplicationSends(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := newActiveBus()
+		c := openActive(t, b)
+		r := sendActive(c, context.Background(), 0xff, activePayload)
+		wire(t, b, 0x18ecff80, 0x20, 20, 0, 3, 0xff, 0xca, 0xfe, 0)
+		b.mu.Lock()
+		b.delayID = 0x18ef2380
+		b.delay = 200 * time.Millisecond
+		b.mu.Unlock()
+		if err := c.Send(context.Background(), 6, 0xef00, 0x23, []byte{42}); !errors.Is(err, j1939.ErrBusy) {
+			t.Fatal(err)
+		}
+		if err := c.Request(context.Background(), 0xff, 0xfeca); !errors.Is(err, j1939.ErrBusy) {
+			t.Fatal(err)
+		}
+		wire(t, b, 0x1cebff80, 1, 1, 2, 3, 4, 5, 6, 7)
+		wire(t, b, 0x1cebff80, 2, 8, 9, 10, 11, 12, 13, 14)
+		wire(t, b, 0x1cebff80, 3, 15, 16, 17, 18, 19, 20, 0xff)
+		resultIs(t, r, nil)
+		quiet(t, b)
+	})
+}
+
+func TestActiveBAMReportsLateNativeAcceptance(t *testing.T) {
+	for _, final := range []bool{false, true} {
+		t.Run(map[bool]string{false: "first", true: "final"}[final], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b := newActiveBus()
+				c := openActive(t, b)
+				r := sendActive(c, context.Background(), 0xff, activePayload[:9])
+				wire(t, b, 0x18ecff80, 0x20, 9, 0, 2, 0xff, 0xca, 0xfe, 0)
+				if final {
+					wire(t, b, 0x1cebff80, 1, 1, 2, 3, 4, 5, 6, 7)
+				}
+				b.mu.Lock()
+				b.delayID = 0x1cebff80
+				b.delay = 200 * time.Millisecond
+				b.mu.Unlock()
+				if final {
+					wire(t, b, 0x1cebff80, 2, 8, 9, 0xff, 0xff, 0xff, 0xff, 0xff)
+				} else {
+					wire(t, b, 0x1cebff80, 1, 1, 2, 3, 4, 5, 6, 7)
+				}
+				// The driver accepted a frame after the pacing deadline. It cannot be
+				// revoked, but even a final accepted DT must not turn that into success.
+				resultIs(t, r, j1939.ErrTimeout)
+				time.Sleep(100 * time.Millisecond)
+				quiet(t, b)
+			})
+		})
+	}
+}
