@@ -1,3 +1,9 @@
+[repos.asammdf]
+url = "https://github.com/danielhrisca/asammdf.git"
+mode = "ref"
+ref = "8.7.2"
+commit = "3672a3d2803f7dc2f637ecd93d7cc1f823834ba0"
+
 [repos.can-dbc]
 url = "https://github.com/oxibus/can-dbc.git"
 mode = "default"
@@ -21,8 +27,8 @@ commit = "f74f76888d2c88329266b33947aa6ea534ddd213"
 
 [repos.cantraceviewer]
 url = "https://github.com/tomrford/cantraceviewer.git"
-mode = "default"
-commit = "8c10de10e3a38ddf3dda64797edc4353022f243a"
+mode = "exact"
+commit = "774d03424ac699fada4e55434a16b22657752009"
 
 [repos.dbc-rs]
 backend = "tarball"
