@@ -15,7 +15,7 @@ import (
 // types.py/master.py at f1b547b23f1ad56cb3b201c1790d941931f45f0a.
 // CAN padding configuration is described by Vector's XCP_104.aml CAN_Parameters.
 func (client *Client) command(ctx context.Context, request Request) (Response, error) {
-	retryConnect := request.Command == CommandConnect && client.pending == CommandConnect
+	retryConnect := request.Command == CommandConnect && (client.pending == CommandConnect || client.pending == CommandDisconnect)
 	minimum, known, err := client.validateRequest(request)
 	if err != nil {
 		return Response{}, err
@@ -65,10 +65,14 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		return Response{}, err
 	}
 	if request.Command == CommandConnect {
+		capabilities, err := client.parseConnect(response.Data)
+		if err != nil {
+			return Response{}, err
+		}
 		if retryConnect {
-			// Normal CONNECT can be retried while the ECU is still disconnected
-			// (pyXCP errormatrix.py). Fence late duplicate CONNECT replies before
-			// trusting this result. A failed barrier must not permit another
+			// CONNECT can recover an unanswered CONNECT or DISCONNECT while the
+			// ECU might be disconnected. Fence earlier replies before trusting
+			// this result. A failed barrier must not permit another
 			// CONNECT: an older SYNCH marker could then precede that new request.
 			if _, err := client.command(ctx, Request{Command: CommandSynch}); err != nil {
 				return Response{}, err
@@ -76,10 +80,6 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 			// The candidate reply may describe an earlier connection. Read fresh
 			// capabilities only after all pre-barrier CONNECT replies are fenced.
 			return client.command(ctx, request)
-		}
-		capabilities, err := client.parseConnect(response.Data)
-		if err != nil {
-			return Response{}, err
 		}
 		client.capabilities = capabilities
 		client.connected = true
@@ -89,10 +89,10 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 }
 
 func (client *Client) validateRequest(request Request) (minimum int, known bool, err error) {
-	if client.pending != 0 && request.Command != CommandSynch && !(request.Command == CommandConnect && client.pending == CommandConnect) {
+	if client.pending != 0 && request.Command != CommandSynch && !(request.Command == CommandConnect && (client.pending == CommandConnect || client.pending == CommandDisconnect)) {
 		return 0, false, ErrSynchronizationRequired
 	}
-	if !client.connected && request.Command != CommandConnect && request.Command != CommandSynch && request.Command != CommandDisconnect {
+	if !client.connected && request.Command != CommandConnect && request.Command != CommandSynch {
 		return 0, false, ErrNotConnected
 	}
 	maximum := int(client.config.TransmitDataLength)

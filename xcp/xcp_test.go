@@ -437,6 +437,9 @@ func TestConnectRetryBarrier(t *testing.T) {
 		if err := <-done; !errors.Is(err, xcp.ErrTimeout) {
 			t.Fatal(err)
 		}
+		if err := r.client.Synchronize(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
+			t.Fatalf("SYNCH after unanswered CONNECT: %v", err)
+		}
 		// The ECU might still be disconnected. Allow another CONNECT, not a
 		// prerequisite SYNCH which disconnected ECUs need not answer.
 		done = run(func() error { _, err := r.client.Connect(r.ctx); return err })
@@ -497,6 +500,68 @@ func TestConnectRetryBarrier(t *testing.T) {
 		done = run(func() error { _, err := r.client.Status(r.ctx); return err })
 		r.expect(0xfd)
 		r.reply(0xff, 0, 0, 0, 0, 0)
+		r.finish(done)
+	})
+}
+
+func TestDisconnectedRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, false)
+		if err := r.client.Synchronize(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
+			t.Fatalf("fresh SYNCH: %v", err)
+		}
+		if err := r.client.Disconnect(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
+			t.Fatalf("fresh DISCONNECT: %v", err)
+		}
+		r.connect() // This must be the first frame; the rejected calls send nothing.
+		done := run(func() error { return r.client.Disconnect(r.ctx) })
+		r.expect(0xfe)
+		r.reply(0xff)
+		r.finish(done)
+		if _, err := r.client.Do(r.ctx, xcp.Request{Command: xcp.CommandSynch}); !errors.Is(err, xcp.ErrNotConnected) {
+			t.Fatalf("raw SYNCH while disconnected: %v", err)
+		}
+		r.connect()
+		done = run(func() error { return r.client.Disconnect(r.ctx) })
+		r.expect(0xfe)
+		time.Sleep(21 * time.Millisecond)
+		if err := <-done; !errors.Is(err, xcp.ErrTimeout) {
+			t.Fatal(err)
+		}
+		if err := r.client.Synchronize(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
+			t.Fatalf("SYNCH after unanswered DISCONNECT: %v", err)
+		}
+		done = run(func() error { _, err := r.client.Connect(r.ctx); return err })
+		r.expect(0xff, 0)
+		r.reply(0xff, 0, 0, 0, 0, 0, 0, 0) // Delayed padded DISCONNECT acknowledgement.
+		if err := <-done; !errors.Is(err, xcp.ErrInvalidResponse) {
+			t.Fatalf("invalid CONNECT candidate: %v", err)
+		}
+		// A candidate must decode as CONNECT before it justifies sending SYNCH.
+		done = run(func() error {
+			caps, err := r.client.Connect(r.ctx)
+			if err == nil && caps.Resources != 5 {
+				return fmt.Errorf("stale reconnect capabilities: %+v", caps)
+			}
+			return err
+		})
+		r.expect(0xff, 0)
+		r.reply(0xff, 1, 0, 8, 8, 0, 1, 1)
+		r.expect(0xfc)
+		r.reply(0xff, 1, 0, 8, 8, 0, 1, 1) // Response to the first reconnect, still pre-barrier.
+		r.reply(0xfe, 0)
+		r.expect(0xff, 0)
+		r.reply(0xff, 5, 0, 8, 8, 0, 1, 1)
+		r.finish(done)
+		done = run(func() error {
+			data, err := r.client.ShortUpload(r.ctx, xcp.Address{Value: 0x1000}, 1)
+			if err == nil && !bytes.Equal(data, []byte{0x42}) {
+				return fmt.Errorf("reconnected read: %x", data)
+			}
+			return err
+		})
+		r.expect(0xf4, 1, 0, 0, 0, 0x10, 0, 0)
+		r.reply(0xff, 0x42)
 		r.finish(done)
 	})
 }

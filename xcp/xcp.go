@@ -105,10 +105,10 @@ func (err *NegativeResponseError) Error() string {
 // fail with ErrSynchronizationRequired. Synchronize must receive ERR_CMD_SYNCH
 // before they can resume. Recovery relies on an ECU obeying sequential XCP and
 // ordering its old replies before that marker on the configured receive ID.
-// An unanswered CONNECT may instead be retried; that retry includes a SYNCH
-// barrier and a fresh CONNECT for capabilities. Once a SYNCH send is accepted,
-// further CONNECT retries are blocked
-// until synchronisation succeeds, so an old marker cannot fence a newer CONNECT.
+// An unanswered CONNECT or DISCONNECT may instead be recovered with CONNECT;
+// that recovery includes a SYNCH barrier and a fresh CONNECT for capabilities.
+// Once a SYNCH send is accepted, further CONNECT retries are blocked until
+// synchronisation succeeds, so an old marker cannot fence a newer CONNECT.
 type Client struct {
 	bus     gocan.Bus
 	capture *gocan.Capture
@@ -230,6 +230,11 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		return Response{}, err
 	}
 	defer finish()
+	// A public SYNCH must not strand a possibly disconnected bootstrap. The
+	// private CONNECT recovery can send its barrier after observing a reply.
+	if request.Command == CommandSynch && !client.connected && (client.pending == 0 || client.pending == CommandConnect || client.pending == CommandDisconnect) {
+		return Response{}, ErrNotConnected
+	}
 	return client.command(ctx, request)
 }
 
@@ -253,6 +258,8 @@ func (client *Client) Disconnect(ctx context.Context) error {
 
 // Synchronize discards late RES/ERR packets until ERR_CMD_SYNCH is observed.
 // Failure leaves ordinary commands blocked; it never retries an earlier request.
+// It rejects known-disconnected sessions and unanswered CONNECT/DISCONNECTs
+// without sending: a disconnected ECU need not answer SYNCH. Use Connect instead.
 func (client *Client) Synchronize(ctx context.Context) error {
 	_, err := client.Do(ctx, Request{Command: CommandSynch})
 	return err
