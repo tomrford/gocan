@@ -17,6 +17,7 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 | `dbc` | DBC parsing and semantic CAN frame encoding and decoding |
 | `isotp` | ISO-TP payload transport over classical CAN and CAN FD |
 | `uds` | Raw exchanges and typed Unified Diagnostic Services operations |
+| `xcp` | Sequential XCP-on-CAN/CAN FD sessions and raw byte-addressed memory reads |
 | `cdd` | CANdela ECU/variant selection, diagnostic service catalogs and metadata, and data-record codecs |
 
 ## Driver support
