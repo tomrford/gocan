@@ -23,6 +23,25 @@ import (
 
 var start = time.Date(2026, 9, 6, 10, 0, 0, 123456789, time.UTC)
 
+type image []byte
+
+func (file image) u64(offset uint64) uint64 {
+	return binary.LittleEndian.Uint64(file[offset:])
+}
+
+func (file image) text(addr uint64) string {
+	return strings.TrimRight(string(file[addr+24:addr+file.u64(addr+8)]), "\x00")
+}
+
+func readImage(t *testing.T, f *os.File) image {
+	t.Helper()
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func newFile(t *testing.T) *os.File {
 	t.Helper()
 	f, err := os.Create(filepath.Join(t.TempDir(), "capture.mf4"))
@@ -155,27 +174,23 @@ func testRecording(t *testing.T, compression bool) []byte {
 // catches broken chunk links, compressed lengths, and logical DL offsets.
 func readRecords(t *testing.T, f *os.File, compressed bool) []byte {
 	t.Helper()
-	file, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	u64 := func(offset uint64) uint64 { return binary.LittleEndian.Uint64(file[offset:]) }
-	dg := u64(88)
-	addr := u64(dg + 40)
+	file := readImage(t, f)
+	dg := file.u64(88)
+	addr := file.u64(dg + 40)
 	if compressed {
 		if string(file[addr:addr+4]) != "##HL" || file[addr+34] != 0 {
 			t.Fatal("missing Deflate header list")
 		}
-		addr = u64(addr + 24)
+		addr = file.u64(addr + 24)
 	}
 	var records []byte
 	chunks := 0
 	for addr != 0 {
-		if string(file[addr:addr+4]) != "##DL" || u64(addr+48) != uint64(len(records)) {
+		if string(file[addr:addr+4]) != "##DL" || file.u64(addr+48) != uint64(len(records)) {
 			t.Fatal("bad data-list type or logical offset")
 		}
-		dataAddr := u64(addr + 32)
-		payload := file[dataAddr+24 : dataAddr+u64(dataAddr+8)]
+		dataAddr := file.u64(addr + 32)
+		payload := file[dataAddr+24 : dataAddr+file.u64(dataAddr+8)]
 		if compressed {
 			if string(file[dataAddr:dataAddr+4]) != "##DZ" || string(payload[:2]) != "DT" || payload[2] != 0 ||
 				binary.LittleEndian.Uint64(payload[16:]) != uint64(len(payload)-24) {
@@ -195,7 +210,7 @@ func readRecords(t *testing.T, f *os.File, compressed bool) []byte {
 			t.Fatal("missing uncompressed data block")
 		}
 		records = append(records, payload...)
-		addr = u64(addr + 24)
+		addr = file.u64(addr + 24)
 		chunks++
 	}
 	if chunks < 3 || len(records) != 804*89+22 {
@@ -208,22 +223,14 @@ func readRecords(t *testing.T, f *os.File, compressed bool) []byte {
 // writer's in-memory state and ordering of metadata blocks.
 func checkGroups(t *testing.T, f *os.File, counts []uint64) {
 	t.Helper()
-	read := func(offset int64, size int) []byte {
-		t.Helper()
-		data := make([]byte, size)
-		if _, err := f.ReadAt(data, offset); err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
-	dg := binary.LittleEndian.Uint64(read(88, 8))
-	cg := binary.LittleEndian.Uint64(read(int64(dg)+32, 8))
+	file := readImage(t, f)
+	dg := file.u64(88)
+	cg := file.u64(dg + 32)
 	for _, want := range counts {
-		block := read(int64(cg), 104)
-		if string(block[:4]) != "##CG" || binary.LittleEndian.Uint64(block[80:]) != want {
+		if string(file[cg:cg+4]) != "##CG" || file.u64(cg+80) != want {
 			t.Fatalf("bad CG counter, want %d", want)
 		}
-		cg = binary.LittleEndian.Uint64(block[24:])
+		cg = file.u64(cg + 24)
 	}
 	if cg != 0 {
 		t.Fatal("unexpected extra group")
@@ -248,8 +255,8 @@ func TestCaptureEvents(t *testing.T) {
 		{gocan.Event{Bus: 1, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive, ErrorCountsKnown: true}, "CAN1 controller state", "Bus=1; ControllerState=active; ErrorCountsKnown=true; TXErrorCount=0; RXErrorCount=0"},
 		{gocan.Event{Bus: 2, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerPassive}, "CAN2 controller state", "Bus=2; ControllerState=passive; ErrorCountsKnown=false"},
 		{gocan.Event{Bus: 1, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerWarning}, "CAN1 controller state", "Bus=1; ControllerState=warning; ErrorCountsKnown=false"},
-		{gocan.Event{Bus: 1, Kind: gocan.EventErrorFrame}, "CAN1 error observation", "Bus=1; Kind=error_frame"},
-		{gocan.Event{Bus: 1, Kind: gocan.EventReceiveOverrun}, "CAN1 receive overrun", "Bus=1; Kind=receive_overrun"},
+		{gocan.Event{Bus: 1, Kind: gocan.EventErrorFrame}, "CAN1 error observation", ""},
+		{gocan.Event{Bus: 1, Kind: gocan.EventReceiveOverrun}, "CAN1 receive overrun", ""},
 	}
 	for _, entry := range events {
 		event := entry.event
@@ -270,31 +277,33 @@ func TestCaptureEvents(t *testing.T) {
 		t.Fatal("recorder stopped at an event", r.Err())
 	}
 	checkGroups(t, f, []uint64{2}) // Event-only buses must not fabricate frame groups.
-	file, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	u64 := func(offset uint64) uint64 { return binary.LittleEndian.Uint64(file[offset:]) }
-	text := func(addr uint64) string { return strings.TrimRight(string(file[addr+24:addr+u64(addr+8)]), "\x00") }
-	addr := u64(120)
+	file := readImage(t, f)
+	addr := file.u64(120)
 	for _, want := range events {
 		if addr == 0 || string(file[addr:addr+4]) != "##EV" {
 			t.Fatal("missing event marker")
 		}
-		if text(u64(addr+48)) != want.name {
+		if file.text(file.u64(addr+48)) != want.name {
 			t.Fatal("event name or order changed")
 		}
 		var comment struct {
 			Text string `xml:"TX"`
 		}
-		if err := xml.Unmarshal([]byte(text(u64(addr+56))), &comment); err != nil || comment.Text != want.details {
+		if want.details == "" {
+			if file.u64(addr+56) != 0 {
+				t.Fatal("event without details has a redundant comment")
+			}
+		} else if err := xml.Unmarshal([]byte(file.text(file.u64(addr+56))), &comment); err != nil || comment.Text != want.details {
 			t.Fatalf("event detail loss: %q, %v", comment.Text, err)
 		}
-		if u64(addr+16) != 5 || file[addr+64] != 6 || file[addr+65] != 1 || file[addr+66] != 0 ||
-			u64(addr+80) != 500_000_000 || math.Float64frombits(u64(addr+88)) != 1e-9 {
+		if file.u64(addr+16) != 5 || file[addr+64] != 6 || file[addr+65] != 1 || file[addr+66] != 0 ||
+			file.u64(addr+80) != 500_000_000 || math.Float64frombits(file.u64(addr+88)) != 1e-9 {
 			t.Fatal("event must be a file-level, time-synchronised point marker")
 		}
-		addr = u64(addr + 24)
+		if file[addr+68] != 0 {
+			t.Fatal("capture observation marked as generated during post-processing")
+		}
+		addr = file.u64(addr + 24)
 	}
 	if addr != 0 {
 		t.Fatal("extra event marker")

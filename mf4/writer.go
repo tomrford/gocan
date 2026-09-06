@@ -46,7 +46,7 @@ type Options struct {
 	// history. An empty name defaults to gocan; an empty version stays blank.
 	ToolName, ToolVersion string
 	// Comment describes the export. Properties holds application-defined
-	// metadata, such as workspace IDs and boostpack versions. Keys must be
+	// metadata, such as workspace or configuration identifiers. Keys must be
 	// nonempty. All metadata text must be valid UTF-8 and XML 1.0 text.
 	Comment    string
 	Properties map[string]string
@@ -124,6 +124,11 @@ func NewWriter(output io.WriteSeeker, start time.Time, options Options) (*Writer
 			return nil, fmt.Errorf("bus %d requires a UTF-8 basename ending in .dbc and nonempty data", database.Bus)
 		}
 		seen[database.Bus] = true
+	}
+	for bus, name := range options.BusNames {
+		if bus == 0 || !validXMLText(name) {
+			return nil, fmt.Errorf("invalid MF4 display name or bus ID for bus %d", bus)
+		}
 	}
 	size, err := output.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -270,9 +275,9 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 			details += fmt.Sprintf("; TXErrorCount=%d; RXErrorCount=%d", event.TXErrorCount, event.RXErrorCount)
 		}
 	case gocan.EventErrorFrame:
-		name, details = "error observation", "Kind=error_frame"
+		name = "error observation"
 	case gocan.EventReceiveOverrun:
-		name, details = "receive overrun", "Kind=receive_overrun"
+		name = "receive overrun"
 	default:
 		return fmt.Errorf("MF4 does not support Capture event kind %d", event.Kind)
 	}
@@ -281,10 +286,13 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 		busName += " (" + label + ")"
 	}
 	title := w.text(busName + " " + name)
-	// Only validated numbers and fixed labels enter this XML text.
-	comment := w.textBlock("##MD", fmt.Sprintf(`<EVcomment xmlns="http://www.asam.net/mdf/v4"><TX>Bus=%d; %s</TX></EVcomment>`, event.Bus, details))
+	var comment uint64
+	if details != "" {
+		// Only validated numbers and fixed labels enter this XML text.
+		comment = w.textBlock("##MD", fmt.Sprintf(`<EVcomment xmlns="http://www.asam.net/mdf/v4"><TX>Bus=%d; %s</TX></EVcomment>`, event.Bus, details))
+	}
 	data := make([]byte, 32)
-	data[0], data[1], data[4] = 6, 1, 1 // marker, time sync, created during export
+	data[0], data[1] = 6, 1 // marker, time sync
 	binary.LittleEndian.PutUint64(data[16:], uint64(event.Timestamp.UnixNano()-w.start.UnixNano()))
 	binary.LittleEndian.PutUint64(data[24:], math.Float64bits(1e-9))
 	ev := w.block("##EV", []uint64{0, 0, 0, title, comment}, data)
@@ -308,12 +316,9 @@ func (w *Writer) Flush() error {
 		w.compressed.Reset()
 		w.compressed.Write(make([]byte, 24)) // DZ parameters precede the zlib stream.
 		w.compressor.Reset(&w.compressed)
-		if _, w.err = w.compressor.Write(w.buffer); w.err != nil {
-			return w.err
-		}
-		if w.err = w.compressor.Close(); w.err != nil {
-			return w.err
-		}
+		// The compressor writes to a bytes.Buffer, which cannot return an error.
+		w.compressor.Write(w.buffer)
+		w.compressor.Close()
 		data := w.compressed.Bytes()
 		copy(data, "DT") // original block type; plain Deflate, no transposition
 		binary.LittleEndian.PutUint64(data[8:], uint64(len(w.buffer)))

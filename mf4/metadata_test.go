@@ -45,20 +45,16 @@ func TestExportMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkGroups(t, f, []uint64{1, 1})
-	file, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	u64 := func(offset uint64) uint64 { return binary.LittleEndian.Uint64(file[offset:]) }
-	text := func(addr uint64) string { return strings.TrimRight(string(file[addr+24:addr+u64(addr+8)]), "\x00") }
+	file := readImage(t, f)
 	var header struct {
-		Text       string `xml:"TX"`
+		XMLName    xml.Name `xml:"http://www.asam.net/mdf/v4 HDcomment"`
+		Text       string   `xml:"TX"`
 		Properties []struct {
 			Name  string `xml:"name,attr"`
 			Value string `xml:",chardata"`
 		} `xml:"common_properties>e"`
 	}
-	if err := xml.Unmarshal([]byte(text(u64(128))), &header); err != nil {
+	if err := xml.Unmarshal([]byte(file.text(file.u64(128))), &header); err != nil {
 		t.Fatal(err)
 	}
 	gotProperties := make(map[string]string)
@@ -69,20 +65,21 @@ func TestExportMetadata(t *testing.T) {
 		t.Fatalf("header metadata changed: %+v", header)
 	}
 	var history struct {
-		ToolName    string `xml:"tool_id"`
-		ToolVersion string `xml:"tool_version"`
+		XMLName     xml.Name `xml:"http://www.asam.net/mdf/v4 FHcomment"`
+		ToolName    string   `xml:"tool_id"`
+		ToolVersion string   `xml:"tool_version"`
 	}
-	if err := xml.Unmarshal([]byte(text(u64(u64(96)+32))), &history); err != nil ||
+	if err := xml.Unmarshal([]byte(file.text(file.u64(file.u64(96)+32))), &history); err != nil ||
 		history.ToolName != "Boost <test> & export" || history.ToolVersion != "1.2+β" {
 		t.Fatalf("producer metadata changed: %+v, %v", history, err)
 	}
-	for cg := u64(u64(88) + 32); cg != 0; cg = u64(cg + 24) {
-		source := u64(cg + 48)
-		if text(u64(source+24)) != "Powertrain <A> & B" || text(u64(source+32)) != "CAN1" {
+	for cg := file.u64(file.u64(88) + 32); cg != 0; cg = file.u64(cg + 24) {
+		source := file.u64(cg + 48)
+		if file.text(file.u64(source+24)) != "Powertrain <A> & B" || file.text(file.u64(source+32)) != "CAN1" {
 			t.Fatal("display name changed bus identity or was not snapshotted")
 		}
 	}
-	if text(u64(u64(120)+48)) != "CAN2 (Diagnostics) receive overrun" {
+	if file.text(file.u64(file.u64(120)+48)) != "CAN2 (Diagnostics) receive overrun" {
 		t.Fatal("event-only bus lost its name or numeric identity")
 	}
 }
