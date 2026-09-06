@@ -3,16 +3,20 @@
 // The bus structures and attachment links follow ASAM MDF Bus Logging, as
 // used by python-can's can/io/mf4.py and asammdf (see .repos/.lock).
 // https://www.asam.net/standards/detail/mdf/wiki/ describes the block model.
-// This package does not write decoded channels, compression, or non-frame
-// Capture events. It does not recover or append to existing measurements.
+// Non-frame Capture observations are exported as timestamped event markers.
+// This package does not write decoded channels, recover interrupted files,
+// or append to existing measurements.
 package mf4
 
 import (
+	"bytes"
+	"compress/zlib"
 	"crypto/md5" // MDF attachment checksum, not a security primitive.
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"path"
 	"strings"
@@ -33,8 +37,27 @@ type Database struct {
 	Data []byte
 }
 
-// Writer streams frames to an initially empty seekable file. It buffers at
-// most 64 KiB of records; metadata grows with the number of buses, not frames.
+// Options configures an MF4 export. The zero value writes uncompressed data.
+type Options struct {
+	Databases []Database
+	// Compression applies Deflate to each chunk of frame records.
+	Compression bool
+	// ToolName and ToolVersion identify the exporting application in file
+	// history. An empty name defaults to gocan; an empty version stays blank.
+	ToolName, ToolVersion string
+	// Comment describes the export. Properties holds application-defined
+	// metadata, such as workspace IDs and boostpack versions. Keys must be
+	// nonempty. All metadata text must be valid UTF-8 and XML 1.0 text.
+	Comment    string
+	Properties map[string]string
+	// BusNames supplies optional display names. Empty names use CAN<BusID>.
+	// Numeric bus identity and canonical source paths remain unchanged.
+	BusNames map[gocan.BusID]string
+}
+
+// Writer streams frames and event markers to an initially empty seekable file.
+// It buffers at most 64 KiB of frame records, plus compression workspace when
+// enabled. Retained metadata grows with buses, not frames or event markers.
 // Buses need not be declared in advance. Writer is not safe for concurrent use.
 //
 // Flush delivers accepted frames, but the file remains marked unfinished until
@@ -50,11 +73,15 @@ type Writer struct {
 	err         error
 	closed      bool
 	buffer      []byte
+	compressor  *zlib.Writer
+	compressed  bytes.Buffer
 	groups      map[uint32]*channelGroup
 	attachments map[gocan.BusID]uint64
 	groupLink   int64
 	dataLink    int64
 	dataOffset  uint64
+	eventLink   int64
+	busNames    map[gocan.BusID]string
 }
 
 type channelGroup struct {
@@ -67,22 +94,28 @@ type channelGroup struct {
 var _ gocan.RecordWriter = (*Writer)(nil)
 
 // NewWriter creates a measurement starting at start, which must be between
-// the Unix epoch and the end of Go's int64 nanosecond range. Frames before start
-// are rejected. MDF time masters must increase strictly: duplicate/regressing
-// encoded timestamps within one bus and frame kind (data or remote) are errors.
-// Different buses may share timestamps. Accepted records retain append order.
+// the Unix epoch and the end of Go's int64 nanosecond range. Frames and events
+// before start are rejected. MDF time masters must increase strictly:
+// duplicate/regressing encoded timestamps within one bus and frame kind
+// (data or remote) are errors. Different buses may share timestamps.
+// Accepted frames retain append order.
 // Times are stored as float64 seconds relative to start, with its UTC epoch
 // nanoseconds in the header. Relative time precision decreases for long runs.
 // Each bus may have one DBC attachment, linked from both frame structures.
-func NewWriter(output io.WriteSeeker, start time.Time, databases []Database) (*Writer, error) {
+// Event markers retain their own append order separately from frame records.
+func NewWriter(output io.WriteSeeker, start time.Time, options Options) (*Writer, error) {
 	if output == nil {
 		return nil, errors.New("MF4 writer requires an output")
 	}
 	if !validTime(start) {
 		return nil, errors.New("MF4 start time is outside the supported nanosecond range")
 	}
+	headerComment, historyComment, err := options.comments()
+	if err != nil {
+		return nil, err
+	}
 	seen := make(map[gocan.BusID]bool)
-	for _, database := range databases {
+	for _, database := range options.Databases {
 		if database.Bus == 0 || seen[database.Bus] {
 			return nil, fmt.Errorf("invalid or duplicate DBC bus %d", database.Bus)
 		}
@@ -100,7 +133,11 @@ func NewWriter(output io.WriteSeeker, start time.Time, databases []Database) (*W
 		return nil, errors.New("MF4 output must be empty")
 	}
 	w := &Writer{output: output, start: start, buffer: make([]byte, 0, bufferSize),
-		groups: make(map[uint32]*channelGroup), attachments: make(map[gocan.BusID]uint64)}
+		groups: make(map[uint32]*channelGroup), attachments: make(map[gocan.BusID]uint64),
+		eventLink: 64 + 56, busNames: maps.Clone(options.BusNames)}
+	if options.Compression {
+		w.compressor = zlib.NewWriter(&w.compressed)
+	}
 	id := make([]byte, 64)
 	copy(id, "UnFinMF ")
 	copy(id[8:], "4.10    ")
@@ -111,9 +148,12 @@ func NewWriter(output io.WriteSeeker, start time.Time, databases []Database) (*W
 	header := make([]byte, 32)
 	binary.LittleEndian.PutUint64(header, uint64(start.UnixNano()))
 	w.block("##HD", make([]uint64, 6), header)
+	if headerComment != "" {
+		w.patch64(64+64, w.textBlock("##MD", headerComment))
+	}
 	// MDF requires a creation history entry and its structured XML comment,
 	// even though permissive readers can open files without either.
-	comment := w.textBlock("##MD", `<FHcomment xmlns="http://www.asam.net/mdf/v4"><TX>Created raw CAN measurement</TX><tool_id>gocan</tool_id><tool_vendor>gocan contributors</tool_vendor><tool_version>0.0.0</tool_version></FHcomment>`)
+	comment := w.textBlock("##MD", historyComment)
 	history := make([]byte, 16)
 	binary.LittleEndian.PutUint64(history, uint64(time.Now().UnixNano()))
 	fh := w.block("##FH", []uint64{0, comment}, history)
@@ -123,7 +163,7 @@ func NewWriter(output io.WriteSeeker, start time.Time, databases []Database) (*W
 	w.groupLink = int64(dg) + 32
 	w.dataLink = int64(dg) + 40
 	attachmentLink := int64(64 + 48)
-	for _, database := range databases {
+	for _, database := range options.Databases {
 		name := w.text(database.Name)
 		mime := w.text("application/x-dbc")
 		data := make([]byte, 40+len(database.Data))
@@ -207,8 +247,9 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 	return nil
 }
 
-// WriteEvent rejects non-frame records explicitly; it never silently discards
-// Capture events or fabricates native CAN error details that Capture lacks.
+// WriteEvent exports a Capture observation as a file-level point marker.
+// Its name and comment identify the bus, including buses with no frames.
+// Markers may share timestamps; frame-only readers may not expose them.
 func (w *Writer) WriteEvent(event gocan.Event) error {
 	if err := w.ready(); err != nil {
 		return err
@@ -216,7 +257,40 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	return fmt.Errorf("MF4 does not support Capture event kind %d", event.Kind)
+	if !validTime(event.Timestamp) || event.Timestamp.UnixNano() < w.start.UnixNano() {
+		return errors.New("MF4 event timestamp is before start or outside the supported nanosecond range")
+	}
+	var name, details string
+	switch event.Kind {
+	case gocan.EventControllerState:
+		states := [...]string{"", "active", "warning", "passive", "bus_off"}
+		name = "controller state"
+		details = fmt.Sprintf("ControllerState=%s; ErrorCountsKnown=%t", states[event.ControllerState], event.ErrorCountsKnown)
+		if event.ErrorCountsKnown {
+			details += fmt.Sprintf("; TXErrorCount=%d; RXErrorCount=%d", event.TXErrorCount, event.RXErrorCount)
+		}
+	case gocan.EventErrorFrame:
+		name, details = "error observation", "Kind=error_frame"
+	case gocan.EventReceiveOverrun:
+		name, details = "receive overrun", "Kind=receive_overrun"
+	default:
+		return fmt.Errorf("MF4 does not support Capture event kind %d", event.Kind)
+	}
+	busName := fmt.Sprintf("CAN%d", event.Bus)
+	if label := w.busNames[event.Bus]; label != "" {
+		busName += " (" + label + ")"
+	}
+	title := w.text(busName + " " + name)
+	// Only validated numbers and fixed labels enter this XML text.
+	comment := w.textBlock("##MD", fmt.Sprintf(`<EVcomment xmlns="http://www.asam.net/mdf/v4"><TX>Bus=%d; %s</TX></EVcomment>`, event.Bus, details))
+	data := make([]byte, 32)
+	data[0], data[1], data[4] = 6, 1, 1 // marker, time sync, created during export
+	binary.LittleEndian.PutUint64(data[16:], uint64(event.Timestamp.UnixNano()-w.start.UnixNano()))
+	binary.LittleEndian.PutUint64(data[24:], math.Float64bits(1e-9))
+	ev := w.block("##EV", []uint64{0, 0, 0, title, comment}, data)
+	w.patch64(w.eventLink, ev)
+	w.eventLink = int64(ev) + 24
+	return w.err
 }
 
 // Flush delivers buffered frames to output. The file still requires Close.
@@ -227,14 +301,36 @@ func (w *Writer) Flush() error {
 	if len(w.buffer) == 0 {
 		return nil
 	}
-	dt := w.block("##DT", nil, w.buffer)
+	var address uint64
+	if w.compressor == nil {
+		address = w.block("##DT", nil, w.buffer)
+	} else {
+		w.compressed.Reset()
+		w.compressed.Write(make([]byte, 24)) // DZ parameters precede the zlib stream.
+		w.compressor.Reset(&w.compressed)
+		if _, w.err = w.compressor.Write(w.buffer); w.err != nil {
+			return w.err
+		}
+		if w.err = w.compressor.Close(); w.err != nil {
+			return w.err
+		}
+		data := w.compressed.Bytes()
+		copy(data, "DT") // original block type; plain Deflate, no transposition
+		binary.LittleEndian.PutUint64(data[8:], uint64(len(w.buffer)))
+		binary.LittleEndian.PutUint64(data[16:], uint64(len(data)-24))
+		address = w.block("##DZ", nil, data)
+	}
 	// One variable-sized data block per list. Offsets refer to the logical
 	// concatenation of all DT payloads, excluding alignment padding.
 	data := make([]byte, 16)
 	binary.LittleEndian.PutUint32(data[4:], 1)
 	binary.LittleEndian.PutUint64(data[8:], w.dataOffset)
-	dl := w.block("##DL", []uint64{0, dt}, data)
-	w.patch64(w.dataLink, dl)
+	dl := w.block("##DL", []uint64{0, address}, data)
+	link := dl
+	if w.compressor != nil && w.dataOffset == 0 {
+		link = w.block("##HL", []uint64{dl}, make([]byte, 8)) // variable-sized Deflate chunks
+	}
+	w.patch64(w.dataLink, link)
 	if w.err != nil {
 		return w.err
 	}
@@ -291,8 +387,12 @@ func (w *Writer) addGroup(bus gocan.BusID, remote bool) *channelGroup {
 		name = "CAN_RemoteFrame"
 		structureSize = 10
 	}
-	busName := w.text(fmt.Sprintf("CAN%d", bus))
-	source := w.block("##SI", []uint64{busName, busName, 0}, []byte{2, 2, 0, 0, 0, 0, 0, 0})
+	busPath := w.text(fmt.Sprintf("CAN%d", bus))
+	busName := busPath
+	if label := w.busNames[bus]; label != "" {
+		busName = w.text(label)
+	}
+	source := w.block("##SI", []uint64{busName, busPath, 0}, []byte{2, 2, 0, 0, 0, 0, 0, 0})
 	// CN components use record-relative offsets, including the time master.
 	type member struct {
 		name         string

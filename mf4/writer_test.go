@@ -2,12 +2,16 @@ package mf4_test
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
+	"encoding/xml"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +42,15 @@ func frame(bus gocan.BusID, offset time.Duration, id uint32, flags gocan.FrameFl
 }
 
 func TestRecording(t *testing.T) {
+	var plain, compressed []byte
+	t.Run("plain", func(t *testing.T) { plain = testRecording(t, false) })
+	t.Run("compressed", func(t *testing.T) { compressed = testRecording(t, true) })
+	if !bytes.Equal(plain, compressed) {
+		t.Fatal("compression changed the frame record stream")
+	}
+}
+
+func testRecording(t *testing.T, compression bool) []byte {
 	f := newFile(t)
 	// Preserve legacy encoding and comments that are absent from the model.
 	db, err := dbc.Parse("", "BU_: ECU\nBO_ 291 Status: 8 ECU\n SG_ Value : 0|8@1+ (0.5,-10) [-10|117.5] \"V\" ECU\nCM_ \"Gr\xf6\xdfe\";\n")
@@ -46,10 +59,10 @@ func TestRecording(t *testing.T) {
 	}
 	description := []byte(db.Source())
 	second := []byte("BU_: ECU\nBO_ 292 Second: 8 ECU\n SG_ Value : 0|8@1+ (2,0) [0|510] \"V\" ECU\n")
-	w, err := mf4.NewWriter(f, start, []mf4.Database{
+	w, err := mf4.NewWriter(f, start, mf4.Options{Compression: compression, Databases: []mf4.Database{
 		{Bus: 1, Name: "bus1.dbc", Data: description},
 		{Bus: 2, Name: "bus2.dbc", Data: second},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +148,60 @@ func TestRecording(t *testing.T) {
 	if attachment != 0 {
 		t.Fatal("unexpected extra attachment")
 	}
+	return readRecords(t, f, compression)
+}
+
+// Follow the MDF data links and inflate with the standard zlib reader. This
+// catches broken chunk links, compressed lengths, and logical DL offsets.
+func readRecords(t *testing.T, f *os.File, compressed bool) []byte {
+	t.Helper()
+	file, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u64 := func(offset uint64) uint64 { return binary.LittleEndian.Uint64(file[offset:]) }
+	dg := u64(88)
+	addr := u64(dg + 40)
+	if compressed {
+		if string(file[addr:addr+4]) != "##HL" || file[addr+34] != 0 {
+			t.Fatal("missing Deflate header list")
+		}
+		addr = u64(addr + 24)
+	}
+	var records []byte
+	chunks := 0
+	for addr != 0 {
+		if string(file[addr:addr+4]) != "##DL" || u64(addr+48) != uint64(len(records)) {
+			t.Fatal("bad data-list type or logical offset")
+		}
+		dataAddr := u64(addr + 32)
+		payload := file[dataAddr+24 : dataAddr+u64(dataAddr+8)]
+		if compressed {
+			if string(file[dataAddr:dataAddr+4]) != "##DZ" || string(payload[:2]) != "DT" || payload[2] != 0 ||
+				binary.LittleEndian.Uint64(payload[16:]) != uint64(len(payload)-24) {
+				t.Fatal("bad compressed block parameters")
+			}
+			reader, err := zlib.NewReader(bytes.NewReader(payload[24:]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inflated, err := io.ReadAll(reader)
+			reader.Close()
+			if err != nil || uint64(len(inflated)) != binary.LittleEndian.Uint64(payload[8:]) {
+				t.Fatal("bad inflated payload", err)
+			}
+			payload = inflated
+		} else if string(file[dataAddr:dataAddr+4]) != "##DT" {
+			t.Fatal("missing uncompressed data block")
+		}
+		records = append(records, payload...)
+		addr = u64(addr + 24)
+		chunks++
+	}
+	if chunks < 3 || len(records) != 804*89+22 {
+		t.Fatalf("incomplete record stream: %d chunks, %d bytes", chunks, len(records))
+	}
+	return records
 }
 
 // Read standard CG counters through the file's links, independent of the
@@ -163,9 +230,9 @@ func checkGroups(t *testing.T, f *os.File, counts []uint64) {
 	}
 }
 
-func TestUnsupportedEventStopsAtAcceptedPrefix(t *testing.T) {
+func TestCaptureEvents(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, nil)
+	w, err := mf4.NewWriter(f, start, mf4.Options{Compression: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,22 +240,99 @@ func TestUnsupportedEventStopsAtAcceptedPrefix(t *testing.T) {
 	if err := capture.Append(frame(1, 0, 1, 0, 42)); err != nil {
 		t.Fatal(err)
 	}
-	prefix := capture.End()
-	if err := capture.AppendEvent(gocan.Event{Bus: 1, Timestamp: start, Kind: gocan.EventReceiveOverrun}); err != nil {
-		t.Fatal(err)
+	events := []struct {
+		event         gocan.Event
+		name, details string
+	}{
+		{gocan.Event{Bus: 300, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerBusOff, ErrorCountsKnown: true, TXErrorCount: 12, RXErrorCount: 34}, "CAN300 controller state", "Bus=300; ControllerState=bus_off; ErrorCountsKnown=true; TXErrorCount=12; RXErrorCount=34"},
+		{gocan.Event{Bus: 1, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive, ErrorCountsKnown: true}, "CAN1 controller state", "Bus=1; ControllerState=active; ErrorCountsKnown=true; TXErrorCount=0; RXErrorCount=0"},
+		{gocan.Event{Bus: 2, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerPassive}, "CAN2 controller state", "Bus=2; ControllerState=passive; ErrorCountsKnown=false"},
+		{gocan.Event{Bus: 1, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerWarning}, "CAN1 controller state", "Bus=1; ControllerState=warning; ErrorCountsKnown=false"},
+		{gocan.Event{Bus: 1, Kind: gocan.EventErrorFrame}, "CAN1 error observation", "Bus=1; Kind=error_frame"},
+		{gocan.Event{Bus: 1, Kind: gocan.EventReceiveOverrun}, "CAN1 receive overrun", "Bus=1; Kind=receive_overrun"},
+	}
+	for _, entry := range events {
+		event := entry.event
+		event.Timestamp = start.Add(500 * time.Millisecond)
+		if err := capture.AppendEvent(event); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := capture.Append(frame(1, time.Second, 2, 0)); err != nil {
 		t.Fatal(err)
 	}
 	r, err := recorder.Start(context.Background(), capture, w, gocan.Cursor{}, time.Hour)
-	var recordErr *gocan.RecordWriteError
-	if !errors.As(err, &recordErr) {
-		t.Fatalf("missing record failure: %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if r.Accepted() != prefix || r.Flushed() != prefix {
-		t.Fatal("recorder hid unsupported event")
+	r.Stop()
+	if r.Err() != nil || r.Accepted() != capture.End() || r.Flushed() != capture.End() {
+		t.Fatal("recorder stopped at an event", r.Err())
 	}
-	checkGroups(t, f, []uint64{1})
+	checkGroups(t, f, []uint64{2}) // Event-only buses must not fabricate frame groups.
+	file, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u64 := func(offset uint64) uint64 { return binary.LittleEndian.Uint64(file[offset:]) }
+	text := func(addr uint64) string { return strings.TrimRight(string(file[addr+24:addr+u64(addr+8)]), "\x00") }
+	addr := u64(120)
+	for _, want := range events {
+		if addr == 0 || string(file[addr:addr+4]) != "##EV" {
+			t.Fatal("missing event marker")
+		}
+		if text(u64(addr+48)) != want.name {
+			t.Fatal("event name or order changed")
+		}
+		var comment struct {
+			Text string `xml:"TX"`
+		}
+		if err := xml.Unmarshal([]byte(text(u64(addr+56))), &comment); err != nil || comment.Text != want.details {
+			t.Fatalf("event detail loss: %q, %v", comment.Text, err)
+		}
+		if u64(addr+16) != 5 || file[addr+64] != 6 || file[addr+65] != 1 || file[addr+66] != 0 ||
+			u64(addr+80) != 500_000_000 || math.Float64frombits(u64(addr+88)) != 1e-9 {
+			t.Fatal("event must be a file-level, time-synchronised point marker")
+		}
+		addr = u64(addr + 24)
+	}
+	if addr != 0 {
+		t.Fatal("extra event marker")
+	}
+	if err := w.WriteEvent(events[0].event); err == nil {
+		t.Fatal("accepted event after Close")
+	}
+}
+
+func TestEventOnlyExport(t *testing.T) {
+	f := newFile(t)
+	w, err := mf4.NewWriter(f, start, mf4.Options{Compression: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := gocan.Event{Bus: 300, Timestamp: start.Add(-time.Nanosecond), Kind: gocan.EventReceiveOverrun}
+	if err := w.WriteEvent(event); err == nil {
+		t.Fatal("accepted event before start")
+	}
+	event.Timestamp, event.Kind = start, 0
+	if err := w.WriteEvent(event); err == nil {
+		t.Fatal("accepted invalid event")
+	}
+	event.Kind = gocan.EventReceiveOverrun
+	if err := w.WriteEvent(event); err != nil {
+		t.Fatal("validation poisoned the writer", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkGroups(t, f, nil)
+	var link [8]byte
+	if _, err := f.ReadAt(link[:], 120); err != nil || binary.LittleEndian.Uint64(link[:]) == 0 {
+		t.Fatal("event-only export lost the marker", err)
+	}
 }
 
 type failingFile struct {
@@ -215,10 +359,10 @@ func (f *failingFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func TestWriterFailures(t *testing.T) {
-	for _, stage := range []string{"flush", "short", "finalise"} {
+	for _, stage := range []string{"flush", "short", "finalise", "event"} {
 		t.Run(stage, func(t *testing.T) {
 			f := &failingFile{File: newFile(t)}
-			w, err := mf4.NewWriter(f, start, nil)
+			w, err := mf4.NewWriter(f, start, mf4.Options{Compression: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -229,6 +373,11 @@ func TestWriterFailures(t *testing.T) {
 			switch stage {
 			case "flush":
 				f.writeErr = failure
+			case "event":
+				f.writeErr = failure
+				if err := w.WriteEvent(gocan.Event{Bus: 1, Timestamp: start, Kind: gocan.EventErrorFrame}); !errors.Is(err, failure) {
+					t.Fatalf("event: %v", err)
+				}
 			case "short":
 				f.short = true
 				failure = io.ErrShortWrite
@@ -258,7 +407,7 @@ func TestWriterFailures(t *testing.T) {
 		})
 	}
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, nil)
+	w, err := mf4.NewWriter(f, start, mf4.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +438,7 @@ func TestWriterFailures(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mf4.NewWriter(f, start, nil); err == nil {
+	if _, err := mf4.NewWriter(f, start, mf4.Options{}); err == nil {
 		t.Fatal("overwrote existing output")
 	}
 }

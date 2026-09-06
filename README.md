@@ -13,7 +13,7 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 | `drivers/virtual` | In-process CAN networks for development and tests |
 | `cyclic` | Recurring raw frame transmission |
 | `asc` | Vector ASCII trace writing |
-| `mf4` | Streaming MDF 4.10 raw CAN/CAN FD recording with bus-specific DBC attachments |
+| `mf4` | MDF 4.10 raw CAN/CAN FD export with DBC attachments, event markers, compression and application metadata |
 | `recorder` | Lifecycled trace recording with safe flush checkpoints |
 | `dbc` | DBC parsing with original source retention, and CAN frame encoding and decoding |
 | `j1939` | J1939 identifiers, passive decoding, active address claiming and classical BAM/RTS-CTS transport |
