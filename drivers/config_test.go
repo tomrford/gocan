@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,6 +26,11 @@ func TestConfigRequiresExactlyOneTimingMode(t *testing.T) {
 	}{
 		{name: "classic", config: Config{ID: 1, Name: "can", Bitrate: 500_000}},
 		{name: "FD", config: Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, wantFD: true},
+		{name: "custom FD rates", config: Config{ID: 1, Name: "can", FDTiming: FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: BitTiming{BRP: 1, TSEG1: 63, TSEG2: 16, SJW: 16}, // 1 Mbit/s
+			Data:    BitTiming{BRP: 1, TSEG1: 7, TSEG2: 2, SJW: 2},    // 8 Mbit/s
+		}}, wantFD: true},
 		{name: "external", config: Config{ID: 1, Name: "can", External: true}},
 	}
 	for _, test := range tests {
@@ -74,18 +80,30 @@ func TestFDRatePresets(t *testing.T) {
 	for _, driver := range []driverKind{driverPCAN, driverVector} {
 		t.Run(driver.String(), func(t *testing.T) {
 			channel := Channel{driver: driver, supportsFD: true}
-			for _, data := range []uint32{2_000_000, 4_000_000} {
-				request := Config{ID: 3, Name: "powertrain", Bitrate: 500_000, DataBitrate: data}
+			want := []FDRatePreset{{Bitrate: 500_000, DataBitrate: 2_000_000}, {Bitrate: 500_000, DataBitrate: 4_000_000}}
+			presets := channel.FDRatePresets()
+			if !slices.Equal(presets, want) {
+				t.Fatalf("FDRatePresets = %v; want %v", presets, want)
+			}
+			// A consumer editing its dropdown options must not change future
+			// listings or the timing selected by Open.
+			presets[0] = FDRatePreset{Bitrate: 1, DataBitrate: 2}
+			presets = channel.FDRatePresets()
+			if !slices.Equal(presets, want) {
+				t.Fatalf("consumer changed shared presets: %v", presets)
+			}
+			for _, preset := range presets {
+				request := Config{ID: 3, Name: "powertrain", Bitrate: preset.Bitrate, DataBitrate: preset.DataBitrate}
 				got, err := prepareOpen(capture, channel, request)
 				if err != nil {
-					t.Fatalf("prepareOpen 500k/%d: %v", data, err)
+					t.Fatalf("prepareOpen %v: %v", preset, err)
 				}
 				if got.ID != request.ID || got.Name != request.Name || got.Bitrate != 0 || got.DataBitrate != 0 || got.External {
 					t.Fatalf("resolved config = %+v", got)
 				}
 				nominal, actualData, err := deriveFDBitrates(got.FDTiming)
-				if err != nil || nominal != 500_000 || actualData != data {
-					t.Fatalf("resolved rates = %d/%d, %v; want 500000/%d", nominal, actualData, err, data)
+				if err != nil || nominal != preset.Bitrate || actualData != preset.DataBitrate {
+					t.Fatalf("resolved rates = %d/%d, %v; want %v", nominal, actualData, err, preset)
 				}
 				for _, phase := range []BitTiming{got.FDTiming.Nominal, got.FDTiming.Data} {
 					// Both presets sample at 80% of the bit and allow SJW up to
@@ -100,6 +118,20 @@ func TestFDRatePresets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFDRatePresetsUnavailable(t *testing.T) {
+	for _, channel := range []Channel{
+		{},
+		{driver: driverPCAN},
+		{driver: driverVector},
+		{driver: driverSocketCAN, supportsFD: true, external: true},
+		{driver: driverPCAN, supportsFD: true, external: true},
+	} {
+		if presets := channel.FDRatePresets(); len(presets) != 0 {
+			t.Fatalf("channel %+v lists unavailable presets: %v", channel, presets)
+		}
 	}
 }
 
