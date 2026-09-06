@@ -170,7 +170,10 @@ func TestRecoveryAndCaptureLoss(t *testing.T) {
 		if _, err := r.client.Status(r.ctx); !errors.Is(err, xcp.ErrSynchronizationRequired) {
 			t.Fatalf("after failed SYNCH: %v", err)
 		}
-		r.synchronize()
+		r.reply(0xfe, 0) // The outstanding SYNCH can complete between calls.
+		if err := r.client.Synchronize(r.ctx); err != nil {
+			t.Fatal(err)
+		}
 		done = run(func() error { _, err := r.client.Status(r.ctx); return err })
 		r.expect(0xfd)
 		// Safe pruning keeps the active command boundary; Clear deliberately loses it.
@@ -193,6 +196,99 @@ func TestRecoveryAndCaptureLoss(t *testing.T) {
 			t.Fatal("idle client retains history")
 		}
 	})
+}
+
+func TestSynchronizeRetainsOneBarrier(t *testing.T) {
+	for _, clearCapture := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clear=%v", clearCapture), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := newRig(t, false)
+				r.connect()
+				done := run(func() error { return r.client.Synchronize(r.ctx) })
+				r.expect(0xfc)
+				time.Sleep(21 * time.Millisecond)
+				if err := <-done; !errors.Is(err, xcp.ErrTimeout) {
+					t.Fatal(err)
+				}
+				cursor := r.client.RetentionCursor()
+				if err := r.capture.Prune(cursor); err != nil {
+					t.Fatal(err)
+				}
+				if clearCapture {
+					r.capture.Clear()
+					r.reply(0xfe, 0)
+					if err := r.client.Synchronize(r.ctx); !errors.Is(err, gocan.ErrCursorOutOfRange) {
+						t.Fatalf("lost barrier: %v", err)
+					}
+					return
+				}
+				// Repeated waits must not send additional indistinguishable markers.
+				done = run(func() error { return r.client.Synchronize(r.ctx) })
+				synctest.Wait()
+				if r.client.RetentionCursor() != cursor {
+					t.Fatal("retry reset the outstanding barrier cursor")
+				}
+				r.reply(0xfe, 0)
+				r.finish(done)
+				done = run(func() error {
+					status, err := r.client.Status(r.ctx)
+					if err == nil && status.Session != 0x22 {
+						return fmt.Errorf("unexpected status: %+v", status)
+					}
+					return err
+				})
+				r.expect(0xfd) // An extra SYNCH would appear here before GET_STATUS.
+				r.reply(0xff, 0x22, 0, 0, 0, 0)
+				r.finish(done)
+			})
+		})
+	}
+}
+
+func TestReadIgnoresDTOLimits(t *testing.T) {
+	for _, maxDTO := range []byte{0, 1, 64} {
+		t.Run(fmt.Sprintf("DTO=%d", maxDTO), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := newRig(t, true)
+				r.client.Close()
+				r.config.TransmitDataLength = 8
+				r.config.PadFrames = false
+				var err error
+				r.client, err = xcp.New(r.tester, r.config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.client.Close()
+				done := run(func() error {
+					caps, err := r.client.Connect(r.ctx)
+					if err == nil && caps.MaxDTO != uint16(maxDTO) {
+						return fmt.Errorf("MAX_DTO lost: %+v", caps)
+					}
+					return err
+				})
+				r.expect(0xff, 0)
+				resources := byte(1) // Memory access without DAQ.
+				if maxDTO == 64 {
+					resources |= 4
+				}
+				r.reply(0xff, resources, 0, 8, maxDTO, 0, 1, 1)
+				r.finish(done)
+				done = run(func() error {
+					data, err := r.client.ShortUpload(r.ctx, xcp.Address{Value: 0x1000}, 1)
+					if err == nil && !bytes.Equal(data, []byte{0x42}) {
+						return fmt.Errorf("read: %x", data)
+					}
+					return err
+				})
+				r.expect(0xf4, 1, 0, 0, 0, 0x10, 0, 0)
+				if maxDTO == 64 {
+					r.reply(make([]byte, 64)...) // DAQ may exceed command capacity.
+				}
+				r.reply(0xff, 0x42)
+				r.finish(done)
+			})
+		})
+	}
 }
 
 func TestPendingAndCancellation(t *testing.T) {
@@ -370,8 +466,6 @@ func TestMalformedConnect(t *testing.T) {
 		{0xff, 1, 6, 8, 8, 0, 1, 1},  // reserved granularity
 		{0xff, 1, 0, 7, 8, 0, 1, 1},  // too small CTO
 		{0xff, 1, 0, 12, 8, 0, 1, 1}, // CTO exceeds classical CAN
-		{0xff, 1, 0, 8, 0, 0, 1, 1},  // invalid DTO
-		{0xff, 1, 0, 8, 64, 0, 1, 1}, // DTO exceeds classical CAN
 	} {
 		t.Run(fmt.Sprintf("%x", packet), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -465,7 +559,10 @@ func TestConnectRetryBarrier(t *testing.T) {
 		if _, err := r.client.Connect(r.ctx); !errors.Is(err, xcp.ErrSynchronizationRequired) {
 			t.Fatalf("CONNECT passed failed barrier: %v", err)
 		}
-		r.synchronize()
+		r.reply(0xfe, 0) // Resume the private CONNECT barrier without another SYNCH.
+		if err := r.client.Synchronize(r.ctx); err != nil {
+			t.Fatal(err)
+		}
 		r.connect()
 		// A second timeout/retry succeeds, but only fresh post-barrier capabilities
 		// are exposed. Older CONNECT replies and unrelated errors are drained.

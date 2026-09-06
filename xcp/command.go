@@ -23,40 +23,46 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 	if err := context.Cause(ctx); err != nil {
 		return Response{}, err
 	}
-	packet := append([]byte{byte(request.Command)}, request.Data...)
-	length := len(packet)
-	if client.config.PadFrames {
-		length = int(client.config.TransmitDataLength)
-	}
-	for {
-		if _, err := gocan.LengthToDLC(length, client.config.FrameFlags.Has(gocan.FrameFD)); err == nil {
-			break
+	// Resume an unanswered SYNCH at its existing cursor. Sending another
+	// indistinguishable barrier can leave a late marker that falsely completes
+	// recovery for a command sent after it.
+	if request.Command != CommandSynch || client.pending != CommandSynch {
+		packet := [gocan.MaxDataLength]byte{byte(request.Command)}
+		copy(packet[1:], request.Data)
+		length := 1 + len(request.Data)
+		if client.config.PadFrames {
+			length = int(client.config.TransmitDataLength)
 		}
-		length++
-	}
-	for len(packet) < length {
-		packet = append(packet, client.config.PaddingByte)
-	}
-	frame, err := gocan.NewFrame(client.config.TransmitID, packet, client.config.FrameFlags)
-	if err != nil {
-		return Response{}, err
-	}
-	client.mu.Lock()
-	client.cursor = client.capture.End()
-	client.retaining = true
-	client.mu.Unlock()
-	if err := client.bus.Send(ctx, frame); err != nil {
-		// Bus.Send reports a definite native result. A rejected send has created
-		// no outstanding command, so it must not poison a synchronised session.
-		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-			return Response{}, context.Cause(ctx)
+		for {
+			if _, err := gocan.LengthToDLC(length, client.config.FrameFlags.Has(gocan.FrameFD)); err == nil {
+				break
+			}
+			length++
 		}
-		return Response{}, err
+		for i := 1 + len(request.Data); i < length; i++ {
+			packet[i] = client.config.PaddingByte
+		}
+		frame, err := gocan.NewFrame(client.config.TransmitID, packet[:length], client.config.FrameFlags)
+		if err != nil {
+			return Response{}, err
+		}
+		client.mu.Lock()
+		client.cursor = client.capture.End()
+		client.retaining = true
+		client.mu.Unlock()
+		if err := client.bus.Send(ctx, frame); err != nil {
+			// Bus.Send reports a definite native result. A rejected send has created
+			// no outstanding command, so it must not poison a synchronised session.
+			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				return Response{}, context.Cause(ctx)
+			}
+			return Response{}, err
+		}
+		if !known || request.Command == CommandConnect || request.Command == CommandDisconnect {
+			client.connected = false
+		}
+		client.pending = request.Command
 	}
-	if !known || request.Command == CommandConnect || request.Command == CommandDisconnect {
-		client.connected = false
-	}
-	client.pending = request.Command
 	response, err := client.receive(ctx, request.Command, minimum)
 	if err != nil {
 		if retryConnect && !errors.Is(err, ErrSessionTerminated) {
@@ -189,6 +195,9 @@ func (client *Client) receive(ctx context.Context, command Command, minimum int)
 			continue
 		}
 		length := frame.DataLength()
+		if length != 0 && frame.Data[0] <= 0xfc {
+			continue // DAQ/SERV sizes do not constrain command traffic.
+		}
 		if length == 0 || length > int(client.config.TransmitDataLength) {
 			return Response{}, fmt.Errorf("%w: CAN packet length %d", ErrInvalidResponse, length)
 		}
@@ -239,7 +248,7 @@ func (client *Client) parseConnect(data []byte) (Capabilities, error) {
 	granularity := (data[1] >> 1) & 3
 	maxCTO, maxDTO := data[2], order.Uint16(data[3:5])
 	capacity := client.config.TransmitDataLength
-	if granularity == 3 || maxCTO < 8 || maxCTO > capacity || maxDTO < 8 || maxDTO > uint16(capacity) {
+	if granularity == 3 || maxCTO < 8 || maxCTO > capacity {
 		return Capabilities{}, fmt.Errorf("%w: CONNECT granularity or packet limits", ErrInvalidResponse)
 	}
 	if data[5] != 1 || data[6] != 1 {

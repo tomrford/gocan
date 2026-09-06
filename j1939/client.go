@@ -15,6 +15,8 @@ import (
 // RequestPGN carries the three-byte PGN being requested.
 const RequestPGN PGN = 0xea00
 
+const commandedAddressPGN PGN = 0xfed8
+
 var (
 	ErrClosed      = errors.New("J1939 client is closed")
 	ErrAddressLost = errors.New("J1939 local address was lost")
@@ -133,6 +135,7 @@ func (c *Client) RetentionCursor() gocan.Cursor { c.mu.Lock(); defer c.mu.Unlock
 // complete when the bus accepts their frames; directed TP requires matching
 // EOMA. A caller deadline bounds the entire transfer, including repeated CTS
 // pauses/retransmissions. Busy is returned without starting another TP session.
+// Directed DT retries a full native transmit queue within its packet deadline.
 // While BAM is outgoing, all other Send/Request calls return ErrBusy so caller
 // traffic cannot delay its DT packets. Mandatory protocol replies still run.
 // PDU2 can be directed only when transported (more than eight bytes).
@@ -184,7 +187,7 @@ func activePGN(pgn PGN) error {
 	if err := pgn.validate(); err != nil {
 		return err
 	}
-	if pgn&0x20000 != 0 || pgn == transportControlPGN || pgn == transportDataPGN || pgn == 0xc700 || pgn == 0xc800 || pgn == 0xfed8 {
+	if pgn&0x20000 != 0 || pgn == transportControlPGN || pgn == transportDataPGN || pgn == extendedTransportDataPGN || pgn == extendedTransportControlPGN || pgn == commandedAddressPGN {
 		return fmt.Errorf("%w: PGN %#x", ErrUnsupported, pgn)
 	}
 	return nil
@@ -206,7 +209,14 @@ func (c *Client) run() {
 	// latency without adding a second receive contract or a driver goroutine.
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
+	immediate := make(chan struct{})
+	close(immediate)
 	for {
+		var due <-chan struct{}
+		if c.tx != nil && c.tx.request.destination != GlobalAddress && !c.tx.due.IsZero() && !time.Now().Before(c.tx.due) {
+			due = immediate
+		}
+		var request *sendRequest
 		select {
 		case <-c.ctx.Done():
 			c.shutdown()
@@ -219,16 +229,18 @@ func (c *Client) run() {
 			c.cancel(err)
 			return
 		case r := <-c.requests:
-			if err := c.poll(); err != nil {
-				c.cancel(err)
-				return
-			}
-			c.startSend(r)
+			request = r
 		case <-ticker.C:
-			if err := c.poll(); err != nil {
-				c.cancel(err)
-				return
-			}
+		case <-due:
+		}
+		// Recheck capture and cancellation between DT packets without imposing
+		// the receive polling interval on a directed transfer's throughput.
+		if err := c.poll(); err != nil {
+			c.cancel(err)
+			return
+		}
+		if request != nil {
+			c.startSend(request)
 		}
 		if err := c.tick(time.Now()); err != nil {
 			c.cancel(err)
@@ -252,7 +264,10 @@ func (c *Client) poll() error {
 			if h.Source == c.config.Address || h.Source == NullAddress && h.PGN == AddressClaimPGN && event.Frame.DataLength() == 8 && Name(binary.LittleEndian.Uint64(event.Frame.Data[:8])) == c.config.Name {
 				c.observed++
 			}
-			continue
+			// A controller must answer its own global address-claim request.
+			if h.Source != c.config.Address || h.PGN != RequestPGN || h.Destination != GlobalAddress {
+				continue
+			}
 		}
 		if h.EDP() != 0 {
 			continue

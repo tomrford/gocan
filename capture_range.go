@@ -118,6 +118,9 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	if first > last || first == last && startRecord > endRecord {
 		return nil, 0, fmt.Errorf("capture range end precedes its start: %w", ErrCursorOutOfRange)
 	}
+	if start == end {
+		return nil, 0, nil
+	}
 
 	views = make([]captureView, last-first+1)
 	for i := range views {

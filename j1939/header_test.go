@@ -4,28 +4,26 @@ import "testing"
 
 func TestHeaderIdentifierRoundTrip(t *testing.T) {
 	tests := []struct {
-		name            string
-		id              uint32
-		want            Header
-		edp, dp, pf, ps uint8
+		name string
+		id   uint32
+		want Header
+		edp  uint8
 	}{
 		{
 			name: "PDU1",
 			id:   0x18ea2a80,
 			want: Header{Priority: 6, PGN: 0xea00, Source: 0x80, Destination: 0x2a},
-			pf:   0xea, ps: 0x2a,
 		},
 		{
 			name: "PDU2",
 			id:   0x18feee80,
 			want: Header{Priority: 6, PGN: 0xfeee, Source: 0x80, Destination: GlobalAddress},
-			pf:   0xfe, ps: 0xee,
 		},
 		{
 			name: "both data pages",
 			id:   0x0ff00401,
 			want: Header{Priority: 3, PGN: 0x3f004, Source: 1, Destination: GlobalAddress},
-			edp:  1, dp: 1, pf: 0xf0, ps: 4,
+			edp:  1,
 		},
 	}
 	for _, test := range tests {
@@ -37,7 +35,7 @@ func TestHeaderIdentifierRoundTrip(t *testing.T) {
 			if header != test.want {
 				t.Fatalf("ParseID(%#x) = %#v, want %#v", test.id, header, test.want)
 			}
-			if header.EDP() != test.edp || header.DP() != test.dp || header.PF() != test.pf || header.PS() != test.ps {
+			if header.EDP() != test.edp {
 				t.Fatalf("identifier fields lost for %#x", test.id)
 			}
 			id, err := header.ID()

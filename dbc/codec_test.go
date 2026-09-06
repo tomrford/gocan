@@ -1,12 +1,76 @@
 package dbc
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
 
 	"github.com/tomrford/gocan"
 )
+
+func BenchmarkMessageCodecCompilation(b *testing.B) {
+	for _, test := range []struct {
+		name   string
+		length uint32
+		count  int
+		width  uint32
+	}{
+		{"classic", 8, 8, 8},
+		{"FD", 64, 32, 16},
+		{"transported", 1785, 128, 64},
+		{"sparse", math.MaxUint32, 2, 64},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			message := Message{Length: test.length}
+			for index := range test.count {
+				message.Signals = append(message.Signals, Signal{
+					Name: fmt.Sprintf("Signal%d", index), StartBit: uint32(index) * test.width,
+					BitLength: test.width, ByteOrder: ByteOrderLittleEndian, Factor: 1,
+				})
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				codec := compileMessageCodec(&message)
+				if codec.err != nil || codec.writeErr != nil {
+					b.Fatalf("compile: %v, %v", codec.err, codec.writeErr)
+				}
+			}
+		})
+	}
+}
+
+func TestMessageOverlapWordBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		start uint32
+		order ByteOrder
+		bytes [16]byte
+	}{
+		// Literal occupied payload bits for unaligned 64-bit signals.
+		{"Intel", 63, ByteOrderLittleEndian, [16]byte{7: 0x80, 8: 0xff, 9: 0xff, 10: 0xff, 11: 0xff, 12: 0xff, 13: 0xff, 14: 0xff, 15: 0x7f}},
+		{"Motorola", 56, ByteOrderBigEndian, [16]byte{7: 0x01, 8: 0xff, 9: 0xff, 10: 0xff, 11: 0xff, 12: 0xff, 13: 0xff, 14: 0xff, 15: 0xfe}},
+	} {
+		for _, offset := range []uint32{0, 512, math.MaxUint32 - 255} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, offset), func(t *testing.T) {
+				for bit := uint32(0); bit < 192; bit++ {
+					wantOverlap := bit < 128 && test.bytes[bit/8]&(1<<(bit%8)) != 0
+					message := Message{Length: math.MaxUint32, Signals: []Signal{
+						{Name: "Wide", StartBit: offset + test.start, BitLength: 64, ByteOrder: test.order, Factor: 1},
+						{Name: "Probe", StartBit: offset + bit, BitLength: 1, ByteOrder: ByteOrderLittleEndian, Factor: 1},
+					}}
+					for range 2 {
+						codec := compileMessageCodec(&message)
+						if codec.err != nil || (codec.writeErr != nil) != wantOverlap {
+							t.Fatalf("bit %d: compile = %v, %v; want overlap %t", bit, codec.err, codec.writeErr, wantOverlap)
+						}
+						message.Signals[0], message.Signals[1] = message.Signals[1], message.Signals[0]
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestMessageCodecLifecycle(t *testing.T) {
 	db := parseFixture(t, "testdata/codec.dbc")

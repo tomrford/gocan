@@ -37,20 +37,6 @@ type Header struct {
 // EDP returns the extended data page bit (also called the reserved bit).
 func (header Header) EDP() uint8 { return uint8(header.PGN >> 17 & 1) }
 
-// DP returns the data page bit.
-func (header Header) DP() uint8 { return uint8(header.PGN >> 16 & 1) }
-
-// PF returns the PDU format field.
-func (header Header) PF() uint8 { return uint8(header.PGN >> 8) }
-
-// PS returns the destination for PDU1 or the group extension for PDU2.
-func (header Header) PS() uint8 {
-	if header.PGN.isPDU1() {
-		return uint8(header.Destination)
-	}
-	return uint8(header.PGN)
-}
-
 // ParseID decodes a 29-bit CAN identifier into its J1939 fields.
 func ParseID(id uint32) (Header, error) {
 	if id > gocan.MaxExtendedID {
