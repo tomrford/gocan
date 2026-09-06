@@ -153,7 +153,7 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	if !validTime(event.Timestamp) || event.Timestamp.Before(w.start) {
+	if !validTime(event.Timestamp) || event.Timestamp.UnixNano() < w.start.UnixNano() {
 		return errors.New("MF4 frame timestamp is before start or outside the supported nanosecond range")
 	}
 	remote := event.Frame.Flags.Has(gocan.FrameRemote)
