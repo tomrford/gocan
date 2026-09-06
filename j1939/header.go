@@ -1,5 +1,5 @@
-// Package j1939 identifies and passively reassembles SAE J1939 messages from
-// raw classical CAN frames.
+// Package j1939 identifies and passively reassembles SAE J1939 messages, and
+// provides active address claiming and transport over raw classical CAN buses.
 package j1939
 
 import (
