@@ -162,7 +162,6 @@ type Bus struct {
 	rxSize        int
 	rxControlSize int
 	rxFlags       int
-	rxErr         error
 
 	lifecycle *driverstate.Lifecycle
 }
@@ -338,9 +337,6 @@ func (bus *Bus) recordReceive(timestamp time.Time) error {
 }
 
 func (bus *Bus) receivedPacket() ([]byte, error) {
-	if bus.rxErr != nil {
-		return nil, bus.rxErr
-	}
 	if bus.rxFlags&unix.MSG_CTRUNC != 0 {
 		return nil, fmt.Errorf("%w: SocketCAN receive metadata was truncated", gocan.ErrReceiveOverrun)
 	}
@@ -375,17 +371,16 @@ func (bus *Bus) receiveOnce(fd uintptr) bool {
 		uintptr(unsafe.Pointer(&bus.rxMessage)),
 		unix.MSG_DONTWAIT,
 	)
+	if errno == unix.EAGAIN || errno == unix.EWOULDBLOCK {
+		return false
+	}
+	if errno != 0 {
+		bus.stopWithError(fmt.Errorf("receive SocketCAN frame: %w", errno))
+		return true
+	}
 	bus.rxSize = int(read)
 	bus.rxControlSize = int(bus.rxMessage.Controllen)
 	bus.rxFlags = int(bus.rxMessage.Flags)
-	if errno != 0 {
-		bus.rxErr = errno
-	} else {
-		bus.rxErr = nil
-	}
-	if bus.rxErr == unix.EAGAIN || bus.rxErr == unix.EWOULDBLOCK {
-		return false
-	}
 	if err := bus.recordReceive(time.Now()); err != nil {
 		bus.stopWithError(err)
 	}
