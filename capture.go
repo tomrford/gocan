@@ -230,6 +230,21 @@ func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
 // range.
 var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
 
+// CursorOutOfRangeError identifies the cursor a capture could not place.
+// It unwraps to ErrCursorOutOfRange. The caller decides how to recover from
+// the lost position; the capture never silently skips or re-reads history.
+type CursorOutOfRangeError struct {
+	Cursor Cursor
+}
+
+func (err *CursorOutOfRangeError) Error() string {
+	return fmt.Sprintf("%s: %+v", ErrCursorOutOfRange, err.Cursor)
+}
+
+func (err *CursorOutOfRangeError) Unwrap() error {
+	return ErrCursorOutOfRange
+}
+
 // Cursor identifies a position in a capture's append order: the boundary just
 // after one stored record. The zero Cursor is the position before every
 // retained record, so every read accepts it.
@@ -267,14 +282,14 @@ func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk, prun
 		return 0, -1, nil
 	}
 	if cursor.generation != generation {
-		return 0, 0, ErrCursorOutOfRange
+		return 0, 0, &CursorOutOfRangeError{Cursor: cursor}
 	}
 	index := int(cursor.chunk) - int(chunks[0].sequence)
 	if index < 0 || index >= len(chunks) {
 		if cursor == pruneSeam {
 			return 0, -1, nil
 		}
-		return 0, 0, ErrCursorOutOfRange
+		return 0, 0, &CursorOutOfRangeError{Cursor: cursor}
 	}
 	return index, int(cursor.record), nil
 }

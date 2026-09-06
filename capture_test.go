@@ -415,16 +415,108 @@ func TestCaptureCursorErrors(t *testing.T) {
 		t.Fatalf("append to the other capture: %v", err)
 	}
 	foreign := other.End()
-	writer := &captureWriterProbe{failAt: -1}
-	next, err := capture.WriteRecordsSince(foreign, writer)
-	if !errors.Is(err, ErrCursorOutOfRange) || next != foreign ||
-		len(writer.frames) != 0 || len(writer.events) != 0 {
-		t.Fatalf("WriteRecordsSince with foreign cursor = %+v, %v, wrote %d records",
-			next, err, len(writer.frames)+len(writer.events))
-	}
-
 	if records, err := capture.FramesBetween(end, early); !errors.Is(err, ErrCursorOutOfRange) || len(records) != 0 {
 		t.Fatalf("FramesBetween over reversed range = %d records, %v", len(records), err)
+	} else {
+		var rejected *CursorOutOfRangeError
+		if errors.As(err, &rejected) {
+			t.Fatalf("reversed range identifies a placeable cursor: %+v", rejected.Cursor)
+		}
+	}
+
+	capture.Clear()
+	appendFrame(6)
+	// A cursor from another capture and a cursor invalidated by Clear both
+	// identify the rejected argument, including through range wrappers.
+	for _, cursor := range []Cursor{foreign, early} {
+		writer := &captureWriterProbe{failAt: -1}
+		since := []struct {
+			name string
+			read func() (int, Cursor, error)
+		}{
+			{"FramesSince", func() (int, Cursor, error) {
+				records, next, err := capture.FramesSince(cursor)
+				return len(records), next, err
+			}},
+			{"EventsSince", func() (int, Cursor, error) {
+				records, next, err := capture.EventsSince(cursor)
+				return len(records), next, err
+			}},
+			{"SeriesSince", func() (int, Cursor, error) {
+				records, next, err := capture.SeriesSince(key, cursor)
+				return len(records), next, err
+			}},
+			{"BusEventsSince", func() (int, Cursor, error) {
+				records, next, err := capture.BusEventsSince(testBus0, cursor)
+				return len(records), next, err
+			}},
+			{"WriteRecordsSince", func() (int, Cursor, error) {
+				next, err := capture.WriteRecordsSince(cursor, writer)
+				return len(writer.frames) + len(writer.events), next, err
+			}},
+		}
+		for _, read := range since {
+			count, next, err := read.read()
+			requireRejectedCursor(t, err, cursor)
+			if count != 0 || next != cursor {
+				t.Fatalf("%s with rejected cursor = %d records, %+v, want no records and %+v", read.name, count, next, cursor)
+			}
+		}
+		event, next, err := capture.Next(context.Background(), key, cursor)
+		requireRejectedCursor(t, err, cursor)
+		if event != (FrameEvent{}) || next != cursor {
+			t.Fatalf("Next with rejected cursor = %+v, %+v", event, next)
+		}
+		retained := capture.Len()
+		requireRejectedCursor(t, capture.Prune(capture.End(), Cursor{}, cursor), cursor)
+		if capture.Len() != retained {
+			t.Fatal("Prune discarded records despite a rejected cursor")
+		}
+		between := []struct {
+			name string
+			read func(Cursor, Cursor) (int, error)
+		}{
+			{"FramesBetween", func(start, end Cursor) (int, error) {
+				records, err := capture.FramesBetween(start, end)
+				return len(records), err
+			}},
+			{"EventsBetween", func(start, end Cursor) (int, error) {
+				records, err := capture.EventsBetween(start, end)
+				return len(records), err
+			}},
+			{"SeriesBetween", func(start, end Cursor) (int, error) {
+				records, err := capture.SeriesBetween(key, start, end)
+				return len(records), err
+			}},
+			{"BusEventsBetween", func(start, end Cursor) (int, error) {
+				records, err := capture.BusEventsBetween(testBus0, start, end)
+				return len(records), err
+			}},
+			{"WriteRecordsBetween", func(start, end Cursor) (int, error) {
+				next, err := capture.WriteRecordsBetween(start, end, writer)
+				if next != start {
+					t.Fatalf("failed WriteRecordsBetween cursor = %+v, want %+v", next, start)
+				}
+				return len(writer.frames) + len(writer.events), err
+			}},
+		}
+		for _, read := range between {
+			for _, bounds := range [][2]Cursor{{cursor, capture.End()}, {Cursor{}, cursor}} {
+				count, err := read.read(bounds[0], bounds[1])
+				requireRejectedCursor(t, err, cursor)
+				if count != 0 {
+					t.Fatalf("%s with rejected cursor returned %d records", read.name, count)
+				}
+			}
+		}
+	}
+}
+
+func requireRejectedCursor(t *testing.T, err error, cursor Cursor) {
+	t.Helper()
+	var rejected *CursorOutOfRangeError
+	if !errors.Is(err, ErrCursorOutOfRange) || !errors.As(err, &rejected) || rejected.Cursor != cursor {
+		t.Fatalf("error = %v, want CursorOutOfRangeError for %+v wrapping ErrCursorOutOfRange", err, cursor)
 	}
 }
 
@@ -827,6 +919,8 @@ func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 	if err := capture.Prune(cursors[5], cursors[0]); !errors.Is(err, ErrCursorOutOfRange) || capture.Len() != retained {
 		t.Fatalf("Prune with a stale consumer = %v, retaining %d records, want ErrCursorOutOfRange and %d",
 			err, capture.Len(), retained)
+	} else {
+		requireRejectedCursor(t, err, cursors[0])
 	}
 
 	// Resetting that consumer to zero is explicit recovery and holds pruning

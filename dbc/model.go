@@ -24,7 +24,13 @@ type Database struct {
 
 	messagesByName map[string]int
 	messagesByPGN  map[j1939.PGN][]int
+	source         string
 }
+
+// Source returns the exact input passed to Parse or read by ParseFile, including
+// its original encoding and byte-order mark. It does not reflect model edits.
+// A database constructed without parsing has no source.
+func (db *Database) Source() string { return db.source }
 
 // Node is one CAN network participant declared by BU_.
 type Node struct {
