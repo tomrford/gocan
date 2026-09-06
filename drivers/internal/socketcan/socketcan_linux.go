@@ -123,7 +123,9 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 		file:    file,
 		raw:     raw,
 		lifecycle: driverstate.New(func() {
-			_ = file.Close()
+			// Wake RawConn.Read without closing the descriptor from inside its
+			// callback. receiveLoop closes it after the callback has returned.
+			_ = file.SetReadDeadline(time.Now())
 		}),
 	}
 	bus.rxIovec.Base = &bus.rxPacket[0]
@@ -145,7 +147,7 @@ type Bus struct {
 	file    *os.File
 	raw     syscall.RawConn
 
-	sendMu    sync.Mutex
+	ioMu      sync.Mutex
 	sendReady func(uintptr)
 	txPacket  [fdMTU]byte
 	txSize    int
@@ -196,8 +198,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	default:
 	}
 
-	bus.sendMu.Lock()
-	defer bus.sendMu.Unlock()
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
 
 	select {
 	case <-ctx.Done():
@@ -259,105 +261,110 @@ func (bus *Bus) Err() error {
 
 // Close stops acquisition. It is safe to call more than once.
 func (bus *Bus) Close() error {
-	bus.sendMu.Lock()
+	bus.ioMu.Lock()
 	bus.stopWithError(nil)
-	bus.sendMu.Unlock()
+	bus.ioMu.Unlock()
 	<-bus.lifecycle.Done()
 	return nil
 }
 
-// receiveLoop reads one frame per kernel round trip and appends it.
+// receiveLoop waits without ioMu; receiveOnce locks only while reading and
+// recording one packet. Closing waits until all native callbacks have returned.
 func (bus *Bus) receiveLoop() {
-	defer bus.lifecycle.MarkDone()
+	defer func() {
+		bus.ioMu.Lock()
+		_ = bus.file.Close()
+		bus.ioMu.Unlock()
+		bus.lifecycle.MarkDone()
+	}()
 	for {
-		packet, timestamp, err := bus.receive()
-		if err != nil {
-			terminal := fmt.Errorf("receive SocketCAN frame: %w", err)
-			if errors.Is(err, gocan.ErrReceiveOverrun) {
-				event, eventErr := gocan.NewReceiveOverrunEvent(bus.id, timestamp)
-				if eventErr != nil {
-					bus.stopWithError(eventErr)
-					return
-				}
-				bus.stopWithEvents(terminal, []gocan.Event{event})
-				return
-			}
+		if err := bus.raw.Read(bus.receiveReady); err != nil {
 			select {
 			case <-bus.lifecycle.StopSignal():
-				return
 			default:
-				bus.stopWithError(terminal)
-				return
+				bus.stopWithError(fmt.Errorf("receive SocketCAN frame: %w", err))
 			}
-		}
-		if len(packet) >= 4 && binary.NativeEndian.Uint32(packet[:4])&unix.CAN_ERR_FLAG != 0 {
-			errorPacket, err := decodeErrorPacket(packet, bus.id, timestamp)
-			if err != nil {
-				bus.stopWithError(err)
-				return
-			}
-			if errorPacket.terminal != nil {
-				bus.stopWithEvents(
-					errorPacket.terminal,
-					errorPacket.events[:errorPacket.eventCount],
-				)
-				return
-			}
-			for index := range errorPacket.eventCount {
-				if err := bus.capture.AppendEvent(errorPacket.events[index]); err != nil {
-					bus.stopWithError(err)
-					return
-				}
-			}
-			continue
-		}
-
-		frame, err := decodeFrame(packet)
-		if err != nil {
-			bus.stopWithError(err)
 			return
 		}
-		if err := bus.capture.Append(gocan.FrameEvent{
-			Bus:       bus.id,
-			Timestamp: timestamp,
-			Direction: gocan.DirectionReceive,
-			Frame:     frame,
-		}); err != nil {
-			bus.stopWithError(err)
+		select {
+		case <-bus.lifecycle.StopSignal():
 			return
+		default:
 		}
 	}
 }
 
-func (bus *Bus) receive() ([]byte, time.Time, error) {
-	bus.rxSize = 0
-	bus.rxControlSize = 0
-	bus.rxFlags = 0
-	bus.rxErr = nil
-	err := bus.raw.Read(bus.receiveReady)
-	timestamp := time.Now()
+// recordReceive is called with ioMu held immediately after a native read.
+func (bus *Bus) recordReceive(timestamp time.Time) error {
+	packet, err := bus.receivedPacket()
 	if err != nil {
-		return nil, time.Time{}, err
+		terminal := fmt.Errorf("receive SocketCAN frame: %w", err)
+		if errors.Is(err, gocan.ErrReceiveOverrun) {
+			event, eventErr := gocan.NewReceiveOverrunEvent(bus.id, timestamp)
+			if eventErr != nil {
+				return eventErr
+			}
+			bus.stopWithEvents(terminal, []gocan.Event{event})
+		}
+		return terminal
 	}
+	if len(packet) >= 4 && binary.NativeEndian.Uint32(packet[:4])&unix.CAN_ERR_FLAG != 0 {
+		errorPacket, err := decodeErrorPacket(packet, bus.id, timestamp)
+		if err != nil {
+			return err
+		}
+		if errorPacket.terminal != nil {
+			bus.stopWithEvents(errorPacket.terminal, errorPacket.events[:errorPacket.eventCount])
+			return nil
+		}
+		for index := range errorPacket.eventCount {
+			if err := bus.capture.AppendEvent(errorPacket.events[index]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	frame, err := decodeFrame(packet)
+	if err != nil {
+		return err
+	}
+	return bus.capture.Append(gocan.FrameEvent{
+		Bus:       bus.id,
+		Timestamp: timestamp,
+		Direction: gocan.DirectionReceive,
+		Frame:     frame,
+	})
+}
+
+func (bus *Bus) receivedPacket() ([]byte, error) {
 	if bus.rxErr != nil {
-		return nil, time.Time{}, bus.rxErr
+		return nil, bus.rxErr
 	}
 	if bus.rxFlags&unix.MSG_CTRUNC != 0 {
-		return nil, timestamp, fmt.Errorf("%w: SocketCAN receive metadata was truncated", gocan.ErrReceiveOverrun)
+		return nil, fmt.Errorf("%w: SocketCAN receive metadata was truncated", gocan.ErrReceiveOverrun)
 	}
 	if bus.rxControlSize != 0 {
 		dropped, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
 		if err != nil {
-			return nil, timestamp, err
+			return nil, err
 		}
 		if dropped != 0 {
-			return nil, timestamp, fmt.Errorf("%w: SocketCAN socket dropped %d frames", gocan.ErrReceiveOverrun, dropped)
+			return nil, fmt.Errorf("%w: SocketCAN socket dropped %d frames", gocan.ErrReceiveOverrun, dropped)
 		}
 	}
-	return bus.rxPacket[:bus.rxSize], timestamp, nil
+	return bus.rxPacket[:bus.rxSize], nil
 }
 
 func (bus *Bus) receiveOnce(fd uintptr) bool {
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
+
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return true
+	default:
+	}
 	bus.rxMessage.SetIovlen(1)
 	bus.rxMessage.SetControllen(len(bus.rxControl))
 	bus.rxMessage.Flags = 0
@@ -376,7 +383,13 @@ func (bus *Bus) receiveOnce(fd uintptr) bool {
 	} else {
 		bus.rxErr = nil
 	}
-	return bus.rxErr != unix.EAGAIN && bus.rxErr != unix.EWOULDBLOCK
+	if bus.rxErr == unix.EAGAIN || bus.rxErr == unix.EWOULDBLOCK {
+		return false
+	}
+	if err := bus.recordReceive(time.Now()); err != nil {
+		bus.stopWithError(err)
+	}
+	return true
 }
 
 func socketReceiveDropCount(control []byte) (uint32, error) {
@@ -412,13 +425,8 @@ func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
 }
 
-// stopWithEvents serializes a terminal transition with Send. A native send
-// already in progress completes before the terminal events; later sends see
-// the stopped bus. Done closes only after this receive loop returns.
+// stopWithEvents is called with ioMu held, after the native read.
 func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	bus.sendMu.Lock()
-	defer bus.sendMu.Unlock()
-
 	for _, event := range events {
 		if err := bus.capture.AppendEvent(event); err != nil {
 			bus.stopWithError(err)

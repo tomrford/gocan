@@ -41,6 +41,11 @@ var (
 // context cancellation cannot revoke it: Send waits for the definite native
 // result and records an accepted transmission before returning nil.
 //
+// Within a bus, each native read or write and its capture append are serialised:
+// an accepted transmission is recorded before the next native read. Timestamps
+// describe host observation order, not the order of buffered traffic on the wire.
+// Readiness waits do not hold up transmission.
+//
 // Capture returns the non-nil capture that records this bus's traffic. It
 // returns the same capture for the bus's lifetime. Done is closed after
 // acquisition stops. Err then reports the background failure, or nil after a

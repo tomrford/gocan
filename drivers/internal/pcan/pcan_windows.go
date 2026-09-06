@@ -383,7 +383,7 @@ type Bus struct {
 	receiveEvent windows.Handle
 	stopEvent    windows.Handle
 
-	sendMu    sync.Mutex
+	ioMu      sync.Mutex
 	lifecycle *driverstate.Lifecycle
 
 	deviceSubscription *devicechange.Subscription
@@ -421,8 +421,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	default:
 	}
 
-	bus.sendMu.Lock()
-	defer bus.sendMu.Unlock()
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
 
 	select {
 	case <-ctx.Done():
@@ -502,12 +502,8 @@ func (bus *Bus) receiveLoop() {
 		case windows.WAIT_OBJECT_0:
 			return
 		case windows.WAIT_OBJECT_0 + 1:
-			stopped, err := bus.drainReceiveQueue()
-			if err != nil {
+			if err := bus.drainReceiveQueue(); err != nil {
 				bus.stopWithError(err)
-				return
-			}
-			if stopped {
 				return
 			}
 		default:
@@ -529,89 +525,99 @@ func (bus *Bus) runtimeStatusError(operation string, status pcanStatus) error {
 	return bus.api.statusError(operation, status)
 }
 
-func (bus *Bus) drainReceiveQueue() (bool, error) {
+func (bus *Bus) drainReceiveQueue() error {
 	for {
-		select {
-		case <-bus.lifecycle.StopSignal():
-			return true, nil
-		default:
-		}
-
-		// The device timestamp buffers stay NULL by design; received frames
-		// are stamped with the host clock at read. See the package comment.
-		var (
-			observation pcanReceiveObservation
-			timestamp   time.Time
-			status      pcanStatus
-			err         error
-		)
-		if bus.fd {
-			var message pcanMsgFD
-			result, _, _ := bus.api.readFD.Call(
-				uintptr(bus.channel),
-				uintptr(unsafe.Pointer(&message)),
-				0,
-			)
-			timestamp = time.Now()
-			status = pcanStatus(result)
-			if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-				observation, err = decodePCANStatus(status, bus.id, timestamp)
-			} else if status != pcanStatusQueueEmpty && status != pcanStatusInvalidData {
-				observation, err = decodePCANReceive(
-					message.id,
-					message.messageType,
-					message.dlc,
-					message.data[:],
-					true,
-					status,
-					bus.id,
-					timestamp,
-				)
-			}
-		} else {
-			var message pcanMsg
-			result, _, _ := bus.api.read.Call(
-				uintptr(bus.channel),
-				uintptr(unsafe.Pointer(&message)),
-				0,
-			)
-			timestamp = time.Now()
-			status = pcanStatus(result)
-			if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-				observation, err = decodePCANStatus(status, bus.id, timestamp)
-			} else if status != pcanStatusQueueEmpty && status != pcanStatusInvalidData {
-				observation, err = decodePCANReceive(
-					message.id,
-					message.messageType,
-					message.length,
-					message.data[:],
-					false,
-					status,
-					bus.id,
-					timestamp,
-				)
-			}
-		}
-
-		if status&pcanStatusHandleMask == pcanStatusInvalidHW {
-			return false, bus.runtimeStatusError("receive PCAN frame", status)
-		}
-		if status == pcanStatusQueueEmpty {
-			return false, nil
-		}
-		// PCAN-Basic reports invalid wire data before delivering the associated
-		// enabled error frame. The invalid data itself has already been discarded.
-		if status == pcanStatusInvalidData {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		stopped, err := bus.applyObservation(observation, timestamp)
-		if err != nil || stopped {
-			return stopped, err
+		more, err := bus.receiveOne()
+		if err != nil || !more {
+			return err
 		}
 	}
+}
+
+// receiveOne serialises a single native read and capture append with Send.
+// The caller waits for receive readiness without holding ioMu.
+func (bus *Bus) receiveOne() (bool, error) {
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
+
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return false, nil
+	default:
+	}
+
+	// The device timestamp buffers stay NULL by design; received frames
+	// are stamped with the host clock at read. See the package comment.
+	var (
+		observation pcanReceiveObservation
+		timestamp   time.Time
+		status      pcanStatus
+		err         error
+	)
+	if bus.fd {
+		var message pcanMsgFD
+		result, _, _ := bus.api.readFD.Call(
+			uintptr(bus.channel),
+			uintptr(unsafe.Pointer(&message)),
+			0,
+		)
+		timestamp = time.Now()
+		status = pcanStatus(result)
+		if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
+			observation, err = decodePCANStatus(status, bus.id, timestamp)
+		} else if status != pcanStatusQueueEmpty && status != pcanStatusInvalidData {
+			observation, err = decodePCANReceive(
+				message.id,
+				message.messageType,
+				message.dlc,
+				message.data[:],
+				true,
+				status,
+				bus.id,
+				timestamp,
+			)
+		}
+	} else {
+		var message pcanMsg
+		result, _, _ := bus.api.read.Call(
+			uintptr(bus.channel),
+			uintptr(unsafe.Pointer(&message)),
+			0,
+		)
+		timestamp = time.Now()
+		status = pcanStatus(result)
+		if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
+			observation, err = decodePCANStatus(status, bus.id, timestamp)
+		} else if status != pcanStatusQueueEmpty && status != pcanStatusInvalidData {
+			observation, err = decodePCANReceive(
+				message.id,
+				message.messageType,
+				message.length,
+				message.data[:],
+				false,
+				status,
+				bus.id,
+				timestamp,
+			)
+		}
+	}
+
+	if status&pcanStatusHandleMask == pcanStatusInvalidHW {
+		return false, bus.runtimeStatusError("receive PCAN frame", status)
+	}
+	if status == pcanStatusQueueEmpty {
+		return false, nil
+	}
+	// PCAN-Basic reports invalid wire data before delivering the associated
+	// enabled error frame. The invalid data itself has already been discarded.
+	if status == pcanStatusInvalidData {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	stopped, err := bus.applyObservation(observation, timestamp)
+	return !stopped, err
 }
 
 func (bus *Bus) applyObservation(observation pcanReceiveObservation, timestamp time.Time) (bool, error) {
@@ -641,10 +647,8 @@ func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
 }
 
+// stopWithEvents is called with ioMu held, after the native read.
 func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	bus.sendMu.Lock()
-	defer bus.sendMu.Unlock()
-
 	for _, event := range events {
 		if err := bus.capture.AppendEvent(event); err != nil {
 			bus.stopWithError(err)
@@ -656,9 +660,9 @@ func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
 
 func (bus *Bus) finish() {
 	detachErr := bus.deviceSubscription.Cancel()
-	bus.sendMu.Lock()
+	bus.ioMu.Lock()
 	bus.cleanupErr = errors.Join(detachErr, bus.cleanup())
-	bus.sendMu.Unlock()
+	bus.ioMu.Unlock()
 	bus.lifecycle.MarkDone()
 }
 
