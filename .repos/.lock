@@ -14,6 +14,11 @@ url = "https://github.com/pylessard/python-can-isotp.git"
 mode = "default"
 commit = "7b44c5282ee390df4977b710218564eb73e2dc2a"
 
+[repos.can-utils]
+url = "https://github.com/linux-can/can-utils.git"
+mode = "default"
+commit = "95aae6bf83acbb1063a0ce9c2521279ab9f1132e"
+
 [repos.cantools]
 url = "https://github.com/cantools/cantools.git"
 mode = "default"
@@ -44,6 +49,11 @@ commit = "b9851d3f431183849078f174a7fb8ee349facd81"
 url = "https://github.com/hardbyte/python-can.git"
 mode = "default"
 commit = "b4f82abede25ff83376be793a2935c41f81c3869"
+
+[repos.python-can-j1939]
+url = "https://github.com/juergenH87/python-can-j1939.git"
+mode = "default"
+commit = "01aba95cca43847bc272ec7ddb12048f587e6554"
 
 [repos.udsoncan]
 url = "https://github.com/pylessard/python-udsoncan.git"

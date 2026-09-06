@@ -32,6 +32,8 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 
 // MessagesByPGN returns the resolved J1939 messages with pgn in declaration
 // order. More than one message may deliberately describe the same PGN.
+// Callers must resolve multiple matches from their device/database context;
+// this lookup does not pick a definition based on source or destination.
 func (database *Database) MessagesByPGN(pgn j1939.PGN) []*Message {
 	if database == nil {
 		return nil
@@ -172,6 +174,8 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 // establish whether it is active. Messages longer than the 64-byte raw frame
 // representation or containing a signal wider than 64 bits are not supported
 // by the codec.
+// J1939 definitions match by canonical PGN, regardless of priority, source or
+// destination. Select the appropriate definition first when a PGN is ambiguous.
 func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
 	if err := message.validateFrame(frame); err != nil {
 		return nil, err
@@ -439,6 +443,9 @@ func (message *Message) newFrame() (gocan.Frame, error) {
 }
 
 func (message *Message) validateFrame(frame gocan.Frame) error {
+	if message == nil {
+		return fmt.Errorf("DBC message is nil")
+	}
 	if err := frame.Validate(); err != nil {
 		return err
 	}
@@ -449,7 +456,13 @@ func (message *Message) validateFrame(frame gocan.Frame) error {
 	if frame.Flags.Has(gocan.FrameRemote) {
 		return fmt.Errorf("DBC message %q cannot decode a remote frame", message.Name)
 	}
-	if frame.ID != message.ID || frame.Flags.Has(gocan.FrameExtended) != flags.Has(gocan.FrameExtended) {
+	matchesID := frame.ID == message.ID
+	if message.Format == FrameFormatJ1939 {
+		actual, _ := j1939.ParseID(frame.ID)
+		expected, _ := j1939.ParseID(message.ID)
+		matchesID = actual.PGN == expected.PGN
+	}
+	if !matchesID || frame.Flags.Has(gocan.FrameExtended) != flags.Has(gocan.FrameExtended) {
 		return fmt.Errorf("frame %#x does not match DBC message %q", frame.ID, message.Name)
 	}
 	if frame.Flags.Has(gocan.FrameFD) != flags.Has(gocan.FrameFD) {

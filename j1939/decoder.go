@@ -26,6 +26,9 @@ const (
 // ErrProtocol identifies malformed or inconsistent J1939 transport traffic.
 var ErrProtocol = errors.New("J1939 protocol error")
 
+// ErrUnsupported identifies traffic outside classical J1939-21 support.
+var ErrUnsupported = errors.New("unsupported J1939 semantics")
+
 // Message is one complete J1939 parameter group reconstructed from one or more
 // raw CAN frames. Payload owns its storage.
 //
@@ -44,8 +47,9 @@ type Message struct {
 	CompletedAt time.Time
 }
 
-// Diagnostic reports one frame that could not be applied to the passive
-// decoder. Processing later frames may continue.
+// Diagnostic reports malformed/unsupported traffic, ambiguous claims or
+// incomplete sessions. Timestamp identifies the frame that revealed the issue;
+// Flush uses the last session frame. Messages may accompany diagnostics.
 type Diagnostic struct {
 	Bus       gocan.BusID
 	Direction gocan.Direction
@@ -64,8 +68,12 @@ func (diagnostic Diagnostic) Unwrap() error {
 // Decoder passively reconstructs J1939 messages from FrameEvents in capture
 // order. The zero Decoder is ready for use. It sends no flow-control frames and
 // does not participate in address claiming.
+// Feed every frame on the selected bus, including reverse-direction control
+// traffic, before filtering completed messages by PGN/source/destination.
+// Decoder is not safe for concurrent use. Timestamps must be ordered per bus.
 type Decoder struct {
 	sessions map[sessionKey]*session
+	names    map[nameKey]Address
 }
 
 type sessionKey struct {
@@ -76,29 +84,48 @@ type sessionKey struct {
 }
 
 type session struct {
-	message Message
-	size    int
-	packets uint8
-	next    uint8
-	lastAt  time.Time
+	message   Message
+	size      int
+	packets   uint8
+	next      int
+	lastAt    time.Time
+	deadline  time.Time
+	windowEnd int
+	maxWindow uint8
 }
 
 // Push consumes one raw frame. It returns a complete single-frame or transport
 // message when this frame finishes one.
-func (decoder *Decoder) Push(event gocan.FrameEvent) (Message, bool, error) {
+// A message and an error may both be returned for claims or unrelated expiry.
+// Completion means all payload bytes were observed, not acknowledgement by a peer.
+// Timeouts advance only as frames arrive on that bus; Flush reports sessions
+// left incomplete at end of input. Unknown application PGNs remain opaque payloads.
+func (decoder *Decoder) Push(event gocan.FrameEvent) (message Message, complete bool, err error) {
 	if err := event.Validate(); err != nil {
 		return Message{}, false, err
 	}
+	var expired error
+	for key, active := range decoder.sessions {
+		if key.bus == event.Bus && (event.Timestamp.After(active.deadline) || event.Timestamp.Before(active.lastAt)) {
+			delete(decoder.sessions, key)
+			expired = errors.Join(expired, fmt.Errorf("%w: TP from %#02x to %#02x for PGN %#x expired or timestamp moved backwards", ErrProtocol, key.source, key.destination, active.message.PGN))
+		}
+	}
+	defer func() { err = errors.Join(expired, err) }()
 	frame := event.Frame
-	if !frame.Flags.Has(gocan.FrameExtended) ||
-		frame.Flags.Has(gocan.FrameRemote) ||
-		frame.Flags.Has(gocan.FrameFD) {
+	if !frame.Flags.Has(gocan.FrameExtended) {
 		return Message{}, false, nil
+	}
+	if frame.Flags.Has(gocan.FrameRemote) || frame.Flags.Has(gocan.FrameFD) {
+		return Message{}, false, fmt.Errorf("%w: extended remote/CAN FD frame", ErrUnsupported)
 	}
 
 	header, err := ParseID(frame.ID)
 	if err != nil {
 		return Message{}, false, err
+	}
+	if header.EDP() != 0 || header.PGN == 0xc700 || header.PGN == 0xc800 {
+		return Message{}, false, fmt.Errorf("%w: EDP or extended transport PGN %#x", ErrUnsupported, header.PGN)
 	}
 	switch header.PGN {
 	case transportControlPGN:
@@ -108,6 +135,10 @@ func (decoder *Decoder) Push(event gocan.FrameEvent) (Message, bool, error) {
 	default:
 		length := frame.DataLength()
 		payload := append([]byte(nil), frame.Data[:length]...)
+		var claimErr error
+		if header.PGN == AddressClaimPGN {
+			claimErr = decoder.observeClaim(event, header)
+		}
 		return Message{
 			Bus:         event.Bus,
 			Direction:   event.Direction,
@@ -118,7 +149,7 @@ func (decoder *Decoder) Push(event gocan.FrameEvent) (Message, bool, error) {
 			Payload:     payload,
 			StartedAt:   event.Timestamp,
 			CompletedAt: event.Timestamp,
-		}, true, nil
+		}, true, claimErr
 	}
 }
 
@@ -136,7 +167,6 @@ func (decoder *Decoder) PushBatch(events []gocan.FrameEvent) ([]Message, []Diagn
 				Timestamp: event.Timestamp,
 				Err:       err,
 			})
-			continue
 		}
 		if complete {
 			messages = append(messages, message)
@@ -145,10 +175,11 @@ func (decoder *Decoder) PushBatch(events []gocan.FrameEvent) ([]Message, []Diagn
 	return messages, diagnostics
 }
 
-// Reset discards every incomplete transport session. Use it after capture
-// history is lost and the caller resynchronises its cursor.
+// Reset discards incomplete transport sessions and observed identities. Use it
+// after capture history is lost and the caller resynchronises its cursor.
 func (decoder *Decoder) Reset() {
 	clear(decoder.sessions)
+	clear(decoder.names)
 }
 
 // Flush reports and discards every transport session left incomplete at the
@@ -175,13 +206,15 @@ func (decoder *Decoder) Flush() []Diagnostic {
 	slices.SortFunc(diagnostics, func(left, right Diagnostic) int {
 		return left.Timestamp.Compare(right.Timestamp)
 	})
-	decoder.Reset()
+	clear(decoder.sessions)
 	return diagnostics
 }
 
 func (decoder *Decoder) pushControl(event gocan.FrameEvent, header Header) (Message, bool, error) {
+	key := sessionKey{event.Bus, event.Direction, header.Source, header.Destination}
 	data, err := transportData(event.Frame, "TP.CM")
 	if err != nil {
+		delete(decoder.sessions, key)
 		return Message{}, false, err
 	}
 
@@ -190,15 +223,38 @@ func (decoder *Decoder) pushControl(event gocan.FrameEvent, header Header) (Mess
 		return Message{}, false, decoder.startSession(event, header, data)
 	case transportAbort:
 		return Message{}, false, decoder.abortSession(event, header, data)
-	case transportCTS, transportEOMA:
-		return Message{}, false, nil
+	case transportCTS:
+		return Message{}, false, decoder.clearToSend(event, header, data)
+	case transportEOMA:
+		size := int(binary.LittleEndian.Uint16(data[1:3]))
+		if header.Source >= NullAddress || header.Destination >= NullAddress || data[4] != 0xff ||
+			size <= 8 || size > maximumTransportPayload || int(data[3]) != (size+6)/7 {
+			return Message{}, false, fmt.Errorf("%w: malformed TP acknowledgement", ErrProtocol)
+		}
+		pgn, err := controlPGN(data)
+		if err != nil {
+			return Message{}, false, err
+		}
+		key, active, err := decoder.reverseSession(event, header, pgn)
+		if active != nil {
+			delete(decoder.sessions, key)
+			err = fmt.Errorf("%w: TP acknowledgement before all payload bytes were observed", ErrProtocol)
+		}
+		return Message{}, false, err
 	default:
 		return Message{}, false, fmt.Errorf("%w: unknown TP.CM control %#02x", ErrProtocol, data[0])
 	}
 }
 
 func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data []byte) error {
+	key := sessionKey{event.Bus, event.Direction, header.Source, header.Destination}
+	previous := decoder.sessions[key]
+	// Even a malformed replacement invalidates the old payload: DT has no PGN.
+	delete(decoder.sessions, key)
 	broadcast := data[0] == transportBAM
+	if header.Source >= NullAddress || header.Destination == NullAddress {
+		return fmt.Errorf("%w: TP requires usable source and destination addresses", ErrProtocol)
+	}
 	if broadcast && header.Destination != GlobalAddress {
 		return fmt.Errorf("%w: TP.BAM destination is %#02x, want global", ErrProtocol, header.Destination)
 	}
@@ -207,6 +263,9 @@ func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data
 	}
 	if broadcast && data[4] != 0xff {
 		return fmt.Errorf("%w: TP.BAM reserved byte is %#02x, want 0xff", ErrProtocol, data[4])
+	}
+	if !broadcast && data[4] == 0 {
+		return fmt.Errorf("%w: TP.RTS permits zero packets per CTS", ErrProtocol)
 	}
 
 	size := int(binary.LittleEndian.Uint16(data[1:3]))
@@ -223,13 +282,6 @@ func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data
 		return err
 	}
 
-	key := sessionKey{
-		bus:         event.Bus,
-		direction:   event.Direction,
-		source:      header.Source,
-		destination: header.Destination,
-	}
-	previous := decoder.sessions[key]
 	if decoder.sessions == nil {
 		decoder.sessions = make(map[sessionKey]*session)
 	}
@@ -244,10 +296,16 @@ func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data
 			Payload:     make([]byte, 0, size),
 			StartedAt:   event.Timestamp,
 		},
-		size:    size,
-		packets: packets,
-		next:    1,
-		lastAt:  event.Timestamp,
+		size:      size,
+		packets:   packets,
+		next:      1,
+		lastAt:    event.Timestamp,
+		deadline:  event.Timestamp.Add(1250 * time.Millisecond),
+		maxWindow: data[4],
+	}
+	if broadcast {
+		decoder.sessions[key].windowEnd = int(packets)
+		decoder.sessions[key].deadline = event.Timestamp.Add(750 * time.Millisecond)
 	}
 	if previous != nil {
 		return fmt.Errorf(
@@ -262,15 +320,16 @@ func (decoder *Decoder) startSession(event gocan.FrameEvent, header Header, data
 }
 
 func (decoder *Decoder) pushData(event gocan.FrameEvent, header Header) (Message, bool, error) {
-	data, err := transportData(event.Frame, "TP.DT")
-	if err != nil {
-		return Message{}, false, err
-	}
 	key := sessionKey{
 		bus:         event.Bus,
 		direction:   event.Direction,
 		source:      header.Source,
 		destination: header.Destination,
+	}
+	data, err := transportData(event.Frame, "TP.DT")
+	if err != nil {
+		delete(decoder.sessions, key)
+		return Message{}, false, err
 	}
 	active := decoder.sessions[key]
 	if active == nil {
@@ -282,11 +341,11 @@ func (decoder *Decoder) pushData(event gocan.FrameEvent, header Header) (Message
 			header.Destination,
 		)
 	}
-	sequence := data[0]
-	if sequence != active.next {
+	sequence := int(data[0])
+	if sequence != active.next || sequence > active.windowEnd {
 		delete(decoder.sessions, key)
 		return Message{}, false, fmt.Errorf(
-			"%w: TP.DT sequence %d from %#02x to %#02x, want %d",
+			"%w: TP.DT sequence %d from %#02x to %#02x, want %d within CTS window",
 			ErrProtocol,
 			sequence,
 			header.Source,
@@ -303,25 +362,76 @@ func (decoder *Decoder) pushData(event gocan.FrameEvent, header Header) (Message
 	active.message.Payload = append(active.message.Payload, payload...)
 	active.next++
 	active.lastAt = event.Timestamp
+	active.deadline = event.Timestamp.Add(750 * time.Millisecond)
+	if header.Destination != GlobalAddress && sequence == active.windowEnd {
+		active.deadline = event.Timestamp.Add(1250 * time.Millisecond)
+	}
 	if len(active.message.Payload) < active.size {
 		return Message{}, false, nil
 	}
-	if sequence != active.packets {
-		delete(decoder.sessions, key)
-		return Message{}, false, fmt.Errorf(
-			"%w: TP transfer completed on packet %d, announced %d",
-			ErrProtocol,
-			sequence,
-			active.packets,
-		)
-	}
-
 	delete(decoder.sessions, key)
 	active.message.CompletedAt = event.Timestamp
 	return active.message, true, nil
 }
 
+func (decoder *Decoder) reverseSession(event gocan.FrameEvent, header Header, pgn PGN) (sessionKey, *session, error) {
+	key := sessionKey{event.Bus, event.Direction, header.Destination, header.Source}
+	other := key
+	other.direction = oppositeDirection(key.direction)
+	first, second := decoder.sessions[key], decoder.sessions[other]
+	if first != nil && first.message.PGN != pgn {
+		first = nil
+	}
+	if second != nil && second.message.PGN != pgn {
+		second = nil
+	}
+	if first != nil && second != nil {
+		delete(decoder.sessions, key)
+		delete(decoder.sessions, other)
+		return key, nil, fmt.Errorf("%w: control frame matches both capture directions", ErrProtocol)
+	}
+	if first != nil {
+		return key, first, nil
+	}
+	return other, second, nil
+}
+
+func (decoder *Decoder) clearToSend(event gocan.FrameEvent, header Header, data []byte) error {
+	pgn, err := controlPGN(data)
+	if err != nil {
+		return err
+	}
+	key, active, err := decoder.reverseSession(event, header, pgn)
+	if err != nil {
+		return err
+	}
+	if active == nil {
+		return fmt.Errorf("%w: TP.CTS has no observed RTS", ErrProtocol)
+	}
+	count, next := int(data[1]), int(data[2])
+	if key.destination == GlobalAddress || data[3] != 0xff || data[4] != 0xff ||
+		count > int(active.maxWindow) || (count != 0 && (next < 1 || next > active.next || next+count-1 > int(active.packets))) {
+		delete(decoder.sessions, key)
+		return fmt.Errorf("%w: invalid TP.CTS window", ErrProtocol)
+	}
+	active.lastAt = event.Timestamp
+	if count == 0 {
+		active.windowEnd = 0
+		active.deadline = event.Timestamp.Add(1050 * time.Millisecond)
+		return nil
+	}
+	// A CTS may request retransmission of an already observed contiguous prefix.
+	active.message.Payload = active.message.Payload[:(next-1)*7]
+	active.next = next
+	active.windowEnd = next + count - 1
+	active.deadline = event.Timestamp.Add(1250 * time.Millisecond)
+	return nil
+}
+
 func (decoder *Decoder) abortSession(event gocan.FrameEvent, header Header, data []byte) error {
+	if header.Source >= NullAddress || header.Destination >= NullAddress {
+		return fmt.Errorf("%w: TP abort requires specific peers", ErrProtocol)
+	}
 	pgn, err := controlPGN(data)
 	if err != nil {
 		return err
@@ -331,10 +441,11 @@ func (decoder *Decoder) abortSession(event gocan.FrameEvent, header Header, data
 		{bus: event.Bus, direction: event.Direction, source: header.Destination, destination: header.Source},
 		{bus: event.Bus, direction: oppositeDirection(event.Direction), source: header.Destination, destination: header.Source},
 	}
+	var aborted error
 	for _, key := range candidates {
 		if active := decoder.sessions[key]; active != nil && active.message.PGN == pgn {
 			delete(decoder.sessions, key)
-			return fmt.Errorf(
+			aborted = fmt.Errorf(
 				"%w: TP transfer from %#02x to %#02x for PGN %#x was aborted with reason %#02x",
 				ErrProtocol,
 				key.source,
@@ -344,7 +455,7 @@ func (decoder *Decoder) abortSession(event gocan.FrameEvent, header Header, data
 			)
 		}
 	}
-	return nil
+	return aborted
 }
 
 func transportData(frame gocan.Frame, name string) ([]byte, error) {
@@ -358,6 +469,9 @@ func controlPGN(data []byte) (PGN, error) {
 	pgn := PGN(data[5]) | PGN(data[6])<<8 | PGN(data[7])<<16
 	if err := pgn.validate(); err != nil {
 		return 0, fmt.Errorf("%w: TP connection-management target: %v", ErrProtocol, err)
+	}
+	if pgn == transportControlPGN || pgn == transportDataPGN || pgn == 0xc700 || pgn == 0xc800 || pgn&0x20000 != 0 {
+		return 0, fmt.Errorf("%w: TP target PGN %#x", ErrUnsupported, pgn)
 	}
 	return pgn, nil
 }

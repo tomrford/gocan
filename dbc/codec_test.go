@@ -157,6 +157,17 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 		t.Fatalf("encoded J1939 frame = %#v", j1939Frame)
 	}
 	assertDecoded(t, j1939, j1939Frame, "Coolant", 60.0)
+	// The selected PGN definition applies across priority/source changes.
+	j1939Frame.ID = 0x0cfeee21
+	assertDecoded(t, j1939, j1939Frame, "Coolant", 60.0)
+	if err := j1939.Patch(&j1939Frame, Values{"Coolant": 70.0}); err != nil {
+		t.Fatalf("Patch another source: %v", err)
+	}
+	assertDecoded(t, j1939, j1939Frame, "Coolant", 70.0)
+	j1939Frame.ID = 0x0cfeef21
+	if _, err := j1939.Decode(j1939Frame, "Coolant"); err == nil {
+		t.Fatal("decoded another PGN")
+	}
 }
 
 func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {

@@ -15,7 +15,7 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 | `asc` | Vector ASCII trace writing |
 | `recorder` | Lifecycled trace recording with safe flush checkpoints |
 | `dbc` | DBC parsing and semantic CAN frame encoding and decoding |
-| `j1939` | J1939 identifiers and passive transport-protocol reassembly |
+| `j1939` | J1939 identifiers, passive TP reassembly and observed NAME/address claims |
 | `isotp` | ISO-TP payload transport over classical CAN and CAN FD |
 | `uds` | Raw exchanges and typed Unified Diagnostic Services operations |
 | `cdd` | CANdela ECU/variant selection, diagnostic service catalogs and metadata, and data-record codecs |
