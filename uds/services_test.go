@@ -97,6 +97,90 @@ func TestSemanticClientLifecycle(t *testing.T) {
 	}
 }
 
+func TestInputOutputControlLifecycle(t *testing.T) {
+	client, server, ctx := newSemanticPair(t)
+	// Invalid controls must fail before sending: the server below expects the
+	// first valid adjustment, with no earlier request queued on the link.
+	for _, parameter := range []uds.IOControlParameter{0x04, 0x80, 0xff} {
+		if _, err := client.InputOutputControlByIdentifier(ctx, 0x1234, parameter, nil, nil); err == nil || !strings.Contains(err.Error(), "IO control parameter") {
+			t.Fatalf("control %#x error = %v", parameter, err)
+		}
+	}
+	steps := []struct {
+		name      string
+		parameter uds.IOControlParameter
+		state     []byte
+		mask      []byte
+		request   []byte
+		response  []byte
+		status    []byte
+		kind      error
+		negative  uds.ResponseCode
+	}{
+		{
+			name: "adjust selected signals", parameter: uds.IOShortTermAdjustment,
+			state: []byte{0x80, 0x00}, mask: []byte{0x01, 0x00},
+			request:  []byte{0x2f, 0x12, 0x34, 0x03, 0x80, 0x00, 0x01, 0x00},
+			response: []byte{0x6f, 0x12, 0x34, 0x03, 0x12, 0x34, 0x56, 0x00, 0x00},
+			status:   []byte{0x12, 0x34, 0x56, 0x00, 0x00},
+		},
+		{
+			name: "freeze", parameter: uds.IOFreezeCurrentState,
+			request: []byte{0x2f, 0x12, 0x34, 0x02}, response: []byte{0x6f, 0x12, 0x34, 0x02},
+		},
+		{
+			name: "return selected signals", parameter: uds.IOReturnControlToECU, mask: []byte{0x01, 0x00},
+			request: []byte{0x2f, 0x12, 0x34, 0x00, 0x01, 0x00}, response: []byte{0x6f, 0x12, 0x34, 0x00},
+		},
+		{
+			name: "reset", parameter: uds.IOResetToDefault,
+			request: []byte{0x2f, 0x12, 0x34, 0x01}, response: []byte{0x6f, 0x12, 0x34, 0x01},
+		},
+		{
+			name: "adjust without mask", parameter: uds.IOShortTermAdjustment, state: []byte{0x55},
+			request: []byte{0x2f, 0x12, 0x34, 0x03, 0x55}, response: []byte{0x6f, 0x12, 0x34, 0x03, 0x55}, status: []byte{0x55},
+		},
+		{
+			name: "security denied", request: []byte{0x2f, 0x12, 0x34, 0x00},
+			response: []byte{0x7f, 0x2f, 0x33}, negative: 0x33,
+		},
+		{name: "missing DID", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f}, kind: uds.ErrInvalidResponse},
+		{name: "short DID", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f, 0x12}, kind: uds.ErrInvalidResponse},
+		{name: "missing parameter", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f, 0x12, 0x34}, kind: uds.ErrInvalidResponse},
+		{name: "wrong DID high byte", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f, 0x13, 0x34, 0x00}, kind: uds.ErrUnexpectedResponse},
+		{name: "wrong DID low byte", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f, 0x12, 0x35, 0x00}, kind: uds.ErrUnexpectedResponse},
+		{name: "wrong parameter", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f, 0x12, 0x34, 0x01}, kind: uds.ErrUnexpectedResponse},
+		{name: "return after rejected responses", request: []byte{0x2f, 0x12, 0x34, 0x00}, response: []byte{0x6f, 0x12, 0x34, 0x00}},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			serverResult := make(chan error, 1)
+			go func() {
+				if err := receiveRequest(ctx, server, step.request); err != nil {
+					serverResult <- err
+					return
+				}
+				serverResult <- server.Send(ctx, step.response)
+			}()
+			status, err := client.InputOutputControlByIdentifier(ctx, 0x1234, step.parameter, step.state, step.mask)
+			if step.negative != 0 {
+				var negative *uds.NegativeResponseError
+				if !errors.As(err, &negative) || negative.Service != uds.ServiceInputOutputControlByIdentifier || negative.Code != step.negative {
+					t.Fatalf("negative response = %v", err)
+				}
+			} else if !errors.Is(err, step.kind) {
+				t.Fatalf("error = %v, want %v", err, step.kind)
+			}
+			if !bytes.Equal(status, step.status) {
+				t.Fatalf("status = %x, want %x", status, step.status)
+			}
+			if err := <-serverResult; err != nil {
+				t.Fatalf("server: %v", err)
+			}
+		})
+	}
+}
+
 func serveSemanticLifecycle(ctx context.Context, link *isotp.Link) error {
 	exchanges := []struct {
 		request  []byte
