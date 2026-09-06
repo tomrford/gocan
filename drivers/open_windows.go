@@ -13,10 +13,11 @@ import (
 // Open configures and opens a discovered physical CAN channel. Context
 // controls opening only; canceling it after Open returns does not stop the bus.
 func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config Config) (gocan.Bus, error) {
-	fd, err := validateOpen(capture, channel, config)
+	config, err := prepareOpen(capture, channel, config)
 	if err != nil {
 		return nil, err
 	}
+	fd := config.FDTiming != (FDTiming{})
 	switch channel.driver {
 	case driverPCAN:
 		return pcan.Open(ctx, capture, nativePCANConfig(channel, config, fd))
