@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/j1939"
@@ -54,10 +55,32 @@ func TestObservedNameLifecycle(t *testing.T) {
 	if got := decoder.Names(2, 0x80); !reflect.DeepEqual(got, []j1939.Name{name}) {
 		t.Fatalf("other bus=%v", got)
 	}
+	// Moving the known sender invalidates its partial payload, while a transfer
+	// from an unrelated sender on the same bus remains usable.
+	for _, source := range []uint32{0x80, 0x82} {
+		_, diagnostics := decoder.PushBatch([]gocan.FrameEvent{
+			frameEvent(t, 2, 0x18ecff00|source, []byte{32, 9, 0, 2, 255, 202, 254, 0}),
+			frameEvent(t, 2, 0x18ebff00|source, []byte{1, 1, 2, 3, 4, 5, 6, 7}),
+		})
+		if len(diagnostics) != 0 {
+			t.Fatal(diagnostics)
+		}
+	}
 	challenger.Frame.ID = 0x18eeff81
-	decoder.Push(challenger)
+	challenger.Timestamp = challenger.Timestamp.Add(2 * time.Millisecond)
+	if _, complete, err := decoder.Push(challenger); !complete || !errors.Is(err, j1939.ErrProtocol) {
+		t.Fatalf("moving an active sender: complete=%v, err=%v", complete, err)
+	}
 	if len(decoder.Names(1, 0x80)) != 0 || len(decoder.Names(1, 0x81)) != 1 {
 		t.Fatal("NAME move retained old address")
+	}
+	last := frameEvent(t, 4, 0x18ebff80, []byte{2, 8, 9, 255, 255, 255, 255, 255})
+	if _, complete, err := decoder.Push(last); complete || !errors.Is(err, j1939.ErrProtocol) {
+		t.Fatalf("completed payload across NAME move: %v, %v", complete, err)
+	}
+	last.Frame.ID = 0x18ebff82
+	if message, complete, err := decoder.Push(last); !complete || err != nil || !reflect.DeepEqual(message.Payload, []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}) {
+		t.Fatalf("unrelated transfer lost: %v, %v, %v", message, complete, err)
 	}
 	malformed := challenger
 	malformed.Frame.DLC = 7

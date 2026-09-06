@@ -171,9 +171,9 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 // Decode returns the physical value of one named signal from frame. A raw
 // value carrying a value description decodes to its label; other values decode
 // numerically. It reads only that signal and the multiplexors needed to
-// establish whether it is active. Messages longer than the 64-byte raw frame
-// representation or containing a signal wider than 64 bits are not supported
-// by the codec.
+// establish whether it is active. The message must fit one CAN frame; use
+// DecodePayload for transported messages. Signals wider than 64 bits are not
+// supported by the codec.
 // J1939 definitions match by canonical PGN, regardless of priority, source or
 // destination. Select the appropriate definition first when a PGN is ambiguous.
 func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
