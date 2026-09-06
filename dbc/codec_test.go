@@ -80,19 +80,23 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatal("Command message was not resolved")
 	}
 
-	frame, err := command.Encode(Values{
+	values := Values{
 		"Enable":        true,
 		"Mode":          "Torque",
 		"Temperature":   25.5,
 		"BigEndian":     uint64(0xabcd),
 		"SignedCounter": int64(-2),
-	})
+	}
+	frame, err := command.Encode(values)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 	wantData := [gocan.MaxDataLength]byte{0x03, 0x8f, 0x02, 0xab, 0xcd, 0xfe, 0x00, 0x00}
 	if frame.ID != 0x123 || frame.DLC != 8 || frame.Flags != 0 || frame.Data != wantData {
 		t.Fatalf("encoded frame = %#v, want ID 0x123 and data % x", frame, wantData[:8])
+	}
+	if payload, err := command.EncodePayload(values); err != nil || !bytes.Equal(payload, frame.Data[:command.Length]) {
+		t.Fatalf("EncodePayload Command = % x, %v; want % x", payload, err, frame.Data[:command.Length])
 	}
 
 	assertDecoded(t, command, frame, "Enable", uint64(1))
@@ -150,7 +154,8 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatal("FastStatus message was not resolved")
 	}
 	const payload = uint64(0xfedcba9876543210)
-	fd, err := fast.Encode(Values{"Payload": payload, "Tail": uint64(0x5a)})
+	fastValues := Values{"Payload": payload, "Tail": uint64(0x5a)}
+	fd, err := fast.Encode(fastValues)
 	if err != nil {
 		t.Fatalf("Encode FastStatus: %v", err)
 	}
@@ -159,6 +164,9 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatalf("encoded CAN FD frame = %#v", fd)
 	}
 	assertDecoded(t, fast, fd, "Payload", payload)
+	if payload, err := fast.EncodePayload(fastValues); err != nil || !bytes.Equal(payload, fd.Data[:fast.Length]) {
+		t.Fatalf("EncodePayload FastStatus = % x, %v; want % x", payload, err, fd.Data[:fast.Length])
+	}
 
 	wide, ok := db.MessageByName("WideData")
 	if !ok {
@@ -166,6 +174,9 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	if _, err := wide.Encode(Values{"Payload": uint64(0)}); err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
 		t.Fatalf("wide signal Encode error = %v", err)
+	}
+	if payload, err := wide.EncodePayload(Values{"Payload": uint64(0)}); payload != nil || err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
+		t.Fatalf("wide signal EncodePayload = % x, %v", payload, err)
 	}
 }
 
@@ -339,32 +350,6 @@ func TestLongJ1939PayloadDecode(t *testing.T) {
 	}
 }
 
-func TestEncodePayloadFrameFormats(t *testing.T) {
-	db := parseFixture(t, "testdata/codec.dbc")
-	for _, test := range []struct {
-		name   string
-		values Values
-		want   []byte
-	}{
-		{"Command", Values{"Enable": true, "Mode": "Torque", "Temperature": 25.5, "BigEndian": uint64(0xabcd), "SignedCounter": int64(-2)},
-			[]byte{0x03, 0x8f, 0x02, 0xab, 0xcd, 0xfe, 0, 0}},
-		{"FastStatus", Values{"Payload": uint64(0xfedcba9876543210), "Tail": uint64(0x5a)},
-			[]byte{0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x5a}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			message, _ := db.MessageByName(test.name)
-			payload, err := message.EncodePayload(test.values)
-			if err != nil || !bytes.Equal(payload, test.want) {
-				t.Fatalf("EncodePayload = % x, %v; want % x", payload, err, test.want)
-			}
-		})
-	}
-	wide, _ := db.MessageByName("WideData")
-	if payload, err := wide.EncodePayload(Values{"Payload": uint64(0)}); payload != nil || err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
-		t.Fatalf("wide signal EncodePayload = % x, %v", payload, err)
-	}
-}
-
 func TestEncodePayloadTransported(t *testing.T) {
 	// The payload codec has no J1939 TP size limit. The caller selects a
 	// transport capable of carrying this message's declared length.
@@ -399,8 +384,8 @@ BA_ "VFrameFormat" BO_ 2566834942 3;
 	other, err := message.EncodePayload(Values{"Selector": uint64(2), "Tail": uint64(0xa5)})
 	wantOther := make([]byte, 1800)
 	wantOther[71], wantOther[1799] = 2, 0xa5
-	if err != nil || !bytes.Equal(other, wantOther) || !bytes.Equal(payload, want) {
-		t.Fatalf("second encoding changed the first payload or encoded the wrong branch: %v", err)
+	if err != nil || !bytes.Equal(other, wantOther) {
+		t.Fatalf("EncodePayload second branch = % x, %v; want % x", other, err, wantOther)
 	}
 	for _, test := range []struct {
 		values Values

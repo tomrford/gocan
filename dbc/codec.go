@@ -80,12 +80,8 @@ func (message *Message) Encode(values Values) (gocan.Frame, error) {
 	return frame, nil
 }
 
-// EncodePayload encodes every signal active on the selected multiplexing path
-// using the same value conversion and validation as Encode. It returns a new
-// payload of exactly the message's declared Length, with unused bits zeroed,
-// without constructing CAN frames or performing transport. It allocates Length
-// bytes; callers should check their transport's size limit before encoding.
-// Signals wider than 64 bits are not supported by the codec.
+// EncodePayload encodes like Encode but returns exactly Length bytes,
+// with unused bits zeroed, for messages carried by a transport.
 func (message *Message) EncodePayload(values Values) ([]byte, error) {
 	codec, err := message.writableCodec()
 	if err != nil {
