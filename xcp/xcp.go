@@ -181,14 +181,17 @@ func (client *Client) RetentionCursor() gocan.Cursor {
 func (client *Client) begin(parent context.Context) (context.Context, func(), error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	stop := context.AfterFunc(client.ctx, func() { cancel(ErrClosed) })
+	cancelBus := func() {
+		err := client.bus.Err()
+		if err == nil {
+			err = gocan.ErrBusClosed
+		}
+		cancel(err)
+	}
 	go func() {
 		select {
 		case <-client.bus.Done():
-			err := client.bus.Err()
-			if err == nil {
-				err = gocan.ErrBusClosed
-			}
-			cancel(err)
+			cancelBus()
 		case <-ctx.Done():
 		}
 	}()
@@ -209,6 +212,13 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 	if err := context.Cause(client.ctx); err != nil {
 		finish()
 		return nil, nil, err
+	}
+	// Acquiring the gate can win the race with the bus watcher. Observe an
+	// already-closed bus before inspecting the previous command's state.
+	select {
+	case <-client.bus.Done():
+		cancelBus()
+	default:
 	}
 	if err := context.Cause(ctx); err != nil {
 		finish()
