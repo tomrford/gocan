@@ -473,7 +473,7 @@ type Bus struct {
 	receiveEvent windows.Handle
 	stopEvent    windows.Handle
 
-	sendMu    sync.Mutex
+	ioMu      sync.Mutex
 	lifecycle *driverstate.Lifecycle
 
 	cleanupErr error
@@ -516,8 +516,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	default:
 	}
 
-	bus.sendMu.Lock()
-	defer bus.sendMu.Unlock()
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
 
 	select {
 	case <-ctx.Done():
@@ -609,6 +609,11 @@ func (bus *Bus) receiveLoop() {
 
 	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
 	for {
+		select {
+		case <-bus.lifecycle.StopSignal():
+			return
+		default:
+		}
 		now := time.Now()
 		if !now.Before(bus.nextChipStateRequest) {
 			if err := bus.requestChipState(now); err != nil {
@@ -629,12 +634,8 @@ func (bus *Bus) receiveLoop() {
 		case windows.WAIT_OBJECT_0:
 			return
 		case windows.WAIT_OBJECT_0 + 1:
-			stopped, err := bus.drainReceiveQueue()
-			if err != nil {
+			if err := bus.drainReceiveQueue(); err != nil {
 				bus.stopWithError(err)
-				return
-			}
-			if stopped {
 				return
 			}
 		case uint32(windows.WAIT_TIMEOUT):
@@ -646,104 +647,105 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-func (bus *Bus) drainReceiveQueue() (bool, error) {
+func (bus *Bus) drainReceiveQueue() error {
+	for {
+		more, err := bus.receiveOne()
+		if err != nil || !more {
+			return err
+		}
+	}
+}
+
+// receiveOne serialises a single native read and capture append with Send.
+// The caller waits for receive readiness without holding ioMu.
+func (bus *Bus) receiveOne() (bool, error) {
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
+
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return false, nil
+	default:
+	}
 	if bus.fd {
-		return bus.drainFDReceiveQueue()
+		return bus.receiveFD()
 	}
-	return bus.drainClassicReceiveQueue()
+	return bus.receiveClassic()
 }
 
-func (bus *Bus) drainClassicReceiveQueue() (bool, error) {
-	for {
-		select {
-		case <-bus.lifecycle.StopSignal():
-			return true, nil
-		default:
-		}
-
-		var event xlEvent
-		messageCount := uint32(1)
-		result, _, _ := bus.api.receive.Call(
-			portArgument(bus.port),
-			uintptr(unsafe.Pointer(&messageCount)),
-			uintptr(unsafe.Pointer(&event)),
+func (bus *Bus) receiveClassic() (bool, error) {
+	var event xlEvent
+	messageCount := uint32(1)
+	result, _, _ := bus.api.receive.Call(
+		portArgument(bus.port),
+		uintptr(unsafe.Pointer(&messageCount)),
+		uintptr(unsafe.Pointer(&event)),
+	)
+	timestamp := time.Now()
+	status := xlStatus(result)
+	switch status {
+	case xlQueueEmpty:
+		return false, nil
+	case xlQueueOverrun:
+		observation, err := newOverrunObservation(
+			bus.id,
+			timestamp,
+			fmt.Sprintf("Vector receive status %d", status),
 		)
-		timestamp := time.Now()
-		status := xlStatus(result)
-		switch status {
-		case xlQueueEmpty:
-			return false, nil
-		case xlQueueOverrun:
-			observation, err := newOverrunObservation(
-				bus.id,
-				timestamp,
-				fmt.Sprintf("Vector receive status %d", status),
-			)
-			if err != nil {
-				return false, err
-			}
-			return bus.applyObservation(observation, timestamp)
-		case xlSuccess:
-		default:
-			return false, bus.runtimeStatusError("receive Vector event", status)
-		}
-		if messageCount != 1 {
-			return false, fmt.Errorf("receive Vector event: driver returned %d events", messageCount)
-		}
-
-		observation, err := decodeClassicReceiveEvent(&event, bus.id, timestamp)
 		if err != nil {
 			return false, err
 		}
 		stopped, err := bus.applyObservation(observation, timestamp)
-		if err != nil || stopped {
-			return stopped, err
-		}
+		return !stopped, err
+	case xlSuccess:
+	default:
+		return false, bus.runtimeStatusError("receive Vector event", status)
 	}
+	if messageCount != 1 {
+		return false, fmt.Errorf("receive Vector event: driver returned %d events", messageCount)
+	}
+
+	observation, err := decodeClassicReceiveEvent(&event, bus.id, timestamp)
+	if err != nil {
+		return false, err
+	}
+	stopped, err := bus.applyObservation(observation, timestamp)
+	return !stopped, err
 }
 
-func (bus *Bus) drainFDReceiveQueue() (bool, error) {
-	for {
-		select {
-		case <-bus.lifecycle.StopSignal():
-			return true, nil
-		default:
-		}
-
-		var event xlCANRXEvent
-		result, _, _ := bus.api.receiveFD.Call(
-			portArgument(bus.port),
-			uintptr(unsafe.Pointer(&event)),
+func (bus *Bus) receiveFD() (bool, error) {
+	var event xlCANRXEvent
+	result, _, _ := bus.api.receiveFD.Call(
+		portArgument(bus.port),
+		uintptr(unsafe.Pointer(&event)),
+	)
+	timestamp := time.Now()
+	status := xlStatus(result)
+	switch status {
+	case xlQueueEmpty:
+		return false, nil
+	case xlQueueOverrun:
+		observation, err := newOverrunObservation(
+			bus.id,
+			timestamp,
+			fmt.Sprintf("Vector CAN FD receive status %d", status),
 		)
-		timestamp := time.Now()
-		status := xlStatus(result)
-		switch status {
-		case xlQueueEmpty:
-			return false, nil
-		case xlQueueOverrun:
-			observation, err := newOverrunObservation(
-				bus.id,
-				timestamp,
-				fmt.Sprintf("Vector CAN FD receive status %d", status),
-			)
-			if err != nil {
-				return false, err
-			}
-			return bus.applyObservation(observation, timestamp)
-		case xlSuccess:
-		default:
-			return false, bus.runtimeStatusError("receive Vector CAN FD event", status)
-		}
-
-		observation, err := decodeFDReceiveEvent(&event, bus.id, timestamp)
 		if err != nil {
 			return false, err
 		}
 		stopped, err := bus.applyObservation(observation, timestamp)
-		if err != nil || stopped {
-			return stopped, err
-		}
+		return !stopped, err
+	case xlSuccess:
+	default:
+		return false, bus.runtimeStatusError("receive Vector CAN FD event", status)
 	}
+
+	observation, err := decodeFDReceiveEvent(&event, bus.id, timestamp)
+	if err != nil {
+		return false, err
+	}
+	stopped, err := bus.applyObservation(observation, timestamp)
+	return !stopped, err
 }
 
 func (bus *Bus) applyObservation(observation receiveObservation, timestamp time.Time) (bool, error) {
@@ -842,10 +844,8 @@ func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
 }
 
+// stopWithEvents is called with ioMu held, after the native read.
 func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	bus.sendMu.Lock()
-	defer bus.sendMu.Unlock()
-
 	for _, event := range events {
 		if err := bus.capture.AppendEvent(event); err != nil {
 			bus.stopWithError(err)
@@ -856,9 +856,9 @@ func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
 }
 
 func (bus *Bus) finish() {
-	bus.sendMu.Lock()
+	bus.ioMu.Lock()
 	bus.cleanupErr = bus.cleanup()
-	bus.sendMu.Unlock()
+	bus.ioMu.Unlock()
 	bus.lifecycle.MarkDone()
 }
 
