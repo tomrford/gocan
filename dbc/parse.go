@@ -35,6 +35,7 @@ func (err *Error) Error() string {
 // an optional byte-order mark, and falls back to Windows-1252 for legacy
 // sources.
 func Parse(name, source string) (*Database, error) {
+	original := source
 	source = strings.TrimPrefix(source, "\ufeff")
 	if !utf8.ValidString(source) {
 		decoded, err := charmap.Windows1252.NewDecoder().String(source)
@@ -55,7 +56,12 @@ func Parse(name, source string) (*Database, error) {
 	if err != nil {
 		return nil, err
 	}
-	return resolve(raw)
+	db, err := resolve(raw)
+	if err != nil {
+		return nil, err
+	}
+	db.source = original
+	return db, nil
 }
 
 // ParseFile reads and parses a DBC file. Parse documents the accepted

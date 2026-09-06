@@ -10,20 +10,21 @@ import (
 const suppressPositiveResponse byte = 0x80
 
 const (
-	ServiceDiagnosticSessionControl   ServiceID = 0x10
-	ServiceECUReset                   ServiceID = 0x11
-	ServiceClearDiagnosticInformation ServiceID = 0x14
-	ServiceReadDTCInformation         ServiceID = 0x19
-	ServiceReadDataByIdentifier       ServiceID = 0x22
-	ServiceSecurityAccess             ServiceID = 0x27
-	ServiceCommunicationControl       ServiceID = 0x28
-	ServiceWriteDataByIdentifier      ServiceID = 0x2e
-	ServiceRoutineControl             ServiceID = 0x31
-	ServiceRequestDownload            ServiceID = 0x34
-	ServiceTransferData               ServiceID = 0x36
-	ServiceRequestTransferExit        ServiceID = 0x37
-	ServiceTesterPresent              ServiceID = 0x3e
-	ServiceControlDTCSetting          ServiceID = 0x85
+	ServiceDiagnosticSessionControl       ServiceID = 0x10
+	ServiceECUReset                       ServiceID = 0x11
+	ServiceClearDiagnosticInformation     ServiceID = 0x14
+	ServiceReadDTCInformation             ServiceID = 0x19
+	ServiceReadDataByIdentifier           ServiceID = 0x22
+	ServiceSecurityAccess                 ServiceID = 0x27
+	ServiceCommunicationControl           ServiceID = 0x28
+	ServiceWriteDataByIdentifier          ServiceID = 0x2e
+	ServiceInputOutputControlByIdentifier ServiceID = 0x2f
+	ServiceRoutineControl                 ServiceID = 0x31
+	ServiceRequestDownload                ServiceID = 0x34
+	ServiceTransferData                   ServiceID = 0x36
+	ServiceRequestTransferExit            ServiceID = 0x37
+	ServiceTesterPresent                  ServiceID = 0x3e
+	ServiceControlDTCSetting              ServiceID = 0x85
 )
 
 // Session identifies a diagnostic session-control subfunction.
@@ -110,6 +111,16 @@ const (
 	DTCSettingOff DTCSettingType = 0x02
 )
 
+// IOControlParameter selects a standard InputOutputControlByIdentifier operation.
+type IOControlParameter uint8
+
+const (
+	IOReturnControlToECU  IOControlParameter = 0x00
+	IOResetToDefault      IOControlParameter = 0x01
+	IOFreezeCurrentState  IOControlParameter = 0x02
+	IOShortTermAdjustment IOControlParameter = 0x03
+)
+
 // RoutineControlType identifies a routine-control subfunction.
 type RoutineControlType uint8
 
@@ -184,6 +195,22 @@ func (client *Client) WriteDataByIdentifier(ctx context.Context, identifier uint
 	copy(request[2:], record)
 	_, err := client.doEchoed(ctx, ServiceWriteDataByIdentifier, request, request[:2], "data identifier", true)
 	return err
+}
+
+// InputOutputControlByIdentifier controls one data identifier and returns the
+// raw control-status bytes after the identifier and control-parameter echoes.
+// The optional controlState and enableMask records are sent verbatim, in that
+// order. Their layout and applicability are defined by the DID and the caller.
+func (client *Client) InputOutputControlByIdentifier(ctx context.Context, identifier uint16, parameter IOControlParameter, controlState, enableMask []byte) ([]byte, error) {
+	if parameter > IOShortTermAdjustment {
+		return nil, fmt.Errorf("UDS IO control parameter %#02x must be 0 through 3", parameter)
+	}
+	request := make([]byte, 3+len(controlState)+len(enableMask))
+	binary.BigEndian.PutUint16(request, identifier)
+	request[2] = byte(parameter)
+	copy(request[3:], controlState)
+	copy(request[3+len(controlState):], enableMask)
+	return client.doEchoed(ctx, ServiceInputOutputControlByIdentifier, request, request[:3], "data identifier and IO control parameter", false)
 }
 
 // RequestSeed requests a seed for level and returns the seed record.

@@ -132,7 +132,7 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	// it. Only a library bug can name a record the chunk does not hold.
 	tail := views[len(views)-1].records
 	if endRecord+1 > len(tail) {
-		return nil, 0, fmt.Errorf("capture range end: %w", ErrCursorOutOfRange)
+		return nil, 0, fmt.Errorf("capture range end: %w", &CursorOutOfRangeError{Cursor: end})
 	}
 	views[len(views)-1].records = tail[:endRecord+1]
 	return views, startRecord + 1, nil
