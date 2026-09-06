@@ -7,6 +7,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/internal/scalar"
+	"github.com/tomrford/gocan/j1939"
 )
 
 type messageCodec struct {
@@ -27,6 +28,22 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 		return nil, false
 	}
 	return &database.Messages[index], true
+}
+
+// MessagesByPGN returns the resolved J1939 messages with pgn in declaration
+// order. More than one message may deliberately describe the same PGN.
+// Callers must resolve multiple matches from their device/database context;
+// this lookup does not pick a definition based on source or destination.
+func (database *Database) MessagesByPGN(pgn j1939.PGN) []*Message {
+	if database == nil {
+		return nil
+	}
+	indexes := database.messagesByPGN[pgn]
+	messages := make([]*Message, len(indexes))
+	for i, index := range indexes {
+		messages[i] = &database.Messages[index]
+	}
+	return messages
 }
 
 // SignalByName returns the resolved signal with name.
@@ -53,6 +70,10 @@ func (message *Message) Encode(values Values) (gocan.Frame, error) {
 	if err != nil {
 		return gocan.Frame{}, err
 	}
+	frame, err := message.newFrame()
+	if err != nil {
+		return gocan.Frame{}, err
+	}
 	raw, provided, err := codec.convertValues(message, values)
 	if err != nil {
 		return gocan.Frame{}, err
@@ -71,13 +92,10 @@ func (message *Message) Encode(values Values) (gocan.Frame, error) {
 		}
 	}
 
-	frame, err := message.newFrame()
-	if err != nil {
-		return gocan.Frame{}, err
-	}
+	data := frame.Data[:frame.DataLength()]
 	for index := range message.Signals {
 		if active[index] {
-			writeSignalBits(&frame.Data, message.Signals[index], raw[index])
+			writeSignalBits(data, message.Signals[index], raw[index])
 		}
 	}
 	return frame, nil
@@ -105,7 +123,8 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 		return err
 	}
 
-	oldSelectors := codec.selectorValues(message, frame)
+	data := frame.Data[:frame.DataLength()]
+	oldSelectors := codec.selectorValues(message, data)
 	newSelectors := make(map[int]uint64, len(oldSelectors))
 	for index, value := range oldSelectors {
 		newSelectors[index] = value
@@ -144,7 +163,7 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 	}
 
 	for index := range changed {
-		writeSignalBits(&frame.Data, message.Signals[index], changedRaw[index])
+		writeSignalBits(data, message.Signals[index], changedRaw[index])
 	}
 	return nil
 }
@@ -152,23 +171,41 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 // Decode returns the physical value of one named signal from frame. A raw
 // value carrying a value description decodes to its label; other values decode
 // numerically. It reads only that signal and the multiplexors needed to
-// establish whether it is active. Messages longer than the 64-byte raw frame
-// representation or containing a signal wider than 64 bits are not supported
-// by the codec.
+// establish whether it is active. The message must fit one CAN frame; use
+// DecodePayload for transported messages. Signals wider than 64 bits are not
+// supported by the codec.
+// J1939 definitions match by canonical PGN, regardless of priority, source or
+// destination. Select the appropriate definition first when a PGN is ambiguous.
 func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
+	if err := message.validateFrame(frame); err != nil {
+		return nil, err
+	}
+	return message.DecodePayload(frame.Data[:message.Length], name)
+}
+
+// DecodePayload returns the physical value of one named signal from a payload.
+// The payload may be shorter than the declared message length when the signal
+// and every multiplexor needed to select it are present. It must not be longer
+// than the declared message length.
+func (message *Message) DecodePayload(payload []byte, name string) (any, error) {
 	codec, err := message.usableCodec()
 	if err != nil {
 		return nil, err
 	}
-	if err := message.validateFrame(frame); err != nil {
-		return nil, err
+	if uint64(len(payload)) > uint64(message.Length) {
+		return nil, fmt.Errorf("DBC message %q payload length %d exceeds declared length %d", message.Name, len(payload), message.Length)
 	}
 	index, ok := codec.signalsByName[name]
 	if !ok {
 		return nil, fmt.Errorf("DBC message %q has no signal %q", message.Name, name)
 	}
+	if !signalAvailable(message.Signals[index], len(payload)) {
+		return nil, fmt.Errorf("DBC signal %q is not present in the %d-byte payload", name, len(payload))
+	}
 	selectors := make(map[int]uint64)
-	codec.readSelectorPath(message, &frame, index, selectors)
+	if err := codec.readSelectorPath(message, payload, index, selectors); err != nil {
+		return nil, err
+	}
 	active, err := codec.signalActive(message, index, selectors, make(map[int]bool))
 	if err != nil {
 		return nil, err
@@ -176,7 +213,7 @@ func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
 	if !active {
 		return nil, fmt.Errorf("DBC signal %q is inactive in this frame", name)
 	}
-	return decodeSignalValue(message.Signals[index], readSignalBits(&frame.Data, message.Signals[index])), nil
+	return decodeSignalValue(message.Signals[index], readSignalBits(payload, message.Signals[index])), nil
 }
 
 func (message *Message) usableCodec() (*messageCodec, error) {
@@ -208,10 +245,6 @@ func compileMessageCodec(message *Message) *messageCodec {
 		signalsByName: make(map[string]int, len(message.Signals)),
 		constraints:   make([]map[int][]MultiplexRange, len(message.Signals)),
 		selectors:     make([]bool, len(message.Signals)),
-	}
-	if message.Length > gocan.MaxDataLength {
-		codec.err = fmt.Errorf("%d-byte message exceeds the %d-byte raw frame representation", message.Length, gocan.MaxDataLength)
-		return codec
 	}
 	for index, signal := range message.Signals {
 		if signal.BitLength > 64 {
@@ -280,10 +313,11 @@ func (codec *messageCodec) signalConstraints(message *Message, index int, visiti
 }
 
 func (codec *messageCodec) validateOverlaps(message *Message) error {
-	masks := make([][8]uint64, len(message.Signals))
+	bits := make([]map[uint32]struct{}, len(message.Signals))
 	for index, signal := range message.Signals {
+		bits[index] = make(map[uint32]struct{}, signal.BitLength)
 		visitSignalBits(signal, func(bit uint32) {
-			masks[index][bit/64] |= uint64(1) << (bit % 64)
+			bits[index][bit] = struct{}{}
 		})
 	}
 	for left := range message.Signals {
@@ -291,8 +325,8 @@ func (codec *messageCodec) validateOverlaps(message *Message) error {
 			if !constraintsCompatible(codec.constraints[left], codec.constraints[right]) {
 				continue
 			}
-			for word := range masks[left] {
-				if masks[left][word]&masks[right][word] != 0 {
+			for bit := range bits[left] {
+				if _, overlaps := bits[right][bit]; overlaps {
 					return fmt.Errorf("signals %q and %q overlap while active", message.Signals[left].Name, message.Signals[right].Name)
 				}
 			}
@@ -374,24 +408,30 @@ func (codec *messageCodec) signalActive(message *Message, index int, raw map[int
 	return rangesContain(condition.Ranges, value), nil
 }
 
-func (codec *messageCodec) selectorValues(message *Message, frame *gocan.Frame) map[int]uint64 {
+func (codec *messageCodec) selectorValues(message *Message, payload []byte) map[int]uint64 {
 	values := make(map[int]uint64)
 	for index, isSelector := range codec.selectors {
 		if isSelector {
-			values[index] = readSignalBits(&frame.Data, message.Signals[index])
+			values[index] = readSignalBits(payload, message.Signals[index])
 		}
 	}
 	return values
 }
 
-func (codec *messageCodec) readSelectorPath(message *Message, frame *gocan.Frame, index int, values map[int]uint64) {
+func (codec *messageCodec) readSelectorPath(message *Message, payload []byte, index int, values map[int]uint64) error {
 	condition := message.Signals[index].Multiplex
 	if condition == nil {
-		return
+		return nil
 	}
 	selector := codec.signalsByName[condition.Selector]
-	codec.readSelectorPath(message, frame, selector, values)
-	values[selector] = readSignalBits(&frame.Data, message.Signals[selector])
+	if !signalAvailable(message.Signals[selector], len(payload)) {
+		return fmt.Errorf("DBC multiplexor %q is not present in the %d-byte payload", message.Signals[selector].Name, len(payload))
+	}
+	if err := codec.readSelectorPath(message, payload, selector, values); err != nil {
+		return err
+	}
+	values[selector] = readSignalBits(payload, message.Signals[selector])
+	return nil
 }
 
 func (message *Message) newFrame() (gocan.Frame, error) {
@@ -403,6 +443,9 @@ func (message *Message) newFrame() (gocan.Frame, error) {
 }
 
 func (message *Message) validateFrame(frame gocan.Frame) error {
+	if message == nil {
+		return fmt.Errorf("DBC message is nil")
+	}
 	if err := frame.Validate(); err != nil {
 		return err
 	}
@@ -413,7 +456,13 @@ func (message *Message) validateFrame(frame gocan.Frame) error {
 	if frame.Flags.Has(gocan.FrameRemote) {
 		return fmt.Errorf("DBC message %q cannot decode a remote frame", message.Name)
 	}
-	if frame.ID != message.ID || frame.Flags.Has(gocan.FrameExtended) != flags.Has(gocan.FrameExtended) {
+	matchesID := frame.ID == message.ID
+	if message.Format == FrameFormatJ1939 {
+		actual, _ := j1939.ParseID(frame.ID)
+		expected, _ := j1939.ParseID(message.ID)
+		matchesID = actual.PGN == expected.PGN
+	}
+	if !matchesID || frame.Flags.Has(gocan.FrameExtended) != flags.Has(gocan.FrameExtended) {
 		return fmt.Errorf("frame %#x does not match DBC message %q", frame.ID, message.Name)
 	}
 	if frame.Flags.Has(gocan.FrameFD) != flags.Has(gocan.FrameFD) {
@@ -597,7 +646,7 @@ func boolValue(value any) (bool, bool) {
 	return false, false
 }
 
-func readSignalBits(data *[gocan.MaxDataLength]byte, signal Signal) uint64 {
+func readSignalBits(data []byte, signal Signal) uint64 {
 	var value uint64
 	if signal.ByteOrder == ByteOrderLittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
@@ -619,7 +668,7 @@ func readSignalBits(data *[gocan.MaxDataLength]byte, signal Signal) uint64 {
 	return value
 }
 
-func writeSignalBits(data *[gocan.MaxDataLength]byte, signal Signal, value uint64) {
+func writeSignalBits(data []byte, signal Signal, value uint64) {
 	if signal.ByteOrder == ByteOrderLittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
@@ -635,13 +684,24 @@ func writeSignalBits(data *[gocan.MaxDataLength]byte, signal Signal, value uint6
 	}
 }
 
-func setDataBit(data *[gocan.MaxDataLength]byte, bit uint32, value bool) {
+func setDataBit(data []byte, bit uint32, value bool) {
 	mask := byte(1) << (bit % 8)
 	if value {
 		data[bit/8] |= mask
 	} else {
 		data[bit/8] &^= mask
 	}
+}
+
+func signalAvailable(signal Signal, payloadLength int) bool {
+	available := true
+	payloadBits := uint64(payloadLength) * 8
+	visitSignalBits(signal, func(bit uint32) {
+		if uint64(bit) >= payloadBits {
+			available = false
+		}
+	})
+	return available
 }
 
 func visitSignalBits(signal Signal, visit func(uint32)) {

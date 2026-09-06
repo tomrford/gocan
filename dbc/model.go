@@ -2,7 +2,10 @@
 // encodes or lazily decodes raw CAN frames.
 package dbc
 
-import "github.com/tomrford/gocan/internal/scalar"
+import (
+	"github.com/tomrford/gocan/internal/scalar"
+	"github.com/tomrford/gocan/j1939"
+)
 
 // Database is one resolved DBC file.
 //
@@ -20,6 +23,7 @@ type Database struct {
 	Diagnostics          []Diagnostic
 
 	messagesByName map[string]int
+	messagesByPGN  map[j1939.PGN][]int
 	source         string
 }
 

@@ -16,6 +16,7 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 | `mf4` | Streaming MDF 4.10 raw CAN/CAN FD recording with bus-specific DBC attachments |
 | `recorder` | Lifecycled trace recording with safe flush checkpoints |
 | `dbc` | DBC parsing with original source retention, and CAN frame encoding and decoding |
+| `j1939` | J1939 identifiers, passive TP reassembly and observed NAME/address claims |
 | `isotp` | ISO-TP payload transport over classical CAN and CAN FD |
 | `uds` | Raw exchanges and typed Unified Diagnostic Services operations |
 | `xcp` | Sequential XCP-on-CAN/CAN FD sessions and raw byte-addressed memory reads |
