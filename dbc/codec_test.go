@@ -1,6 +1,7 @@
 package dbc
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strings"
@@ -79,19 +80,23 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatal("Command message was not resolved")
 	}
 
-	frame, err := command.Encode(Values{
+	values := Values{
 		"Enable":        true,
 		"Mode":          "Torque",
 		"Temperature":   25.5,
 		"BigEndian":     uint64(0xabcd),
 		"SignedCounter": int64(-2),
-	})
+	}
+	frame, err := command.Encode(values)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 	wantData := [gocan.MaxDataLength]byte{0x03, 0x8f, 0x02, 0xab, 0xcd, 0xfe, 0x00, 0x00}
 	if frame.ID != 0x123 || frame.DLC != 8 || frame.Flags != 0 || frame.Data != wantData {
 		t.Fatalf("encoded frame = %#v, want ID 0x123 and data % x", frame, wantData[:8])
+	}
+	if payload, err := command.EncodePayload(values); err != nil || !bytes.Equal(payload, frame.Data[:command.Length]) {
+		t.Fatalf("EncodePayload Command = % x, %v; want % x", payload, err, frame.Data[:command.Length])
 	}
 
 	assertDecoded(t, command, frame, "Enable", uint64(1))
@@ -149,7 +154,8 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatal("FastStatus message was not resolved")
 	}
 	const payload = uint64(0xfedcba9876543210)
-	fd, err := fast.Encode(Values{"Payload": payload, "Tail": uint64(0x5a)})
+	fastValues := Values{"Payload": payload, "Tail": uint64(0x5a)}
+	fd, err := fast.Encode(fastValues)
 	if err != nil {
 		t.Fatalf("Encode FastStatus: %v", err)
 	}
@@ -158,6 +164,9 @@ func TestMessageCodecLifecycle(t *testing.T) {
 		t.Fatalf("encoded CAN FD frame = %#v", fd)
 	}
 	assertDecoded(t, fast, fd, "Payload", payload)
+	if payload, err := fast.EncodePayload(fastValues); err != nil || !bytes.Equal(payload, fd.Data[:fast.Length]) {
+		t.Fatalf("EncodePayload FastStatus = % x, %v; want % x", payload, err, fd.Data[:fast.Length])
+	}
 
 	wide, ok := db.MessageByName("WideData")
 	if !ok {
@@ -165,6 +174,9 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	if _, err := wide.Encode(Values{"Payload": uint64(0)}); err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
 		t.Fatalf("wide signal Encode error = %v", err)
+	}
+	if payload, err := wide.EncodePayload(Values{"Payload": uint64(0)}); payload != nil || err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
+		t.Fatalf("wide signal EncodePayload = % x, %v", payload, err)
 	}
 }
 
@@ -335,6 +347,62 @@ func TestLongJ1939PayloadDecode(t *testing.T) {
 	frame := gocan.Frame{}
 	if err := long.Patch(&frame, Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
 		t.Fatalf("LongJ1939 Patch error = %v", err)
+	}
+}
+
+func TestEncodePayloadTransported(t *testing.T) {
+	// The payload codec has no J1939 TP size limit. The caller selects a
+	// transport capable of carrying this message's declared length.
+	const source = `BU_: ECU
+BO_ 2566834942 Long: 1800 ECU
+ SG_ Selector M : 568|8@1+ (1,0) [0|255] "" ECU
+ SG_ Intel m1 : 63|16@1+ (1,0) [0|65535] "" ECU
+ SG_ Motorola m1 : 519|16@0- (0.5,-10) [-100|100] "" ECU
+ SG_ Tail m2 : 14392|8@1+ (1,0) [0|255] "" ECU
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_ "VFrameFormat" BO_ 2566834942 3;
+`
+	db, err := Parse("transported.dbc", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, _ := db.MessageByName("Long")
+	values := Values{"Selector": uint64(1), "Intel": uint64(0xabcd), "Motorola": -11.0}
+	payload, err := message.EncodePayload(values)
+	want := make([]byte, 1800)
+	// 0xabcd begins at bit 7 of byte 7. -11 encodes as signed raw -2.
+	want[7], want[8], want[9] = 0x80, 0xe6, 0x55
+	want[64], want[65], want[71] = 0xff, 0xfe, 1
+	if err != nil || !bytes.Equal(payload, want) {
+		t.Fatalf("EncodePayload = % x, %v; want % x", payload, err, want)
+	}
+	for name, expected := range values {
+		if got, err := message.DecodePayload(payload, name); err != nil || got != expected {
+			t.Fatalf("DecodePayload %s = %v, %v; want %v", name, got, err, expected)
+		}
+	}
+	other, err := message.EncodePayload(Values{"Selector": uint64(2), "Tail": uint64(0xa5)})
+	wantOther := make([]byte, 1800)
+	wantOther[71], wantOther[1799] = 2, 0xa5
+	if err != nil || !bytes.Equal(other, wantOther) {
+		t.Fatalf("EncodePayload second branch = % x, %v; want % x", other, err, wantOther)
+	}
+	for _, test := range []struct {
+		values Values
+		error  string
+	}{
+		{Values{"Selector": uint64(1), "Intel": uint64(1)}, "requires signal"},
+		{Values{"Selector": uint64(2), "Tail": uint64(1), "Intel": uint64(1)}, "inactive"},
+		{Values{"Unknown": uint64(1)}, "has no signal"},
+		{Values{"Selector": uint64(2), "Tail": uint64(256)}, "outside"},
+		{Values{"Intel": uint64(1)}, "requires multiplexor"},
+	} {
+		if got, err := message.EncodePayload(test.values); got != nil || err == nil || !strings.Contains(err.Error(), test.error) {
+			t.Fatalf("EncodePayload(%v) = % x, %v; want nil and %q", test.values, got, err, test.error)
+		}
+	}
+	if _, err := message.Encode(values); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
+		t.Fatalf("Encode transported message error = %v", err)
 	}
 }
 

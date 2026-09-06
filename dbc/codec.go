@@ -62,9 +62,9 @@ func (message *Message) SignalByName(name string) (*Signal, bool) {
 // Encode constructs a complete raw frame from the values of every signal
 // active on the selected multiplexing path. A scaled physical value is
 // quantized to the nearest raw value, so Decode can differ from the encoded
-// input by up to half a scale step. Messages longer than the 64-byte raw frame
-// representation or containing a signal wider than 64 bits are not supported
-// by the codec.
+// input by up to half a scale step. The message must fit one CAN frame; use
+// EncodePayload for transported messages. Signals wider than 64 bits are not
+// supported by the codec.
 func (message *Message) Encode(values Values) (gocan.Frame, error) {
 	codec, err := message.writableCodec()
 	if err != nil {
@@ -74,31 +74,54 @@ func (message *Message) Encode(values Values) (gocan.Frame, error) {
 	if err != nil {
 		return gocan.Frame{}, err
 	}
+	if err := codec.encode(message, frame.Data[:frame.DataLength()], values); err != nil {
+		return gocan.Frame{}, err
+	}
+	return frame, nil
+}
+
+// EncodePayload encodes like Encode but returns exactly Length bytes,
+// with unused bits zeroed, for messages carried by a transport.
+func (message *Message) EncodePayload(values Values) ([]byte, error) {
+	codec, err := message.writableCodec()
+	if err != nil {
+		return nil, err
+	}
+	if uint64(message.Length) > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("DBC message %q payload length %d exceeds platform capacity", message.Name, message.Length)
+	}
+	payload := make([]byte, message.Length)
+	if err := codec.encode(message, payload, values); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func (codec *messageCodec) encode(message *Message, data []byte, values Values) error {
 	raw, provided, err := codec.convertValues(message, values)
 	if err != nil {
-		return gocan.Frame{}, err
+		return err
 	}
 	active, err := codec.activeSignals(message, raw)
 	if err != nil {
-		return gocan.Frame{}, err
+		return err
 	}
 	for index, signal := range message.Signals {
 		_, hasValue := provided[index]
 		switch {
 		case active[index] && !hasValue:
-			return gocan.Frame{}, fmt.Errorf("DBC message %q requires signal %q", message.Name, signal.Name)
+			return fmt.Errorf("DBC message %q requires signal %q", message.Name, signal.Name)
 		case !active[index] && hasValue:
-			return gocan.Frame{}, fmt.Errorf("DBC signal %q is inactive for the selected multiplexing path", signal.Name)
+			return fmt.Errorf("DBC signal %q is inactive for the selected multiplexing path", signal.Name)
 		}
 	}
 
-	data := frame.Data[:frame.DataLength()]
 	for index := range message.Signals {
 		if active[index] {
 			writeSignalBits(data, message.Signals[index], raw[index])
 		}
 	}
-	return frame, nil
+	return nil
 }
 
 // Patch applies changes to frame. Signals omitted from changes retain their
