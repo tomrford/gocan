@@ -24,9 +24,9 @@ import (
 
 const bufferSize = 64 << 10
 
-// Database associates a UTF-8 DBC description with one logical bus. Data can
-// come from dbc.Database.MarshalText or an original UTF-8 DBC file. The writer
-// embeds these bytes without interpreting them; the caller owns their meaning.
+// Database associates a DBC description with one logical bus. Data can come
+// from []byte(db.Source()) or an original DBC file. The writer embeds these
+// bytes without interpreting or converting their encoding.
 type Database struct {
 	Bus  gocan.BusID
 	Name string
@@ -87,8 +87,8 @@ func NewWriter(output io.WriteSeeker, start time.Time, databases []Database) (*W
 			return nil, fmt.Errorf("invalid or duplicate DBC bus %d", database.Bus)
 		}
 		if database.Name == "" || path.Base(database.Name) != database.Name || strings.ContainsAny(database.Name, "\\\x00") ||
-			!strings.EqualFold(path.Ext(database.Name), ".dbc") || !utf8.ValidString(database.Name) || !utf8.Valid(database.Data) || len(database.Data) == 0 {
-			return nil, fmt.Errorf("bus %d requires a basename ending in .dbc and nonempty UTF-8 data", database.Bus)
+			!strings.EqualFold(path.Ext(database.Name), ".dbc") || !utf8.ValidString(database.Name) || len(database.Data) == 0 {
+			return nil, fmt.Errorf("bus %d requires a UTF-8 basename ending in .dbc and nonempty data", database.Bus)
 		}
 		seen[database.Bus] = true
 	}

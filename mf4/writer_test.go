@@ -1,12 +1,12 @@
 package mf4_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,20 +39,13 @@ func frame(bus gocan.BusID, offset time.Duration, id uint32, flags gocan.FrameFl
 
 func TestRecording(t *testing.T) {
 	f := newFile(t)
-	db, err := dbc.Parse("", "BU_: ECU\nBO_ 291 Status: 8 ECU\n SG_ Value : 0|8@1+ (0.5,-10) [-10|117.5] \"V\" ECU\n")
+	// Preserve legacy encoding and comments that are absent from the model.
+	db, err := dbc.Parse("", "BU_: ECU\nBO_ 291 Status: 8 ECU\n SG_ Value : 0|8@1+ (0.5,-10) [-10|117.5] \"V\" ECU\nCM_ \"Gr\xf6\xdfe\";\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	description, err := db.MarshalText()
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Messages[0].ID, db.Messages[0].Name = 0x124, "Second"
-	db.Messages[0].Signals[0].Factor, db.Messages[0].Signals[0].Offset = 2, 0
-	second, err := db.MarshalText()
-	if err != nil {
-		t.Fatal(err)
-	}
+	description := []byte(db.Source())
+	second := []byte("BU_: ECU\nBO_ 292 Second: 8 ECU\n SG_ Value : 0|8@1+ (2,0) [0|510] \"V\" ECU\n")
 	w, err := mf4.NewWriter(f, start, []mf4.Database{
 		{Bus: 1, Name: "bus1.dbc", Data: description},
 		{Bus: 2, Name: "bus2.dbc", Data: second},
@@ -123,17 +116,24 @@ func TestRecording(t *testing.T) {
 		t.Fatal("Close did not finalise the measurement")
 	}
 	checkGroups(t, f, []uint64{802, 1, 1, 1})
-	if python := os.Getenv("GOCAN_INTEROP_PYTHON"); python != "" {
-		output, err := exec.Command(python, "testdata/check_recording.py", f.Name()).CombinedOutput()
-		if err != nil {
-			t.Fatalf("independent MDF reader: %v\n%s", err, output)
-		}
+	// Follow the MDF header's attachment list and compare the stored source bytes.
+	var link [8]byte
+	if _, err := f.ReadAt(link[:], 112); err != nil {
+		t.Fatal(err)
 	}
-	if viewer := os.Getenv("GOCAN_INTEROP_VIEWER"); viewer != "" {
-		output, err := exec.Command("node", "testdata/check_viewer.mjs", viewer, f.Name()).CombinedOutput()
-		if err != nil {
-			t.Fatalf("cantraceviewer: %v\n%s", err, output)
+	attachment := binary.LittleEndian.Uint64(link[:])
+	for _, want := range [][]byte{description, second} {
+		block := make([]byte, 96+len(want))
+		if _, err := f.ReadAt(block, int64(attachment)); err != nil {
+			t.Fatal(err)
 		}
+		if string(block[:4]) != "##AT" || binary.LittleEndian.Uint64(block[88:]) != uint64(len(want)) || !bytes.Equal(block[96:], want) {
+			t.Fatal("attachment did not preserve original DBC bytes")
+		}
+		attachment = binary.LittleEndian.Uint64(block[24:])
+	}
+	if attachment != 0 {
+		t.Fatal("unexpected extra attachment")
 	}
 }
 

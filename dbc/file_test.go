@@ -29,6 +29,9 @@ func TestParseFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if db.Source() != string(source) {
+			t.Fatal("original source bytes were not retained")
+		}
 		return db
 	}
 
