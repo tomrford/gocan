@@ -65,8 +65,16 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	responseData := bytes.Repeat([]byte{0x5a}, 80)
+	start := capture.End()
 	serverResult := make(chan error, 1)
 	go func() {
+		if err := receiveRequest(ctx, ecuLink, []byte{0x22, 0xf1, 0x90}); err != nil {
+			serverResult <- err
+			return
+		}
+		if client.RetentionCursor() != start {
+			t.Error("UDS request did not retain its response boundary")
+		}
 		serverResult <- runServerLifecycle(ctx, ecuLink, responseData)
 	}()
 
@@ -76,6 +84,10 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 	if response.Service != 0x22 || !bytes.Equal(response.Data, responseData) {
 		t.Fatalf("Read DID response = service %#x data %x", response.Service, response.Data)
+	}
+
+	if client.RetentionCursor() != capture.End() {
+		t.Fatal("completed UDS request retained history")
 	}
 
 	_, err = client.Do(ctx, uds.Request{Service: 0x31, Data: []byte{1, 0x12, 0x34}})
@@ -147,9 +159,6 @@ func TestClientExchangeLifecycle(t *testing.T) {
 }
 
 func runServerLifecycle(ctx context.Context, link *isotp.Link, responseData []byte) error {
-	if err := receiveRequest(ctx, link, []byte{0x22, 0xf1, 0x90}); err != nil {
-		return err
-	}
 	if err := link.Send(ctx, []byte{0x7f, 0x22, 0x78}); err != nil {
 		return fmt.Errorf("send ResponsePending: %w", err)
 	}

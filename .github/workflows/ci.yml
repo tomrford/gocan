@@ -27,7 +27,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up virtual CAN
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y "linux-modules-extra-$(uname -r)"
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set dev vcan0 mtu 72 up
+
       - name: Test
+        env:
+          GOCAN_VCAN_INTERFACE: vcan0
         run: go test -race ./...
 
       - name: Vet

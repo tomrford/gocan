@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Independently authored catalog fixture. Values describe no production ECU. -->
+<CANDELA dtdvers="10.0.108">
+  <ECUDOC>
+    <NAME><TUV xml:lang="de-DE">Diagnosebeispiel</TUV><TUV xml:lang="en-GB">Diagnostic example</TUV></NAME>
+    <DESC><TUV xml:lang="en-GB"><PARA>Use <FC b="1">named</FC> services.</PARA><PARA>Keep <FC>all</FC> alternatives.</PARA></TUV></DESC>
+    <QUAL>Example</QUAL>
+    <DATATYPES>
+      <IDENT id="u8"><NAME><TUV lang="en-GB">Byte</TUV></NAME><QUAL>ByteType</QUAL><CVALUETYPE bl="8" bo="21" enc="uns" qty="atom"/></IDENT>
+      <IDENT id="u16"><QUAL>WordType</QUAL><CVALUETYPE bl="16" bo="21" enc="uns" qty="atom"/></IDENT>
+      <IDENT id="bit"><QUAL>BitType</QUAL><CVALUETYPE bl="1" bo="21" enc="uns" qty="atom"/></IDENT>
+    </DATATYPES>
+    <STATEGROUPS>
+      <STATEGROUP id="sessions" spec="session"><NAME><TUV lang="en-GB">Sessions</TUV></NAME><QUAL>Sessions</QUAL>
+        <STATE id="default"><NAME><TUV lang="en-GB">Default session</TUV></NAME><QUAL>Default</QUAL></STATE>
+      </STATEGROUP>
+      <STATEGROUP id="security" spec="security"><QUAL>Security</QUAL><STATE id="locked"><QUAL>Locked</QUAL></STATE></STATEGROUP>
+    </STATEGROUPS>
+    <PROTOCOLSERVICES>
+      <PROTOCOLSERVICE id="session"><NAME><TUV lang="en-GB">Session control</TUV></NAME><QUAL>SessionControl</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="16"/><STATICCOMP id="sessionSub" spec="sub" dtref="u8"/></REQ>
+        <POS><CONSTCOMP spec="sid" bl="8" v="80"/></POS>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="reset"><QUAL>Reset</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="17"/><CONSTCOMP spec="sub" bl="8" v="1"/></REQ>
+        <POS><CONSTCOMP spec="sid" bl="8" v="81"/></POS>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="unlock"><QUAL>SecurityAccess</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="39"/><STATICCOMP id="securitySub" spec="accm" dtref="u8"/></REQ>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="routine"><QUAL>RoutineControl</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="49"/><CONSTCOMP spec="sub" bl="8" v="1"/><STATICCOMP id="routineID" spec="id" dtref="u16"/><SIMPLEPROXYCOMP id="options" dest="data"/></REQ>
+        <POS><CONSTCOMP spec="sid" bl="8" v="113"/><SIMPLEPROXYCOMP id="status" dest="data"/></POS>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="faults"><QUAL>ReadDTCInformation</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="25"/><CONSTCOMP spec="sub" bl="8" v="2"/></REQ>
+        <POS><CONSTCOMP spec="sid" bl="8" v="89"/><EOSITERCOMP id="dtcRecords"/></POS>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="clear"><QUAL>ClearDiagnosticInformation</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="20"/><GROUPOFDTCPROXYCOMP/></REQ>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="io"><QUAL>IOControl</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="47"/><STATICCOMP id="ioID" spec="id" dtref="u16"/></REQ>
+        <POS><CONSTCOMP spec="sid" bl="8" v="111"/><MUXCOMP id="ioRecords"/></POS>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="read"><QUAL>ReadDataByIdentifier</QUAL>
+        <REQ><CONSTCOMP spec="sid" bl="8" v="34"/><STATICCOMP id="readID" spec="id" dtref="u16"/></REQ>
+        <POS><CONSTCOMP spec="sid" bl="8" v="98"/><SIMPLEPROXYCOMP id="readData" dest="data"/></POS>
+      </PROTOCOLSERVICE>
+    </PROTOCOLSERVICES>
+    <DCLTMPLS>
+      <DCLTMPL id="operations"><NAME><TUV lang="en-GB">Operations template</TUV></NAME><QUAL>OperationsTemplate</QUAL>
+        <DCLSRVTMPL id="startSession" tmplref="session"/>
+        <DCLSRVTMPL id="resetECU" tmplref="reset"/>
+        <DCLSRVTMPL id="requestSeed" tmplref="unlock"/>
+        <DCLSRVTMPL id="startRoutine" tmplref="routine"/>
+        <DCLSRVTMPL id="readFaults" tmplref="faults"/>
+        <DCLSRVTMPL id="clearFaults" tmplref="clear"/>
+        <DCLSRVTMPL id="controlIO" tmplref="io"/>
+        <DCLSRVTMPL id="readValue" tmplref="read"><NAME><TUV lang="en-GB">Read template</TUV></NAME></DCLSRVTMPL>
+        <SHSTATIC id="sessionValue" spec="sub"><STATICCOMPREF idref="sessionSub"/></SHSTATIC>
+        <SHSTATIC id="securityValue" spec="accm"><STATICCOMPREF idref="securitySub"/></SHSTATIC>
+        <SHSTATIC id="routineValue" spec="id"><STATICCOMPREF idref="routineID"/></SHSTATIC>
+        <SHSTATIC id="ioValue" spec="id"><STATICCOMPREF idref="ioID"/></SHSTATIC>
+        <SHSTATIC id="didValue" spec="id"><STATICCOMPREF idref="readID"/></SHSTATIC>
+        <SHPROXY id="optionProxy" dest="data"><PROXYCOMPREF idref="options"/></SHPROXY>
+        <SHPROXY id="statusProxy" dest="data"><PROXYCOMPREF idref="status"/></SHPROXY>
+        <SHPROXY id="readProxy" dest="data"><PROXYCOMPREF idref="readData"/></SHPROXY>
+      </DCLTMPL>
+    </DCLTMPLS>
+    <ECU id="first"><NAME><TUV lang="en-GB">First ECU</TUV></NAME><QUAL>ECU</QUAL>
+      <VAR id="primary" base="1"><NAME><TUV lang="en-GB">Primary</TUV></NAME><QUAL>Variant</QUAL>
+        <DIAGCLASS id="controls" tmplref="operations"><NAME><TUV lang="en-GB">Controls</TUV></NAME><QUAL>Controls</QUAL>
+          <DIAGINST id="control" tmplref="operations"><NAME><TUV lang="de-DE">Steuerung</TUV><TUV lang="en-GB">Control</TUV></NAME><QUAL>Control</QUAL>
+            <SERVICE id="sessionService" tmplref="startSession" mayBeExec="(1,2)" trans="(1,1)"><NAME><TUV lang="en-GB">Enter session</TUV></NAME><QUAL>Session</QUAL></SERVICE>
+            <SERVICE tmplref="resetECU"><QUAL>Reset</QUAL></SERVICE>
+            <SERVICE tmplref="requestSeed"><QUAL>Seed</QUAL></SERVICE>
+            <SERVICE tmplref="startRoutine"><QUAL>Routine</QUAL></SERVICE>
+            <SERVICE tmplref="readFaults"><QUAL>Faults</QUAL></SERVICE>
+            <SERVICE tmplref="clearFaults"><QUAL>Clear</QUAL></SERVICE>
+            <SERVICE tmplref="controlIO"><QUAL>IO</QUAL></SERVICE>
+            <SERVICE tmplref="missing"><QUAL>Unknown</QUAL></SERVICE>
+            <STATICVALUE shstaticref="sessionValue" v="3"/>
+            <STATICVALUE shstaticref="securityValue" v="5"/>
+            <STATICVALUE shstaticref="routineValue" v="4660"/>
+            <STATICVALUE shstaticref="ioValue" v="768"/>
+            <SIMPLECOMPCONT shproxyref="optionProxy"><DATAOBJ dtref="u8"><QUAL>Option</QUAL></DATAOBJ></SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="statusProxy"><DATAOBJ dtref="bit"><QUAL>Complete</QUAL></DATAOBJ></SIMPLECOMPCONT>
+          </DIAGINST>
+        </DIAGCLASS>
+        <DIAGINST id="standalone" tmplref="operations"><QUAL>StandaloneReset</QUAL><SERVICE tmplref="resetECU"/></DIAGINST>
+        <DIAGCLASS tmplref="operations"><QUAL>Measurements</QUAL>
+
+          <DIAGINST id="measurement" tmplref="operations"><NAME><TUV lang="en-GB">Measurement</TUV></NAME><QUAL>Measurement</QUAL>
+            <SERVICE id="measurementRead" tmplref="readValue"><QUAL>Read</QUAL></SERVICE>
+            <STATICVALUE shstaticref="didValue" v="61840"/>
+            <SIMPLECOMPCONT shproxyref="readProxy"><NAME><TUV lang="en-GB">Sample record</TUV></NAME>
+              <STRUCT id="sample" dtref="u8"><NAME><TUV lang="en-GB">Sample</TUV></NAME><QUAL>Sample</QUAL>
+                <DATAOBJ oid="value-object" dtref="u8"><NAME><TUV lang="de-DE">Wert</TUV><TUV lang="en-GB">Value</TUV></NAME><DESC><TUV lang="en-GB">Measured value.</TUV></DESC><QUAL>Value</QUAL></DATAOBJ>
+              </STRUCT>
+            </SIMPLECOMPCONT>
+          </DIAGINST>
+        </DIAGCLASS>
+      </VAR>
+      <VAR id="secondary"><QUAL>Variant</QUAL>
+        <DIAGCLASS tmplref="operations"><DIAGINST tmplref="operations"><QUAL>OtherMeasurement</QUAL><SERVICE tmplref="readValue"/><STATICVALUE shstaticref="didValue" v="61841"/><SIMPLECOMPCONT shproxyref="readProxy"><DATAOBJ dtref="u8"><QUAL>Value</QUAL></DATAOBJ></SIMPLECOMPCONT></DIAGINST></DIAGCLASS>
+      </VAR>
+    </ECU>
+    <ECU><QUAL>ECU</QUAL><VAR><QUAL>Variant</QUAL></VAR></ECU>
+  </ECUDOC>
+</CANDELA>

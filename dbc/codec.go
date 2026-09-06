@@ -44,6 +44,19 @@ func (database *Database) MessagesByPGN(pgn j1939.PGN) []*Message {
 	return messages
 }
 
+// SignalByName returns the resolved signal with name.
+func (message *Message) SignalByName(name string) (*Signal, bool) {
+	if message == nil {
+		return nil, false
+	}
+	for index := range message.Signals {
+		if message.Signals[index].Name == name {
+			return &message.Signals[index], true
+		}
+	}
+	return nil, false
+}
+
 // Encode constructs a complete raw frame from the values of every signal
 // active on the selected multiplexing path. A scaled physical value is
 // quantized to the nearest raw value, so Decode can differ from the encoded

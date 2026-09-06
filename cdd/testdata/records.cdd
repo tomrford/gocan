@@ -100,6 +100,19 @@
         </REQ>
       </PROTOCOLSERVICE>
     </PROTOCOLSERVICES>
+    <STATEGROUPS>
+      <STATEGROUP spec="session">
+        <QUAL>Session</QUAL>
+        <STATE><QUAL>Default</QUAL></STATE>
+        <STATE><QUAL>Programming</QUAL></STATE>
+        <STATE><QUAL>Extended</QUAL></STATE>
+      </STATEGROUP>
+      <STATEGROUP spec="security">
+        <QUAL>SecurityAccess</QUAL>
+        <STATE><QUAL>Locked</QUAL></STATE>
+        <STATE><QUAL>Unlocked</QUAL></STATE>
+      </STATEGROUP>
+    </STATEGROUPS>
     <DCLTMPLS>
       <DCLTMPL id="modernClass" cls="idn" single="0">
         <QUAL>Identification</QUAL>
@@ -160,7 +173,7 @@
         <DIAGCLASS tmplref="modernClass">
           <DIAGINST tmplref="modernClass" req="notReq">
             <QUAL>ThermalStatus</QUAL>
-            <SERVICE tmplref="modernRead" req="0"/>
+            <SERVICE tmplref="modernRead" req="0" mayBeExec="(1,3,4)"/>
             <STATICVALUE shstaticref="modernIdentifier" v="61840"/>
             <SIMPLECOMPCONT shproxyref="modernCode"/>
             <SIMPLECOMPCONT shproxyref="modernData">
@@ -231,8 +244,8 @@
           </DIAGINST>
           <DIAGINST tmplref="modernClass" req="notReq">
             <QUAL>ReadWriteCounter</QUAL>
-            <SERVICE tmplref="modernRead" req="0"/>
-            <SERVICE tmplref="modernWrite" req="0"/>
+            <SERVICE tmplref="modernRead" req="0" mayBeExec="(4)"/>
+            <SERVICE tmplref="modernWrite" req="0" mayBeExec="(3,5)"/>
             <STATICVALUE shstaticref="modernIdentifier" v="61846"/>
             <SIMPLECOMPCONT shproxyref="modernData">
               <DATAOBJ spec="no" dtref="counter8">
@@ -272,19 +285,15 @@
               <DATAOBJ spec="no" dtref="serial12">
                 <QUAL>SerialNumber</QUAL>
               </DATAOBJ>
-              <STRUCT>
-                <QUAL>Calibration</QUAL>
-                <DESC><TUV lang="en-US">Calibration values</TUV></DESC>
-                <DATAOBJ spec="no" dtref="block4">
-                  <QUAL>Coefficients</QUAL>
-                </DATAOBJ>
-                <DATAOBJ spec="no" dtref="ratio32">
-                  <QUAL>Gain</QUAL>
-                </DATAOBJ>
-                <DATAOBJ spec="no" dtref="wideCounter64">
-                  <QUAL>ExactCounter</QUAL>
-                </DATAOBJ>
-              </STRUCT>
+              <DATAOBJ spec="no" dtref="block4">
+                <QUAL>Coefficients</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="ratio32">
+                <QUAL>Gain</QUAL>
+              </DATAOBJ>
+              <DATAOBJ spec="no" dtref="wideCounter64">
+                <QUAL>ExactCounter</QUAL>
+              </DATAOBJ>
             </SIMPLECOMPCONT>
           </DIAGINST>
         </DIAGCLASS>

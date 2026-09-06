@@ -115,12 +115,14 @@ type Link struct {
 	waitFrameLimit          uint8
 
 	// sending and receiving are one-token channels. Holding sending grants
-	// exclusive transmission; holding receiving grants exclusive use of cursor.
+	// exclusive transmission; holding receiving grants exclusive receive progress.
 	// Begin takes sending before receiving, and nothing takes them in the other
 	// order.
 	sending   chan struct{}
 	receiving chan struct{}
+	cursorMu  sync.Mutex
 	cursor    gocan.Cursor
+	retaining bool
 }
 
 // Exchange is one payload sent by Begin together with the payloads that arrive
@@ -214,8 +216,8 @@ func (link *Link) Send(ctx context.Context, payload []byte) error {
 		if err := link.acquire(ctx, link.receiving); err != nil {
 			return err
 		}
-		defer link.release(link.receiving)
-		link.cursor = link.capture.End()
+		link.startReception(true)
+		defer link.finishReception()
 	}
 
 	operationContext, cancel := link.operationContext(ctx)
@@ -229,7 +231,8 @@ func (link *Link) Receive(ctx context.Context) ([]byte, error) {
 	if err := link.acquire(ctx, link.receiving); err != nil {
 		return nil, err
 	}
-	defer link.release(link.receiving)
+	link.startReception(false)
+	defer link.finishReception()
 
 	operationContext, cancel := link.operationContext(ctx)
 	defer cancel()
@@ -260,7 +263,7 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 	exchange := link.newExchange()
 	// Keep this boundary short: validation, first-frame construction, and bus
 	// lifecycle wiring all happen before the receive frontier is captured.
-	link.cursor = link.capture.End()
+	link.startReception(true)
 	operationContext, cancel := exchange.operationContext(ctx)
 	defer cancel()
 	if err := link.transmit(operationContext, transmission); err != nil {
@@ -306,7 +309,7 @@ func (exchange *Exchange) Close() {
 		return
 	}
 	exchange.closed = true
-	exchange.link.release(exchange.link.receiving)
+	exchange.link.finishReception()
 	exchange.link.release(exchange.link.sending)
 }
 
@@ -324,20 +327,75 @@ func (link *Link) newExchange() *Exchange {
 	return &Exchange{link: link, ctx: ctx, cancel: cancel}
 }
 
+// RetentionCursor returns receive progress during Receive, a segmented Send,
+// or an open Exchange, and the capture's end otherwise. Pass it with other
+// readers' cursors to Capture.Prune. Queued operations do not retain history.
+// It is safe to call during an operation and does not wait for reception.
+//
+// This policy releases unsolicited traffic while idle. Use Cursor instead
+// when later Receive calls must consume that traffic. Capture loss can
+// invalidate an active cursor, as described by Cursor.
+func (link *Link) RetentionCursor() gocan.Cursor {
+	link.cursorMu.Lock()
+	defer link.cursorMu.Unlock()
+	if link.retaining {
+		return link.cursor
+	}
+	return link.capture.End()
+}
+
+// Callers hold the receiving token. Reset and activation share the retention
+// lock so an idle snapshot cannot advance past a new operation's boundary.
+func (link *Link) startReception(reset bool) {
+	link.cursorMu.Lock()
+	defer link.cursorMu.Unlock()
+	if reset {
+		link.cursor = link.capture.End()
+	}
+	link.retaining = true
+}
+
+func (link *Link) finishReception() {
+	link.cursorMu.Lock()
+	link.retaining = false
+	link.cursorMu.Unlock()
+	link.release(link.receiving)
+}
+
+// Cursor returns the capture position through which the link has consumed or
+// deliberately skipped traffic. Pass it with other readers' cursors to
+// Capture.Prune. It is safe to call during an operation and does not wait for
+// reception. An older snapshot conservatively retains more history.
+//
+// Capture loss can invalidate this cursor; Prune then reports
+// gocan.ErrCursorOutOfRange. When the link detects that loss, it resets its
+// cursor to zero before the next operation. Zero prevents pruning.
+func (link *Link) Cursor() gocan.Cursor {
+	link.cursorMu.Lock()
+	defer link.cursorMu.Unlock()
+	return link.cursor
+}
+
+func (link *Link) setCursor(cursor gocan.Cursor) {
+	link.cursorMu.Lock()
+	link.cursor = cursor
+	link.cursorMu.Unlock()
+}
+
 // nextFrame reads the next matching frame and advances the link's receive
 // position. Callers must hold the receiving token.
 func (link *Link) nextFrame(ctx context.Context) (gocan.FrameEvent, error) {
-	frame, cursor, err := link.capture.Next(ctx, link.receiveKey, link.cursor)
+	frame, cursor, err := link.capture.Next(ctx, link.receiveKey, link.Cursor())
 	if err != nil {
 		if errors.Is(err, gocan.ErrCursorOutOfRange) {
 			// The capture discarded the position this link was reading from.
 			// The operation still fails, but the next one can consume records
 			// retained after the discard.
-			link.cursor = gocan.Cursor{}
+			link.setCursor(gocan.Cursor{})
 		}
 		return gocan.FrameEvent{}, err
 	}
-	link.cursor = cursor
+	link.setCursor(cursor)
 	return frame, nil
 }
 

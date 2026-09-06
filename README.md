@@ -18,7 +18,7 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 | `j1939` | J1939 identifiers and passive transport-protocol reassembly |
 | `isotp` | ISO-TP payload transport over classical CAN and CAN FD |
 | `uds` | Raw exchanges and typed Unified Diagnostic Services operations |
-| `cdd` | CANdela data-identifier parsing and semantic UDS record encoding and decoding |
+| `cdd` | CANdela ECU/variant selection, diagnostic service catalogs and metadata, and data-record codecs |
 
 ## Driver support
 

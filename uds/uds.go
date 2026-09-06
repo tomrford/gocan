@@ -9,11 +9,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/isotp"
 )
 
 const (
-	defaultP2Timeout     = time.Second
+	defaultP2Timeout     = 100 * time.Millisecond
 	defaultP2StarTimeout = 5 * time.Second
 	responsePending      = ResponseCode(0x78)
 )
@@ -59,8 +60,8 @@ func (err *NegativeResponseError) Error() string {
 	return fmt.Sprintf("UDS service %#02x returned negative response %#02x", err.Service, err.Code)
 }
 
-// Config sets the UDS application-response timeouts. Zero values select one
-// second for P2 and five seconds for P2*.
+// Config sets the UDS application-response timeouts. Zero values select 100
+// milliseconds for P2 and five seconds for P2*.
 type Config struct {
 	P2Timeout     time.Duration
 	P2StarTimeout time.Duration
@@ -75,6 +76,14 @@ type Client struct {
 	link          *isotp.Link
 	p2Timeout     time.Duration
 	p2StarTimeout time.Duration
+}
+
+// RetentionCursor returns receive progress during an active Do or segmented
+// Send, and the capture's end otherwise. Pass it with other readers' cursors
+// to Capture.Prune. Queued calls and single-frame sends do not retain history.
+// Unsolicited responses received while idle are not protected.
+func (client *Client) RetentionCursor() gocan.Cursor {
+	return client.link.RetentionCursor()
 }
 
 // New validates config and binds a raw UDS client to link.

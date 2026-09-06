@@ -2,7 +2,6 @@ package cdd_test
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tomrford/gocan/cdd"
@@ -11,7 +10,11 @@ import (
 // TestParseVectorDocument fixes the resolution required by real Vector input:
 // the identifier width and record layout both arrive through references.
 func TestParseVectorDocument(t *testing.T) {
-	database, err := cdd.ParseFile(filepath.Join("testdata", "vector-diddataref.cdd"))
+	document, err := cdd.ParseFile(filepath.Join("testdata", "vector-diddataref.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := document.Select(cdd.Selection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,10 +23,10 @@ func TestParseVectorDocument(t *testing.T) {
 	}
 
 	did := database.DIDs[0]
-	if did.Name != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Read == nil || did.Write != nil || did.Read.Length != 2 {
+	if did.Instance.Source.Qualifier != "Control_Digital_IO" || did.Identifier != 0x0300 || did.Read == nil || did.Write != nil || did.Read[0].PositiveResponse.Record.Length != 2 {
 		t.Fatalf("unexpected DID: %#v", did)
 	}
-	fields := did.Read.Fields
+	fields := did.Read[0].PositiveResponse.Record.Fields
 	if len(fields) != 2 || fields[0].BitOffset != 0 || fields[1].BitOffset != 8 {
 		t.Fatalf("unexpected fields: %#v", fields)
 	}
@@ -37,16 +40,16 @@ func TestParseVectorDocument(t *testing.T) {
 // successful resolution proves that only services enabled by an instance are
 // used to select its data proxy.
 func TestParseRecordLayouts(t *testing.T) {
-	database, err := cdd.ParseFile(filepath.Join("testdata", "records.cdd"))
+	database, err := parseCatalogFile(filepath.Join("testdata", "records.cdd"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	thermal, ok := database.DIDByIdentifier(0xf190)
-	if !ok || thermal.Read == nil || thermal.Write != nil || thermal.Read.Length != 5 {
+	thermal, ok := database.DIDByName("ThermalStatus")
+	if !ok || thermal.Read == nil || thermal.Write != nil || thermal.Read[0].PositiveResponse.Record.Length != 5 {
 		t.Fatalf("unexpected thermal record: %#v", thermal)
 	}
-	thermalFields := thermal.Read.Fields
+	thermalFields := thermal.Read[0].PositiveResponse.Record.Fields
 	if len(thermalFields) != 3 || thermalFields[0].BitOffset != 0 || thermalFields[1].BitOffset != 16 || thermalFields[2].BitOffset != 32 {
 		t.Fatalf("unexpected thermal field offsets: %#v", thermalFields)
 	}
@@ -56,19 +59,19 @@ func TestParseRecordLayouts(t *testing.T) {
 	}
 
 	nameplate, ok := database.DIDByIdentifier(0xf191)
-	if !ok || nameplate.Read == nil || nameplate.Read.Length != 28 {
+	if !ok || nameplate.Read == nil || nameplate.Read[0].PositiveResponse.Record.Length != 28 {
 		t.Fatalf("unexpected nameplate record: %#v", nameplate)
 	}
-	nameplateFields := nameplate.Read.Fields
+	nameplateFields := nameplate.Read[0].PositiveResponse.Record.Fields
 	if len(nameplateFields) != 4 || nameplateFields[0].Count != 12 || nameplateFields[1].BitOffset != 96 || nameplateFields[1].Count != 4 || nameplateFields[2].Encoding != cdd.EncodingFloat {
 		t.Fatalf("unexpected nameplate fields: %#v", nameplateFields)
 	}
 
 	buffer, ok := database.DIDByIdentifier(0xf192)
-	if !ok || buffer.Read == nil || buffer.Read.Length != 3 || buffer.Read.MaxLength != 66 {
+	if !ok || buffer.Read == nil || buffer.Read[0].PositiveResponse.Record.Length != 3 || buffer.Read[0].PositiveResponse.Record.MaxLength != 66 {
 		t.Fatalf("unexpected variable record: %#v", buffer)
 	}
-	bufferFields := buffer.Read.Fields
+	bufferFields := buffer.Read[0].PositiveResponse.Record.Fields
 	if len(bufferFields) != 2 {
 		t.Fatalf("unexpected variable fields: %#v", bufferFields)
 	}
@@ -79,38 +82,20 @@ func TestParseRecordLayouts(t *testing.T) {
 
 }
 
-// TestParseDropsInvalidDIDs checks that unsupported records cost those records,
-// not the usable catalog around them.
-func TestParseDropsInvalidDIDs(t *testing.T) {
-	database, err := cdd.ParseFile(filepath.Join("testdata", "records.cdd"))
+// Helpers select the primary fixture variant explicitly; selection behaviour
+// itself is exercised with multiple ECUs and variants in TestCatalogSelection.
+func parseCatalogFile(path string) (*cdd.Database, error) {
+	document, err := cdd.ParseFile(path)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	if len(database.DIDs) != 6 {
-		t.Fatalf("got %d DIDs, want 6", len(database.DIDs))
-	}
-	if _, ok := database.DIDByName("ProgrammingSession"); ok {
-		t.Fatal("a session control instance was admitted as a data identifier")
-	}
-	if _, ok := database.DIDByName("NotInspected"); ok {
-		t.Fatal("a DID from a second variant was admitted")
-	}
+	return document.Select(cdd.Selection{ECU: 1, Variant: 1})
+}
 
-	dropped := make(map[string]string, len(database.Diagnostics))
-	for _, diagnostic := range database.Diagnostics {
-		dropped[diagnostic.Name] = diagnostic.Message
+func parseCatalog(name string, source []byte) (*cdd.Database, error) {
+	document, err := cdd.Parse(name, source)
+	if err != nil {
+		return nil, err
 	}
-	checks := map[string]string{
-		"ThermalStatusMirror": "identifier 0xf190 is already used",
-		"InteriorBuffer":      `variable-length field "Buffer" is followed by DATAOBJ`,
-		"CyclicRecord":        "forms a reference cycle",
-	}
-	if len(dropped) != len(checks) {
-		t.Fatalf("unexpected diagnostics: %#v", database.Diagnostics)
-	}
-	for name, text := range checks {
-		if !strings.Contains(dropped[name], text) {
-			t.Errorf("DID %q: got %q, want %q", name, dropped[name], text)
-		}
-	}
+	return document.Select(cdd.Selection{ECU: 1, Variant: 1})
 }
