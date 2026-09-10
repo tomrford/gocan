@@ -21,7 +21,7 @@ func TestServicePreconditionsPreserveSources(t *testing.T) {
 	source = strings.Replace(source, `<STATE><QUAL>Locked</QUAL></STATE>`, `<STATE id="locked" oid="state-oid" temploid="state-template"><QUAL>Same</QUAL></STATE>`, 1)
 	source = strings.Replace(source, `<STATE><QUAL>Unlocked</QUAL></STATE>`, `<STATE id="unlocked"><QUAL>Same</QUAL></STATE>`, 1)
 	service := `<SERVICE tmplref="modernRead" req="0" mayBeExec="(1,3,4)"/>`
-	source = strings.Replace(source, service, `<SERVICE tmplref="unsupported"/><SERVICE id="a" oid="service-oid" temploid="service-template" tmplref="modernRead" mayBeExec="(2,4,5,6)"><QUAL>Read</QUAL></SERVICE><SERVICE id="b" tmplref="modernRead" mayBeExec="(6,5,4,2,4)"/><SERVICE tmplref="modernRead"/>`, 1)
+	source = strings.Replace(source, service, `<SERVICE tmplref="unsupported"/><SERVICE id="a" oid="service-oid" temploid="service-template" tmplref="modernRead" mayBeExec="(1,2,4,5,6)"><QUAL>Read</QUAL></SERVICE><SERVICE id="b" tmplref="modernRead" mayBeExec="(6,5,4,2,1,4)"/><SERVICE tmplref="modernRead"/>`, 1)
 	database, err := parseCatalog("sources.cdd", []byte(source))
 	if err != nil {
 		t.Fatal(err)
@@ -53,10 +53,17 @@ func TestServicePreconditionsPreserveSources(t *testing.T) {
 		}
 		condition := service.Requirements
 		if i < 2 {
+			var indexes []int
+			for _, state := range condition.AllowedStates {
+				indexes = append(indexes, state.Index)
+			}
+			if !reflect.DeepEqual(indexes, []int{1, 2, 4, 5, 6}) || condition.AllowedStates[0].Source.Qualifier != "Other" || condition.AllowedStates[0].GroupSpec != "none" {
+				t.Fatalf("generic allowed states = %#v", condition.AllowedStates)
+			}
 			if condition.Err != nil || condition.MayBeExec == nil || !reflect.DeepEqual(condition.Sessions, []cdd.State{database.States[1], database.States[3]}) || !reflect.DeepEqual(condition.SecurityLevels, database.SecurityLevels) {
 				t.Fatalf("literal rule = %#v", condition)
 			}
-		} else if condition.Err != nil || condition.MayBeExec != nil || condition.Sessions != nil || condition.SecurityLevels != nil {
+		} else if condition.Err != nil || condition.MayBeExec != nil || condition.AllowedStates != nil || condition.Sessions != nil || condition.SecurityLevels != nil {
 			t.Fatal("absent rule gained requirements")
 		}
 	}
@@ -86,7 +93,7 @@ func TestUnknownRulesKeepSiblingServicesAndCodecs(t *testing.T) {
 	for _, test := range []struct{ name, instance, template string }{
 		{"unknown state", `mayBeExec="(9)"`, ""},
 		{"zero index", `mayBeExec="(0)"`, ""},
-		{"unsupported group after valid state", `mayBeExec="(4,6)"`, ""},
+		{"invalid state after generic state", `mayBeExec="(4,6,99)"`, ""},
 		{"empty selection", `mayBeExec="()"`, ""},
 		{"empty attribute", `mayBeExec=""`, ""},
 		{"malformed list", `mayBeExec="4"`, ""},
@@ -114,7 +121,7 @@ func TestUnknownRulesKeepSiblingServicesAndCodecs(t *testing.T) {
 			if did.Read[0].Requirements.Err != nil || condition.Err == nil || did.Write[0].Requirements.Err != nil {
 				t.Fatal("rule isolation failed")
 			}
-			if condition.Sessions != nil || condition.SecurityLevels != nil || !reflect.DeepEqual(did.Read[0].Requirements.SecurityLevels, []cdd.State{database.States[3]}) {
+			if condition.AllowedStates != nil || condition.Sessions != nil || condition.SecurityLevels != nil || !reflect.DeepEqual(did.Read[0].Requirements.SecurityLevels, []cdd.State{database.States[3]}) {
 				t.Fatal("failed rule left partial states or affected sibling")
 			}
 			for _, rule := range []struct {
