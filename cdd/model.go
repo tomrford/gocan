@@ -32,7 +32,7 @@ type Database struct {
 // Diagnostic reports an incomplete part of a catalog. Path uses one-based XML
 // child positions, so it identifies sources even without unique qualifiers or
 // IDs. An affected service remains in its instance. Kind distinguishes reference,
-// message, codec, precondition and DID-lookup problems.
+// message, codec, precondition, transition and DID-lookup problems.
 type Diagnostic struct {
 	Path    string
 	Source  SourceIdentity
@@ -48,6 +48,7 @@ const (
 	DiagnosticMessage      DiagnosticKind = "message"
 	DiagnosticCodec        DiagnosticKind = "codec"
 	DiagnosticPrecondition DiagnosticKind = "precondition"
+	DiagnosticTransition   DiagnosticKind = "transition"
 	DiagnosticDID          DiagnosticKind = "did"
 )
 
@@ -89,7 +90,8 @@ type Instance struct {
 // nil when no such message is declared in a resolved binding; check Err before
 // interpreting nil as absence. Message.Err and Record.CodecError expose layout
 // and codec coverage separately. No whole-message encoder is supplied.
-// Transitions retains the literal trans attribute without resolving it.
+// Transitions describes literal source/destination state pairs independently of
+// Requirements. Neither describes the ECU's current state or proves access.
 type Service struct {
 	Metadata
 	Index            int
@@ -99,7 +101,7 @@ type Service struct {
 	Protocol         *Metadata
 	ServiceID        *uint8
 	Requirements     Precondition
-	Transitions      *string
+	Transitions      TransitionRule
 	Request          *Message
 	PositiveResponse *Message
 	Err              error
@@ -171,6 +173,31 @@ type State struct {
 	Group      Metadata
 	GroupIndex int
 	GroupSpec  string
+}
+
+// TransitionRule describes the containing service's declared state changes.
+// Pairs retains explicit trans pairs in source order, including self transitions
+// and repeated identical pairs. Each pair uses the global one-based State.Index;
+// its endpoints must belong to the same group. Multiple groups can change on
+// the same service. An absent pair does not establish what happens to that state.
+//
+// Check Err before using Pairs: malformed lists, conflicting destinations for
+// one source, cross-group pairs, template trans rules and unresolved service
+// bindings leave nil Pairs. Raw pointers preserve absent versus empty attributes.
+// Preconditions and protocol support have their own independent errors.
+type TransitionRule struct {
+	Pairs         []StateTransition
+	Trans         *string
+	TemplateTrans *string
+	Err           error
+}
+
+// StateTransition is one declared source-to-destination transition. The states
+// retain group identities, including groups whose spec is neither session nor
+// security. A pair is conditional on its From state, not a sequencing command.
+type StateTransition struct {
+	From State
+	To   State
 }
 
 // Precondition describes the containing service's execution requirements.

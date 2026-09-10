@@ -125,6 +125,7 @@ func (resolver *resolver) resolveInstance(database *Database, path string, node 
 			database.report(servicePath+"/REQ", service.Source, DiagnosticMessage, service.Err)
 		}
 		database.report(servicePath, service.Source, DiagnosticPrecondition, service.Requirements.Err)
+		database.report(servicePath, service.Source, DiagnosticTransition, service.Transitions.Err)
 		for _, entry := range []struct {
 			name    string
 			message *Message
@@ -150,7 +151,7 @@ func (database *Database) report(path string, source SourceIdentity, kind Diagno
 }
 
 func (resolver *resolver) resolveService(instance, classTemplate, node *element, index int) *Service {
-	service := &Service{Metadata: metadata(node), Index: index, TemplateRef: node.attr("tmplref"), Transitions: attributeValue(node, "trans")}
+	service := &Service{Metadata: metadata(node), Index: index, TemplateRef: node.attr("tmplref")}
 	template, err := resolver.reference(service.TemplateRef, "DCLSRVTMPL")
 	service.Template = metadataPointer(template)
 	if err == nil && (classTemplate == nil || !directChild(classTemplate, template)) {
@@ -158,6 +159,7 @@ func (resolver *resolver) resolveService(instance, classTemplate, node *element,
 	}
 	// Literal rules depend on this template, not on protocol-message support.
 	service.Requirements = resolver.precondition(node, template, err)
+	service.Transitions = resolver.transitions(node, template, err)
 	var protocol *element
 	if err == nil {
 		service.ProtocolRef = template.attr("tmplref")

@@ -122,7 +122,7 @@ func TestServiceCatalogCoverage(t *testing.T) {
 			t.Fatalf("service %d = %#v", index, service)
 		}
 	}
-	if services[0].Protocol.Source.Qualifier != "SessionControl" || services[0].Request.Parameters[1].NumericValue == nil || *services[0].Request.Parameters[1].NumericValue != 3 || services[0].Transitions == nil || *services[0].Transitions != "(1,1)" {
+	if services[0].Protocol.Source.Qualifier != "SessionControl" || services[0].Request.Parameters[1].NumericValue == nil || *services[0].Request.Parameters[1].NumericValue != 3 || services[0].Transitions.Trans == nil || *services[0].Transitions.Trans != "(1,1)" || services[0].Transitions.Err != nil {
 		t.Fatal("session binding or raw transition lost")
 	}
 	if *services[2].Request.Parameters[1].NumericValue != 5 || *services[3].Request.Parameters[2].NumericValue != 0x1234 || *services[6].Request.Parameters[1].NumericValue != 0x300 {
