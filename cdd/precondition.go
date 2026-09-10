@@ -41,16 +41,13 @@ func (resolver *resolver) resolveStateList(condition *Precondition) error {
 		if err != nil || position < 1 || position > len(resolver.states) {
 			return sourceError(resolver.name, "mayBeExec %q names a state outside the %d declared states", value, len(resolver.states))
 		}
-		state := resolver.states[position-1]
-		if state.GroupSpec != "session" && state.GroupSpec != "security" {
-			return sourceError(resolver.name, "mayBeExec %q names unsupported state %d in group %q", value, position, state.GroupSpec)
-		}
 		selected[position-1] = true
 	}
 	for index, state := range resolver.states {
 		if !selected[index] {
 			continue
 		}
+		condition.AllowedStates = append(condition.AllowedStates, state)
 		switch state.GroupSpec {
 		case "session":
 			condition.Sessions = append(condition.Sessions, state)

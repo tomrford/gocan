@@ -163,9 +163,9 @@ type Record struct {
 }
 
 // State is a literal CDD state and its containing group. Index is its one-based
-// position across all STATEGROUPS/STATE entries, including unsupported groups.
-// GroupIndex is the one-based position of its STATEGROUP. Parse interprets
-// mayBeExec entries as Index values, as observed in public Vector examples.
+// position across all STATEGROUPS/STATE entries, regardless of group semantics.
+// GroupIndex is the one-based position of its STATEGROUP. State references in
+// mayBeExec and trans use Index values, as observed in public Vector examples.
 // Neither index is a UDS subfunction. No initial state is inferred.
 type State struct {
 	Metadata
@@ -186,10 +186,12 @@ type State struct {
 // bindings leave nil Pairs. Raw pointers preserve absent versus empty attributes.
 // Preconditions and protocol support have their own independent errors.
 type TransitionRule struct {
-	Pairs         []StateTransition
-	Trans         *string
-	TemplateTrans *string
-	Err           error
+	Pairs []StateTransition
+	// RawExpression is the service's literal CDD trans attribute.
+	RawExpression *string
+	// RawTemplateExpression is the service template's literal trans attribute.
+	RawTemplateExpression *string
+	Err                   error
 }
 
 // StateTransition is one declared source-to-destination transition. The states
@@ -202,17 +204,20 @@ type StateTransition struct {
 
 // Precondition describes the containing service's execution requirements.
 // Check Err first: a non-nil error means unknown requirements, not ECU rejection.
-// Sessions and SecurityLevels contain literal states named by an explicit
-// instance mayBeExec list, in document order with repeated references removed.
-// A nil list means no states were listed for that group, not ECU permission.
+// AllowedStates contains literal states named by an explicit instance mayBeExec
+// list across all state groups, in document order with repeated references
+// removed. Sessions and SecurityLevels are subsets selected by GroupSpec.
+// A nil list means no states were listed, not ECU permission. The states are
+// alternatives within each group; this type does not evaluate execution access.
 // A service without a rule has nil lists and nil Err. Callers manage ECU state.
 //
 // Raw rule pointers distinguish missing attributes from explicit empty values.
-// Exclusions, template rules, malformed/empty lists, unsupported state groups
-// and unresolved service-template bindings remain unknown. These retain raw rules
+// Exclusions, template rules, malformed/empty lists and unresolved
+// service-template bindings remain unknown. These retain raw rules
 // and have nil resolved lists. A locked state remains literal; no hierarchy,
 // initial state, template precedence or inheritance is inferred.
 type Precondition struct {
+	AllowedStates                []State
 	Sessions                     []State
 	SecurityLevels               []State
 	MayBeExec                    *string

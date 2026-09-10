@@ -7,16 +7,16 @@ import (
 
 func (resolver *resolver) transitions(node, template *element, bindingErr error) TransitionRule {
 	rule := TransitionRule{
-		Trans:         attributeValue(node, "trans"),
-		TemplateTrans: attributeValue(template, "trans"),
+		RawExpression:         attributeValue(node, "trans"),
+		RawTemplateExpression: attributeValue(template, "trans"),
 	}
 	switch {
 	case bindingErr != nil:
 		rule.Err = bindingErr
-	case rule.TemplateTrans != nil:
+	case rule.RawTemplateExpression != nil:
 		rule.Err = sourceError(resolver.name, "template trans inheritance is not supported")
-	case rule.Trans != nil:
-		rule.Pairs, rule.Err = resolver.transitionPairs(*rule.Trans)
+	case rule.RawExpression != nil:
+		rule.Pairs, rule.Err = resolver.transitionPairs(*rule.RawExpression)
 	}
 	return rule
 }

@@ -10,6 +10,52 @@ import (
 	"github.com/tomrford/gocan/cdd"
 )
 
+func TestVectorSessionTransitions(t *testing.T) {
+	database, err := parseCatalogFile(filepath.Join("testdata", "vector-state-transitions.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		instance, destination string
+	}{
+		{"DefaultSession", "Default"},
+		{"ProgrammingSession", "Programming"},
+		{"ExtendedDiagnosticSession", "Extended"},
+	}
+	if len(database.Entries) != len(want) {
+		t.Fatalf("got %d entries", len(database.Entries))
+	}
+	for index, expected := range want {
+		instance := database.Entries[index].Instance
+		if instance == nil || instance.Source.Qualifier != expected.instance || len(instance.Services) != 1 {
+			t.Fatalf("instance %d = %#v", index, instance)
+		}
+		service := instance.Services[0]
+		// Protocol definitions were removed from the source fixture. Resolving
+		// state metadata must not depend on being able to encode the service.
+		if service.Err == nil || service.Transitions.Err != nil || service.Requirements.Err != nil {
+			t.Fatalf("service errors = %v, %v, %v", service.Err, service.Transitions.Err, service.Requirements.Err)
+		}
+		var pairs [][4]string
+		for _, pair := range service.Transitions.Pairs {
+			pairs = append(pairs, [4]string{pair.From.Group.Source.Qualifier, pair.From.Source.Qualifier, pair.To.Group.Source.Qualifier, pair.To.Source.Qualifier})
+		}
+		expectedPairs := [][4]string{
+			{"Session", "Default", "Session", expected.destination},
+			{"Session", "Programming", "Session", expected.destination},
+			{"Session", "Extended", "Session", expected.destination},
+			{"SecurityAccess", "UnlockedL1", "SecurityAccess", "Locked"},
+		}
+		if !reflect.DeepEqual(pairs, expectedPairs) {
+			t.Fatalf("%s transitions = %v", expected.instance, pairs)
+		}
+		condition := service.Requirements
+		if len(condition.AllowedStates) != 25 || len(condition.Sessions) != 10 || len(condition.SecurityLevels) != 15 || condition.AllowedStates[10].Source.Qualifier != "Locked" {
+			t.Fatalf("%s requirements = %#v", expected.instance, condition)
+		}
+	}
+}
+
 func TestTransitionsPreserveIndependentGroupEffects(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "records.cdd"))
 	if err != nil {
@@ -39,10 +85,10 @@ func TestTransitionsPreserveIndependentGroupEffects(t *testing.T) {
 	if rule.Pairs[3].From.Group.Source.ID != "communication" || rule.Pairs[3].From.Source.ID != "enabled" || rule.Pairs[3].To.Source.ID != "disabled" {
 		t.Fatal("equal state names lost group or endpoint identities")
 	}
-	if service.Requirements.Err == nil || service.Requirements.Sessions != nil || service.Requirements.SecurityLevels != nil {
+	if service.Requirements.Err == nil || service.Requirements.AllowedStates != nil || service.Requirements.Sessions != nil || service.Requirements.SecurityLevels != nil {
 		t.Fatal("transitions invented a resolution for template preconditions")
 	}
-	if absent := did.Write[0].Transitions; absent.Err != nil || absent.Trans != nil || absent.Pairs != nil {
+	if absent := did.Write[0].Transitions; absent.Err != nil || absent.RawExpression != nil || absent.Pairs != nil {
 		t.Fatal("missing transitions gained effects")
 	}
 }
@@ -84,7 +130,7 @@ func TestUnknownTransitionsRemainIsolated(t *testing.T) {
 			for _, raw := range []struct {
 				attribute string
 				value     *string
-			}{{test.instance, rule.Trans}, {test.template, rule.TemplateTrans}} {
+			}{{test.instance, rule.RawExpression}, {test.template, rule.RawTemplateExpression}} {
 				if raw.attribute == "" {
 					if raw.value != nil {
 						t.Fatal("absent attribute became present")
