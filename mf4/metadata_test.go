@@ -18,7 +18,7 @@ func TestExportMetadata(t *testing.T) {
 	properties := map[string]string{"boost.workspace.id": "w<&\"42", "boost.pack.é<&\".version": "1.2\nβ", "empty": ""}
 	wantProperties := maps.Clone(properties)
 	busNames := map[gocan.BusID]string{1: "Powertrain <A> & B", 2: "Diagnostics"}
-	w, err := mf4.NewWriter(f, start, mf4.Options{
+	w, err := mf4.NewWriter(f, mf4.Options{
 		Compression: true, ToolName: "Boost <test> & export", ToolVersion: "1.2+β",
 		Comment: "Cooling test\nWorkspace <A> & B", Properties: properties, BusNames: busNames,
 	})
@@ -97,7 +97,7 @@ func TestMetadataValidation(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFile(t)
-			if _, err := mf4.NewWriter(f, start, options); err == nil {
+			if _, err := mf4.NewWriter(f, options); err == nil {
 				t.Fatal("accepted lossy or invalid metadata")
 			}
 			info, err := f.Stat()
@@ -110,7 +110,7 @@ func TestMetadataValidation(t *testing.T) {
 
 func TestMetadataDefaults(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, mf4.Options{})
+	w, err := mf4.NewWriter(f, mf4.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
