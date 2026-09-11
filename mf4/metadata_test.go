@@ -18,7 +18,7 @@ func TestExportMetadata(t *testing.T) {
 	properties := map[string]string{"boost.workspace.id": "w<&\"42", "boost.pack.é<&\".version": "1.2\nβ", "empty": ""}
 	wantProperties := maps.Clone(properties)
 	busNames := map[gocan.BusID]string{1: "Powertrain <A> & B", 2: "Diagnostics"}
-	w, err := mf4.NewWriter(f, start, mf4.Options{
+	w, err := mf4.NewWriter(f, mf4.Options{
 		Compression: true, ToolName: "Boost <test> & export", ToolVersion: "1.2+β",
 		Comment: "Cooling test\nWorkspace <A> & B", Properties: properties, BusNames: busNames,
 	})
@@ -28,7 +28,7 @@ func TestExportMetadata(t *testing.T) {
 	// Groups are created lazily. Caller mutations after construction must not
 	// change the exported names, even for buses first seen later.
 	busNames[1], busNames[2], properties["boost.workspace.id"] = "changed", "changed", "changed"
-	if err := w.WriteEvent(gocan.Event{Bus: 2, Timestamp: start, Kind: gocan.EventReceiveOverrun}); err != nil {
+	if err := w.WriteEvent(gocan.Event{Bus: 2, Timestamp: start.Add(-time.Second), Kind: gocan.EventReceiveOverrun}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.WriteFrame(frame(1, 0, 0x123, 0, 42)); err != nil {
@@ -46,6 +46,9 @@ func TestExportMetadata(t *testing.T) {
 	}
 	checkGroups(t, f, []uint64{1, 1})
 	file := readImage(t, f)
+	if file.u64(136) != uint64(start.Add(-time.Second).UnixNano()) || file.u64(file.u64(120)+80) != 0 {
+		t.Fatal("first event did not establish the start for subsequent frames")
+	}
 	var header struct {
 		XMLName    xml.Name `xml:"http://www.asam.net/mdf/v4 HDcomment"`
 		Text       string   `xml:"TX"`
@@ -97,7 +100,7 @@ func TestMetadataValidation(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFile(t)
-			if _, err := mf4.NewWriter(f, start, options); err == nil {
+			if _, err := mf4.NewWriter(f, options); err == nil {
 				t.Fatal("accepted lossy or invalid metadata")
 			}
 			info, err := f.Stat()
@@ -110,8 +113,13 @@ func TestMetadataValidation(t *testing.T) {
 
 func TestMetadataDefaults(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, mf4.Options{})
+	before := time.Now().UnixNano()
+	w, err := mf4.NewWriter(f, mf4.Options{})
+	after := time.Now().UnixNano()
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -120,6 +128,10 @@ func TestMetadataDefaults(t *testing.T) {
 	file, err := os.ReadFile(f.Name())
 	if err != nil {
 		t.Fatal(err)
+	}
+	created := int64(binary.LittleEndian.Uint64(file[136:]))
+	if created < before || created > after || string(file[:8]) != "MDF     " {
+		t.Fatal("empty export did not finalise with creation time")
 	}
 	if binary.LittleEndian.Uint64(file[128:]) != 0 ||
 		!strings.Contains(string(file), "<tool_id>gocan</tool_id>") ||

@@ -97,8 +97,9 @@ type channelGroup struct {
 
 var _ gocan.RecordWriter = (*Writer)(nil)
 
-// NewWriter creates a measurement starting at start, which must be between
-// the Unix epoch and the end of Go's int64 nanosecond range. Frames and events
+// NewWriter derives start from the first accepted frame or event, falling back
+// to file creation time for empty exports. Timestamps must be between the Unix
+// epoch and the end of Go's int64 nanosecond range. Frames and events
 // before start are rejected. Encoded timestamps within one bus and frame kind
 // (data or remote) must not regress. Equal timestamps are retained, with the
 // conformance limitation described in the package documentation. Accepted
@@ -107,12 +108,9 @@ var _ gocan.RecordWriter = (*Writer)(nil)
 // nanoseconds in the header. Relative time precision decreases for long runs.
 // Each bus may have one DBC attachment, linked from both frame structures.
 // Event markers retain their own append order separately from frame records.
-func NewWriter(output io.WriteSeeker, start time.Time, options Options) (*Writer, error) {
+func NewWriter(output io.WriteSeeker, options Options) (*Writer, error) {
 	if output == nil {
 		return nil, errors.New("MF4 writer requires an output")
-	}
-	if !validTime(start) {
-		return nil, errors.New("MF4 start time is outside the supported nanosecond range")
 	}
 	headerComment, historyComment, err := options.comments()
 	if err != nil {
@@ -141,7 +139,7 @@ func NewWriter(output io.WriteSeeker, start time.Time, options Options) (*Writer
 	if size != 0 {
 		return nil, errors.New("MF4 output must be empty")
 	}
-	w := &Writer{output: output, start: start, buffer: make([]byte, 0, bufferSize),
+	w := &Writer{output: output, buffer: make([]byte, 0, bufferSize),
 		groups: make(map[uint32]*channelGroup), attachments: make(map[gocan.BusID]uint64),
 		eventLink: 64 + 56, busNames: maps.Clone(options.BusNames)}
 	if options.Compression {
@@ -154,8 +152,9 @@ func NewWriter(output io.WriteSeeker, start time.Time, options Options) (*Writer
 	binary.LittleEndian.PutUint16(id[28:], 410)
 	binary.LittleEndian.PutUint16(id[60:], 1) // CG cycle counters need finalisation.
 	w.write(id)
+	created := uint64(time.Now().UnixNano())
 	header := make([]byte, 32)
-	binary.LittleEndian.PutUint64(header, uint64(start.UnixNano()))
+	binary.LittleEndian.PutUint64(header, created)
 	w.block("##HD", make([]uint64, 6), header)
 	if headerComment != "" {
 		w.patch64(64+64, w.textBlock("##MD", headerComment))
@@ -164,7 +163,7 @@ func NewWriter(output io.WriteSeeker, start time.Time, options Options) (*Writer
 	// even though permissive readers can open files without either.
 	comment := w.textBlock("##MD", historyComment)
 	history := make([]byte, 16)
-	binary.LittleEndian.PutUint64(history, uint64(time.Now().UnixNano()))
+	binary.LittleEndian.PutUint64(history, created)
 	fh := w.block("##FH", []uint64{0, comment}, history)
 	w.patch64(64+32, fh)
 	dg := w.block("##DG", make([]uint64, 4), []byte{4, 0, 0, 0, 0, 0, 0, 0})
@@ -202,8 +201,9 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	if !validTime(event.Timestamp) || event.Timestamp.UnixNano() < w.start.UnixNano() {
-		return errors.New("MF4 frame timestamp is before start or outside the supported nanosecond range")
+	offset, err := w.timeOffset(event.Timestamp)
+	if err != nil {
+		return err
 	}
 	remote := event.Frame.Flags.Has(gocan.FrameRemote)
 	key := uint32(event.Bus) << 1
@@ -211,7 +211,7 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 		key++
 	}
 	group := w.groups[key]
-	seconds := float64(event.Timestamp.UnixNano()-w.start.UnixNano()) / 1e9
+	seconds := float64(offset) / 1e9
 	if group != nil && group.cycles != 0 && seconds < group.lastTime {
 		return fmt.Errorf("MF4 bus %d time master must not regress", event.Bus)
 	}
@@ -266,9 +266,6 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	if !validTime(event.Timestamp) || event.Timestamp.UnixNano() < w.start.UnixNano() {
-		return errors.New("MF4 event timestamp is before start or outside the supported nanosecond range")
-	}
 	var name, details string
 	switch event.Kind {
 	case gocan.EventControllerState:
@@ -285,6 +282,10 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	default:
 		return fmt.Errorf("MF4 does not support Capture event kind %d", event.Kind)
 	}
+	offset, err := w.timeOffset(event.Timestamp)
+	if err != nil {
+		return err
+	}
 	busName := fmt.Sprintf("CAN%d", event.Bus)
 	if label := w.busNames[event.Bus]; label != "" {
 		busName += " (" + label + ")"
@@ -297,7 +298,7 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	}
 	data := make([]byte, 32)
 	data[0], data[1] = 6, 1 // marker, time sync
-	binary.LittleEndian.PutUint64(data[16:], uint64(event.Timestamp.UnixNano()-w.start.UnixNano()))
+	binary.LittleEndian.PutUint64(data[16:], uint64(offset))
 	binary.LittleEndian.PutUint64(data[24:], math.Float64bits(1e-9))
 	ev := w.block("##EV", []uint64{0, 0, 0, title, comment}, data)
 	w.patch64(w.eventLink, ev)
@@ -376,6 +377,23 @@ func (w *Writer) ready() error {
 		return errors.New("MF4 writer is closed")
 	}
 	return nil
+}
+
+func (w *Writer) timeOffset(timestamp time.Time) (int64, error) {
+	if !validTime(timestamp) {
+		return 0, errors.New("MF4 timestamp is outside the supported nanosecond range")
+	}
+	if w.start.IsZero() {
+		w.patch64(64+24+6*8, uint64(timestamp.UnixNano())) // HD data starts after six links.
+		if w.err != nil {
+			return 0, w.err
+		}
+		w.start = timestamp
+	}
+	if timestamp.UnixNano() < w.start.UnixNano() {
+		return 0, errors.New("MF4 timestamp is before start")
+	}
+	return timestamp.UnixNano() - w.start.UnixNano(), nil
 }
 
 func validTime(t time.Time) bool {

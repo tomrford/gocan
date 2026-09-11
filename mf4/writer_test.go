@@ -78,11 +78,14 @@ func testRecording(t *testing.T, compression bool) []byte {
 	}
 	description := []byte(db.Source())
 	second := []byte("BU_: ECU\nBO_ 292 Second: 8 ECU\n SG_ Value : 0|8@1+ (2,0) [0|510] \"V\" ECU\n")
-	w, err := mf4.NewWriter(f, start, mf4.Options{Compression: compression, Databases: []mf4.Database{
+	w, err := mf4.NewWriter(f, mf4.Options{Compression: compression, Databases: []mf4.Database{
 		{Bus: 1, Name: "bus1.dbc", Data: description},
 		{Bus: 2, Name: "bus2.dbc", Data: second},
 	}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	capture := gocan.NewCapture()
@@ -169,6 +172,9 @@ func testRecording(t *testing.T, compression bool) []byte {
 		t.Fatal("unexpected extra attachment")
 	}
 	records := readRecords(t, f, compression)
+	if readImage(t, f).u64(136) != uint64(start.UnixNano()) || binary.LittleEndian.Uint64(records[4:]) != 0 {
+		t.Fatal("first frame did not establish the header start and zero offset")
+	}
 	// Skip the initial classical, FD and remote records. Each pair must retain
 	// its shared timestamp without adjustment, including across data chunks.
 	for i := 0; i < 800; i++ {
@@ -250,7 +256,7 @@ func checkGroups(t *testing.T, f *os.File, counts []uint64) {
 
 func TestCaptureEvents(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, mf4.Options{Compression: true})
+	w, err := mf4.NewWriter(f, mf4.Options{Compression: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,21 +332,26 @@ func TestCaptureEvents(t *testing.T) {
 
 func TestEventOnlyExport(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, mf4.Options{Compression: true})
+	w, err := mf4.NewWriter(f, mf4.Options{Compression: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event := gocan.Event{Bus: 300, Timestamp: start.Add(-time.Nanosecond), Kind: gocan.EventReceiveOverrun}
-	if err := w.WriteEvent(event); err == nil {
-		t.Fatal("accepted event before start")
-	}
-	event.Timestamp, event.Kind = start, 0
+	event := gocan.Event{Bus: 300, Timestamp: start}
 	if err := w.WriteEvent(event); err == nil {
 		t.Fatal("accepted invalid event")
 	}
 	event.Kind = gocan.EventReceiveOverrun
+	event.Timestamp = time.Unix(0, 0)
 	if err := w.WriteEvent(event); err != nil {
 		t.Fatal("validation poisoned the writer", err)
+	}
+	event.Timestamp = time.Unix(1, 0)
+	if err := w.WriteEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	event.Timestamp = time.Unix(0, -1)
+	if err := w.WriteEvent(event); err == nil {
+		t.Fatal("accepted event before start")
 	}
 	if err := w.Flush(); err != nil {
 		t.Fatal(err)
@@ -349,9 +360,11 @@ func TestEventOnlyExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkGroups(t, f, nil)
-	var link [8]byte
-	if _, err := f.ReadAt(link[:], 120); err != nil || binary.LittleEndian.Uint64(link[:]) == 0 {
-		t.Fatal("event-only export lost the marker", err)
+	file := readImage(t, f)
+	first := file.u64(120)
+	second := file.u64(first + 24)
+	if first == 0 || second == 0 || file.u64(136) != 0 || file.u64(first+80) != 0 || file.u64(second+80) != 1_000_000_000 {
+		t.Fatal("event-only export did not retain the Unix-epoch start and marker offsets")
 	}
 }
 
@@ -379,26 +392,31 @@ func (f *failingFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func TestWriterFailures(t *testing.T) {
-	for _, stage := range []string{"flush", "short", "finalise", "event"} {
+	for _, stage := range []string{"start seek", "start write", "start short", "flush", "short", "finalise", "event"} {
 		t.Run(stage, func(t *testing.T) {
 			f := &failingFile{File: newFile(t)}
-			w, err := mf4.NewWriter(f, start, mf4.Options{Compression: true})
+			w, err := mf4.NewWriter(f, mf4.Options{Compression: true})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := w.WriteFrame(frame(1, 0, 1, 0, 42)); err != nil {
-				t.Fatal(err)
+			starting := strings.HasPrefix(stage, "start ")
+			if !starting {
+				if err := w.WriteFrame(frame(1, 0, 1, 0, 42)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			failure := errors.New("storage failure")
 			switch stage {
-			case "flush":
+			case "start seek":
+				f.seekErr = failure
+			case "flush", "start write":
 				f.writeErr = failure
 			case "event":
 				f.writeErr = failure
 				if err := w.WriteEvent(gocan.Event{Bus: 1, Timestamp: start, Kind: gocan.EventErrorFrame}); !errors.Is(err, failure) {
 					t.Fatalf("event: %v", err)
 				}
-			case "short":
+			case "short", "start short":
 				f.short = true
 				failure = io.ErrShortWrite
 			case "finalise":
@@ -406,6 +424,12 @@ func TestWriterFailures(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.seekErr = failure
+			}
+			if starting {
+				if err := w.WriteFrame(frame(1, 0, 1, 0)); !errors.Is(err, failure) {
+					t.Fatalf("first frame: %v", err)
+				}
+				f.writeErr, f.seekErr, f.short = nil, nil, false
 			}
 			if err := w.Close(); !errors.Is(err, failure) {
 				t.Fatalf("close: %v", err)
@@ -427,15 +451,22 @@ func TestWriterFailures(t *testing.T) {
 		})
 	}
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, start, mf4.Options{})
+	w, err := mf4.NewWriter(f, mf4.Options{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	for _, timestamp := range []time.Time{time.Time{}, time.Unix(-1, 0), time.Unix(0, math.MaxInt64).Add(time.Nanosecond)} {
+		invalid := frame(1, 0, 1, 0)
+		invalid.Timestamp = timestamp
+		if err := w.WriteFrame(invalid); err == nil {
+			t.Fatal("accepted invalid first timestamp", timestamp)
+		}
+	}
+	if err := w.WriteFrame(frame(1, 0, 1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.WriteFrame(frame(1, -time.Second, 1, 0)); err == nil {
 		t.Fatal("accepted timestamp before start")
-	}
-	if err := w.WriteFrame(frame(1, 0, 1, 0)); err != nil {
-		t.Fatal("validation poisoned writer", err)
 	}
 	if err := w.WriteFrame(frame(1, 0, 2, 0)); err != nil {
 		t.Fatal("duplicate time rejected", err)
@@ -458,7 +489,7 @@ func TestWriterFailures(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mf4.NewWriter(f, start, mf4.Options{}); err == nil {
+	if _, err := mf4.NewWriter(f, mf4.Options{}); err == nil {
 		t.Fatal("overwrote existing output")
 	}
 }
