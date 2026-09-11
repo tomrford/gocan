@@ -5,7 +5,6 @@ package vector
 
 import (
 	"fmt"
-	"time"
 	"unsafe"
 
 	"github.com/tomrford/gocan"
@@ -138,47 +137,37 @@ func (observation *receiveObservation) addEvent(event gocan.Event) {
 	observation.eventCount++
 }
 
-func newErrorObservation(bus gocan.BusID, timestamp time.Time) (receiveObservation, error) {
-	event, err := gocan.NewErrorFrameEvent(bus, timestamp)
-	if err != nil {
-		return receiveObservation{}, err
-	}
+func newErrorObservation(bus gocan.BusID) receiveObservation {
+	event := gocan.Event{Bus: bus, Kind: gocan.EventErrorFrame}
 	var observation receiveObservation
 	observation.addEvent(event)
 	observation.requestChipState = true
-	return observation, nil
+	return observation
 }
 
-func newOverrunObservation(bus gocan.BusID, timestamp time.Time, detail string) (receiveObservation, error) {
-	event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
-	if err != nil {
-		return receiveObservation{}, err
-	}
+func newOverrunObservation(bus gocan.BusID, detail string) receiveObservation {
+	event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 	var observation receiveObservation
 	observation.addEvent(event)
 	observation.terminal = fmt.Errorf("%w: %s", gocan.ErrReceiveOverrun, detail)
-	return observation, nil
+	return observation
 }
 
 func newChipStateObservation(
 	bus gocan.BusID,
-	timestamp time.Time,
 	state *xlChipState,
 ) (receiveObservation, error) {
 	controllerState, err := decodeChipState(state.busStatus)
 	if err != nil {
 		return receiveObservation{}, err
 	}
-	event, err := gocan.NewControllerStateEvent(
-		bus,
-		timestamp,
-		controllerState,
-		state.txErrorCounter,
-		state.rxErrorCounter,
-		true,
-	)
-	if err != nil {
-		return receiveObservation{}, err
+	event := gocan.Event{
+		Bus:              bus,
+		Kind:             gocan.EventControllerState,
+		ControllerState:  controllerState,
+		TXErrorCount:     state.txErrorCounter,
+		RXErrorCount:     state.rxErrorCounter,
+		ErrorCountsKnown: true,
 	}
 	var observation receiveObservation
 	observation.addEvent(event)
@@ -227,14 +216,13 @@ func encodeEvent(frame gocan.Frame) xlEvent {
 func decodeClassicReceiveEvent(
 	event *xlEvent,
 	bus gocan.BusID,
-	timestamp time.Time,
 ) (receiveObservation, error) {
 	if event.flags&xlEventFlagOverrun != 0 {
-		return newOverrunObservation(bus, timestamp, "Vector event queue overrun")
+		return newOverrunObservation(bus, "Vector event queue overrun"), nil
 	}
 	switch event.tag {
 	case xlEventChipState:
-		return newChipStateObservation(bus, timestamp, event.chipState())
+		return newChipStateObservation(bus, event.chipState())
 	case xlEventReceiveMessage:
 	default:
 		return receiveObservation{}, fmt.Errorf("unsupported Vector event tag %d", event.tag)
@@ -242,10 +230,10 @@ func decodeClassicReceiveEvent(
 
 	message := event.message()
 	if message.flags&xlMessageFlagOverrun != 0 {
-		return newOverrunObservation(bus, timestamp, "Vector message queue overrun")
+		return newOverrunObservation(bus, "Vector message queue overrun"), nil
 	}
 	if message.flags&xlMessageFlagErrorFrame != 0 {
-		return newErrorObservation(bus, timestamp)
+		return newErrorObservation(bus), nil
 	}
 	if unsupported := message.flags & xlUnsupportedMessageFlags; unsupported != 0 {
 		return receiveObservation{}, fmt.Errorf("unsupported Vector message flags %#04x", unsupported)

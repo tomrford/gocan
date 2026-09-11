@@ -2,7 +2,6 @@ package vector
 
 import (
 	"fmt"
-	"time"
 	"unsafe"
 
 	"github.com/tomrford/gocan"
@@ -134,13 +133,12 @@ func encodeFDTransmitEvent(frame gocan.Frame) xlCANTXEvent {
 func decodeFDReceiveEvent(
 	event *xlCANRXEvent,
 	bus gocan.BusID,
-	timestamp time.Time,
 ) (receiveObservation, error) {
 	switch event.tag {
 	case xlCANEventRXError, xlCANEventTXError:
-		return newErrorObservation(bus, timestamp)
+		return newErrorObservation(bus), nil
 	case xlCANEventChipState:
-		return newChipStateObservation(bus, timestamp, event.chipState())
+		return newChipStateObservation(bus, event.chipState())
 	case xlCANEventRXOK:
 	default:
 		return receiveObservation{}, fmt.Errorf("unsupported Vector CAN FD event tag %d", event.tag)
@@ -148,7 +146,7 @@ func decodeFDReceiveEvent(
 
 	message := event.message()
 	if message.flags&xlCANMessageFlagEF != 0 {
-		return newErrorObservation(bus, timestamp)
+		return newErrorObservation(bus), nil
 	}
 
 	var flags gocan.FrameFlags

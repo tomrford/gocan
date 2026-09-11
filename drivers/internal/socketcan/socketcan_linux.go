@@ -237,11 +237,10 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 
 	event := gocan.FrameEvent{
 		Bus:       bus.id,
-		Timestamp: time.Now(),
 		Direction: gocan.DirectionTransmit,
 		Frame:     frame,
 	}
-	if err := bus.capture.Append(event); err != nil {
+	if err := bus.capture.RecordFrame(event); err != nil {
 		bus.stopWithError(err)
 		return err
 	}
@@ -294,21 +293,18 @@ func (bus *Bus) receiveLoop() {
 }
 
 // recordReceive is called with ioMu held immediately after a native read.
-func (bus *Bus) recordReceive(timestamp time.Time) error {
+func (bus *Bus) recordReceive() error {
 	packet, err := bus.receivedPacket()
 	if err != nil {
 		terminal := fmt.Errorf("receive SocketCAN frame: %w", err)
 		if errors.Is(err, gocan.ErrReceiveOverrun) {
-			event, eventErr := gocan.NewReceiveOverrunEvent(bus.id, timestamp)
-			if eventErr != nil {
-				return eventErr
-			}
+			event := gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}
 			bus.stopWithEvents(terminal, []gocan.Event{event})
 		}
 		return terminal
 	}
 	if len(packet) >= 4 && binary.NativeEndian.Uint32(packet[:4])&unix.CAN_ERR_FLAG != 0 {
-		errorPacket, err := decodeErrorPacket(packet, bus.id, timestamp)
+		errorPacket, err := decodeErrorPacket(packet, bus.id)
 		if err != nil {
 			return err
 		}
@@ -317,7 +313,7 @@ func (bus *Bus) recordReceive(timestamp time.Time) error {
 			return nil
 		}
 		for index := range errorPacket.eventCount {
-			if err := bus.capture.AppendEvent(errorPacket.events[index]); err != nil {
+			if err := bus.capture.RecordEvent(errorPacket.events[index]); err != nil {
 				return err
 			}
 		}
@@ -328,9 +324,8 @@ func (bus *Bus) recordReceive(timestamp time.Time) error {
 	if err != nil {
 		return err
 	}
-	return bus.capture.Append(gocan.FrameEvent{
+	return bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
-		Timestamp: timestamp,
 		Direction: gocan.DirectionReceive,
 		Frame:     frame,
 	})
@@ -381,7 +376,7 @@ func (bus *Bus) receiveOnce(fd uintptr) bool {
 	bus.rxSize = int(read)
 	bus.rxControlSize = int(bus.rxMessage.Controllen)
 	bus.rxFlags = int(bus.rxMessage.Flags)
-	if err := bus.recordReceive(time.Now()); err != nil {
+	if err := bus.recordReceive(); err != nil {
 		bus.stopWithError(err)
 	}
 	return true
@@ -423,7 +418,7 @@ func (bus *Bus) stopWithError(err error) {
 // stopWithEvents is called with ioMu held, after the native read.
 func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
 	for _, event := range events {
-		if err := bus.capture.AppendEvent(event); err != nil {
+		if err := bus.capture.RecordEvent(event); err != nil {
 			bus.stopWithError(err)
 			return
 		}
@@ -536,7 +531,7 @@ type decodedErrorPacket struct {
 	terminal   error
 }
 
-func decodeErrorPacket(packet []byte, bus gocan.BusID, timestamp time.Time) (decodedErrorPacket, error) {
+func decodeErrorPacket(packet []byte, bus gocan.BusID) (decodedErrorPacket, error) {
 	if len(packet) != classicalMTU {
 		return decodedErrorPacket{}, fmt.Errorf("unexpected SocketCAN error frame size %d", len(packet))
 	}
@@ -555,10 +550,7 @@ func decodeErrorPacket(packet []byte, bus gocan.BusID, timestamp time.Time) (dec
 	if classes&canErrorObservationMask != 0 ||
 		classes&unix.CAN_ERR_CRTL != 0 &&
 			(controller == unix.CAN_ERR_CRTL_UNSPEC || controller&unix.CAN_ERR_CRTL_TX_OVERFLOW != 0) {
-		event, err := gocan.NewErrorFrameEvent(bus, timestamp)
-		if err != nil {
-			return decodedErrorPacket{}, err
-		}
+		event := gocan.Event{Bus: bus, Kind: gocan.EventErrorFrame}
 		result.events[result.eventCount] = event
 		result.eventCount++
 	}
@@ -571,26 +563,20 @@ func decodeErrorPacket(packet []byte, bus gocan.BusID, timestamp time.Time) (dec
 			txErrorCount = packet[14]
 			rxErrorCount = packet[15]
 		}
-		event, err := gocan.NewControllerStateEvent(
-			bus,
-			timestamp,
-			state,
-			txErrorCount,
-			rxErrorCount,
-			countsKnown,
-		)
-		if err != nil {
-			return decodedErrorPacket{}, err
+		event := gocan.Event{
+			Bus:              bus,
+			Kind:             gocan.EventControllerState,
+			ControllerState:  state,
+			TXErrorCount:     txErrorCount,
+			RXErrorCount:     rxErrorCount,
+			ErrorCountsKnown: countsKnown,
 		}
 		result.events[result.eventCount] = event
 		result.eventCount++
 	}
 
 	if classes&unix.CAN_ERR_CRTL != 0 && controller&unix.CAN_ERR_CRTL_RX_OVERFLOW != 0 {
-		event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
-		if err != nil {
-			return decodedErrorPacket{}, err
-		}
+		event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 		result.events[result.eventCount] = event
 		result.eventCount++
 		result.terminal = fmt.Errorf("%w: SocketCAN controller RX buffer overflow", gocan.ErrReceiveOverrun)

@@ -42,8 +42,10 @@ var (
 // result and records an accepted transmission before returning nil.
 //
 // Within a bus, each native read or write and its capture append are serialised:
-// an accepted transmission is recorded before the next native read. Timestamps
-// describe host observation order, not the order of buffered traffic on the wire.
+// an accepted transmission is recorded before the next native read. Drivers use
+// Capture.RecordFrame and RecordEvent, whose shared clock follows capture append
+// order across buses. Timestamps describe host observation order, not the order
+// of buffered traffic on the wire.
 // Readiness waits do not hold up transmission.
 //
 // Capture returns the non-nil capture that records this bus's traffic. It

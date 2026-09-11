@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/tomrford/gocan"
 )
@@ -228,16 +227,15 @@ func decodePCANReceive(
 	fdAPI bool,
 	status pcanStatus,
 	bus gocan.BusID,
-	timestamp time.Time,
 ) (pcanReceiveObservation, error) {
 	if frameStatus, ok := decodeStatusFrame(messageType, data); ok {
-		return decodePCANStatus(frameStatus, bus, timestamp)
+		return decodePCANStatus(frameStatus, bus)
 	}
 	if messageType&pcanMessageError != 0 {
-		return decodePCANErrorFrame(data, status, bus, timestamp)
+		return decodePCANErrorFrame(data, status, bus)
 	}
 	if status != pcanStatusOK {
-		return decodePCANStatus(status, bus, timestamp)
+		return decodePCANStatus(status, bus)
 	}
 	frame, err := decodeMessage(id, messageType, dlc, data, fdAPI)
 	if err != nil {
@@ -250,29 +248,19 @@ func decodePCANErrorFrame(
 	data []byte,
 	status pcanStatus,
 	bus gocan.BusID,
-	timestamp time.Time,
 ) (pcanReceiveObservation, error) {
 	if len(data) < 4 {
 		return pcanReceiveObservation{}, fmt.Errorf("PCAN error frame has %d data bytes", len(data))
 	}
-	errorEvent, err := gocan.NewErrorFrameEvent(bus, timestamp)
-	if err != nil {
-		return pcanReceiveObservation{}, err
-	}
+	errorEvent := gocan.Event{Bus: bus, Kind: gocan.EventErrorFrame}
 	var observation pcanReceiveObservation
 	observation.addEvent(errorEvent)
 
 	if status&pcanStatusBusOff != 0 {
-		state, err := gocan.NewControllerStateEvent(
-			bus,
-			timestamp,
-			gocan.ControllerBusOff,
-			0,
-			0,
-			false,
-		)
-		if err != nil {
-			return pcanReceiveObservation{}, err
+		state := gocan.Event{
+			Bus:             bus,
+			Kind:            gocan.EventControllerState,
+			ControllerState: gocan.ControllerBusOff,
 		}
 		observation.addEvent(state)
 		observation.terminal = fmt.Errorf("%w: PCAN controller entered bus-off", gocan.ErrBusOff)
@@ -287,16 +275,13 @@ func decodePCANErrorFrame(
 	} else if txErrorCount >= 96 || rxErrorCount >= 96 {
 		state = gocan.ControllerWarning
 	}
-	stateEvent, err := gocan.NewControllerStateEvent(
-		bus,
-		timestamp,
-		state,
-		txErrorCount,
-		rxErrorCount,
-		true,
-	)
-	if err != nil {
-		return pcanReceiveObservation{}, err
+	stateEvent := gocan.Event{
+		Bus:              bus,
+		Kind:             gocan.EventControllerState,
+		ControllerState:  state,
+		TXErrorCount:     txErrorCount,
+		RXErrorCount:     rxErrorCount,
+		ErrorCountsKnown: true,
 	}
 	observation.addEvent(stateEvent)
 	return observation, nil
@@ -305,13 +290,9 @@ func decodePCANErrorFrame(
 func decodePCANStatus(
 	status pcanStatus,
 	bus gocan.BusID,
-	timestamp time.Time,
 ) (pcanReceiveObservation, error) {
 	if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-		event, err := gocan.NewReceiveOverrunEvent(bus, timestamp)
-		if err != nil {
-			return pcanReceiveObservation{}, err
-		}
+		event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 		observation := pcanReceiveObservation{
 			terminal: fmt.Errorf("%w: PCAN status %#08x", gocan.ErrReceiveOverrun, uint32(status)),
 		}
@@ -332,9 +313,10 @@ func decodePCANStatus(
 	default:
 		return pcanReceiveObservation{}, fmt.Errorf("unsupported PCAN receive status %#08x", uint32(status))
 	}
-	event, err := gocan.NewControllerStateEvent(bus, timestamp, state, 0, 0, false)
-	if err != nil {
-		return pcanReceiveObservation{}, err
+	event := gocan.Event{
+		Bus:             bus,
+		Kind:            gocan.EventControllerState,
+		ControllerState: state,
 	}
 	var observation pcanReceiveObservation
 	observation.addEvent(event)

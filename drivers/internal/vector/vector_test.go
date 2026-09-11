@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/tomrford/gocan"
@@ -30,8 +29,7 @@ func TestClassicNativeLayoutAndTranslation(t *testing.T) {
 	}
 	event := encodeEvent(frame)
 	event.tag = xlEventReceiveMessage
-	timestamp := time.Unix(1, 2)
-	got, err := decodeClassicReceiveEvent(&event, 1, timestamp)
+	got, err := decodeClassicReceiveEvent(&event, 1)
 	if err != nil {
 		t.Fatalf("decode event: %v", err)
 	}
@@ -40,7 +38,7 @@ func TestClassicNativeLayoutAndTranslation(t *testing.T) {
 	}
 
 	event.flags = xlEventFlagOverrun
-	overrun, err := decodeClassicReceiveEvent(&event, 1, timestamp)
+	overrun, err := decodeClassicReceiveEvent(&event, 1)
 	if err != nil || !errors.Is(overrun.terminal, gocan.ErrReceiveOverrun) ||
 		overrun.eventCount != 1 || overrun.events[0].Kind != gocan.EventReceiveOverrun {
 		t.Fatalf("decode overrun = %+v, %v", overrun, err)
@@ -93,7 +91,7 @@ func TestFDNativeLayoutAndTranslation(t *testing.T) {
 	rxMessage.flags = tx.message.flags | xlCANMessageFlagESI
 	rxMessage.dlc = tx.message.dlc
 	rxMessage.data = tx.message.data
-	got, err := decodeFDReceiveEvent(&rx, 1, time.Unix(1, 2))
+	got, err := decodeFDReceiveEvent(&rx, 1)
 	if err != nil {
 		t.Fatalf("decode FD event: %v", err)
 	}
@@ -133,7 +131,7 @@ func TestClassicalDLCAboveEightNativeTranslation(t *testing.T) {
 						if event.message().dlc != uint16(dlc) {
 							t.Fatalf("encoded DLC = %d, want %d", event.message().dlc, dlc)
 						}
-						got, err = decodeClassicReceiveEvent(&event, 1, time.Unix(1, 2))
+						got, err = decodeClassicReceiveEvent(&event, 1)
 					case "FD":
 						tx := encodeFDTransmitEvent(frame)
 						if tx.message.dlc != dlc {
@@ -152,7 +150,7 @@ func TestClassicalDLCAboveEightNativeTranslation(t *testing.T) {
 							dlc:   tx.message.dlc,
 							data:  tx.message.data,
 						}
-						got, err = decodeFDReceiveEvent(&rx, 1, time.Unix(1, 2))
+						got, err = decodeFDReceiveEvent(&rx, 1)
 					default:
 						t.Fatalf("unsupported native API %q", nativeAPI)
 					}
@@ -169,10 +167,9 @@ func TestClassicalDLCAboveEightNativeTranslation(t *testing.T) {
 }
 
 func TestVectorStatusTranslation(t *testing.T) {
-	timestamp := time.Unix(1, 2)
 	event := xlEvent{tag: xlEventReceiveMessage}
 	event.message().flags = xlMessageFlagErrorFrame
-	errorObservation, err := decodeClassicReceiveEvent(&event, 2, timestamp)
+	errorObservation, err := decodeClassicReceiveEvent(&event, 2)
 	if err != nil || errorObservation.eventCount != 1 ||
 		errorObservation.events[0].Kind != gocan.EventErrorFrame ||
 		!errorObservation.requestChipState || errorObservation.terminal != nil {
@@ -185,7 +182,7 @@ func TestVectorStatusTranslation(t *testing.T) {
 		txErrorCounter: 128,
 		rxErrorCounter: 3,
 	}
-	stateObservation, err := decodeClassicReceiveEvent(&event, 2, timestamp)
+	stateObservation, err := decodeClassicReceiveEvent(&event, 2)
 	if err != nil || stateObservation.eventCount != 1 {
 		t.Fatalf("classic state observation = %+v, %v", stateObservation, err)
 	}
@@ -198,7 +195,7 @@ func TestVectorStatusTranslation(t *testing.T) {
 	}
 
 	*event.chipState() = xlChipState{busStatus: xlChipStateBusOff}
-	busOff, err := decodeClassicReceiveEvent(&event, 2, timestamp)
+	busOff, err := decodeClassicReceiveEvent(&event, 2)
 	if err != nil || !errors.Is(busOff.terminal, gocan.ErrBusOff) ||
 		busOff.events[0].ControllerState != gocan.ControllerBusOff {
 		t.Fatalf("classic bus-off = %+v, %v", busOff, err)
@@ -207,7 +204,6 @@ func TestVectorStatusTranslation(t *testing.T) {
 	fdError, err := decodeFDReceiveEvent(
 		&xlCANRXEvent{tag: xlCANEventTXError},
 		2,
-		timestamp,
 	)
 	if err != nil || fdError.events[0].Kind != gocan.EventErrorFrame ||
 		!fdError.requestChipState {
