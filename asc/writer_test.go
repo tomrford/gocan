@@ -42,6 +42,19 @@ func TestWriterStreamsCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := writer.WriteFrame(gocan.FrameEvent{
+		Bus: 1, Timestamp: start.Add(-time.Nanosecond), Direction: gocan.DirectionReceive, Frame: classic,
+	}); err == nil {
+		t.Fatal("accepted frame before measurement start")
+	}
+	regressed := state
+	regressed.Timestamp = state.Timestamp.Add(-time.Nanosecond)
+	if err := writer.WriteEvent(regressed); err == nil {
+		t.Fatal("accepted event before previous record")
+	}
+	if err := writer.WriteEvent(state); err != nil {
+		t.Fatalf("equal timestamp: %v", err)
+	}
 
 	remote, err := gocan.NewRemoteFrame(0x321, 8, false)
 	if err != nil {
@@ -101,6 +114,7 @@ func TestWriterStreamsCapture(t *testing.T) {
 		"Begin Triggerblock Sat Aug 01 08:34:56.789 2026",
 		"0.000000 Start of measurement",
 		"0.000000 1 123 Rx d 2 AA BB",
+		"0.001000 CAN 1 Status:chip status error passive - TxErr: 132 RxErr: 0",
 		"0.001000 CAN 1 Status:chip status error passive - TxErr: 132 RxErr: 0",
 		"0.002000 1 321 Tx r 8",
 		"0.003000 CANFD 2 Tx 1ABCDEx - 1 1 9 12 00 01 02 03 04 05 06 07 08 09 0A 0B 0 0 7000 0 0 0 0 0",

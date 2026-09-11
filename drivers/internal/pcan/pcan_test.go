@@ -6,7 +6,6 @@ import (
 	"math"
 	"strings"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/tomrford/gocan"
@@ -187,7 +186,6 @@ func TestStatusFrameUsesNetworkByteOrder(t *testing.T) {
 }
 
 func TestPCANEventTranslation(t *testing.T) {
-	timestamp := time.Unix(1, 2)
 	errorFrame, err := decodePCANReceive(
 		0x08,
 		pcanMessageError,
@@ -196,7 +194,6 @@ func TestPCANEventTranslation(t *testing.T) {
 		false,
 		pcanStatusOK,
 		1,
-		timestamp,
 	)
 	if err != nil || errorFrame.eventCount != 2 ||
 		errorFrame.events[0].Kind != gocan.EventErrorFrame {
@@ -218,14 +215,13 @@ func TestPCANEventTranslation(t *testing.T) {
 		false,
 		pcanStatusBusOff,
 		1,
-		timestamp,
 	)
 	if err != nil || !errors.Is(busOff.terminal, gocan.ErrBusOff) ||
 		busOff.events[0].ControllerState != gocan.ControllerBusOff {
 		t.Fatalf("bus-off status = %+v, %v", busOff, err)
 	}
 
-	overrun, err := decodePCANStatus(pcanStatusQueueOverrun, 1, timestamp)
+	overrun, err := decodePCANStatus(pcanStatusQueueOverrun, 1)
 	if err != nil || !errors.Is(overrun.terminal, gocan.ErrReceiveOverrun) ||
 		overrun.events[0].Kind != gocan.EventReceiveOverrun {
 		t.Fatalf("overrun status = %+v, %v", overrun, err)

@@ -22,9 +22,8 @@ var errWriterClosed = errors.New("ASC writer is closed")
 // measurement start time.
 //
 // The header date is written in local time. ASC has no time zone field, and
-// Vector tools read the header as local time. A record whose timestamp
-// regresses is written at the previous record's time, so offsets never
-// decrease.
+// Vector tools read the header as local time. Timestamps must not decrease;
+// a regressing record is rejected without being written. Equal times are allowed.
 type Writer struct {
 	output *bufio.Writer
 
@@ -143,7 +142,7 @@ func (writer *Writer) writeRecord(timestamp time.Time, body string) error {
 		}
 	}
 	if timestamp.Before(writer.last) {
-		timestamp = writer.last
+		return fmt.Errorf("ASC timestamp %s precedes previous record %s", timestamp, writer.last)
 	}
 
 	offset := timestamp.Sub(writer.start).Microseconds()

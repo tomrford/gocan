@@ -534,9 +534,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		return err
 	}
 
-	if err := bus.capture.Append(gocan.FrameEvent{
+	if err := bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
-		Timestamp: time.Now(),
 		Direction: gocan.DirectionTransmit,
 		Frame:     frame,
 	}); err != nil {
@@ -681,21 +680,16 @@ func (bus *Bus) receiveClassic() (bool, error) {
 		uintptr(unsafe.Pointer(&messageCount)),
 		uintptr(unsafe.Pointer(&event)),
 	)
-	timestamp := time.Now()
 	status := xlStatus(result)
 	switch status {
 	case xlQueueEmpty:
 		return false, nil
 	case xlQueueOverrun:
-		observation, err := newOverrunObservation(
+		observation := newOverrunObservation(
 			bus.id,
-			timestamp,
 			fmt.Sprintf("Vector receive status %d", status),
 		)
-		if err != nil {
-			return false, err
-		}
-		stopped, err := bus.applyObservation(observation, timestamp)
+		stopped, err := bus.applyObservation(observation)
 		return !stopped, err
 	case xlSuccess:
 	default:
@@ -705,11 +699,11 @@ func (bus *Bus) receiveClassic() (bool, error) {
 		return false, fmt.Errorf("receive Vector event: driver returned %d events", messageCount)
 	}
 
-	observation, err := decodeClassicReceiveEvent(&event, bus.id, timestamp)
+	observation, err := decodeClassicReceiveEvent(&event, bus.id)
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation, timestamp)
+	stopped, err := bus.applyObservation(observation)
 	return !stopped, err
 }
 
@@ -719,39 +713,38 @@ func (bus *Bus) receiveFD() (bool, error) {
 		portArgument(bus.port),
 		uintptr(unsafe.Pointer(&event)),
 	)
-	timestamp := time.Now()
 	status := xlStatus(result)
 	switch status {
 	case xlQueueEmpty:
 		return false, nil
 	case xlQueueOverrun:
-		observation, err := newOverrunObservation(
+		observation := newOverrunObservation(
 			bus.id,
-			timestamp,
 			fmt.Sprintf("Vector CAN FD receive status %d", status),
 		)
-		if err != nil {
-			return false, err
-		}
-		stopped, err := bus.applyObservation(observation, timestamp)
+		stopped, err := bus.applyObservation(observation)
 		return !stopped, err
 	case xlSuccess:
 	default:
 		return false, bus.runtimeStatusError("receive Vector CAN FD event", status)
 	}
 
-	observation, err := decodeFDReceiveEvent(&event, bus.id, timestamp)
+	observation, err := decodeFDReceiveEvent(&event, bus.id)
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation, timestamp)
+	stopped, err := bus.applyObservation(observation)
 	return !stopped, err
 }
 
-func (bus *Bus) applyObservation(observation receiveObservation, timestamp time.Time) (bool, error) {
+func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
 	if observation.terminal != nil {
 		bus.stopWithEvents(observation.terminal, observation.events[:observation.eventCount])
 		return true, nil
+	}
+	var timestamp time.Time
+	if observation.eventCount != 0 || observation.requestChipState {
+		timestamp = time.Now()
 	}
 	for index := range observation.eventCount {
 		event := observation.events[index]
@@ -766,7 +759,7 @@ func (bus *Bus) applyObservation(observation receiveObservation, timestamp time.
 			bus.lastChipState = event
 			bus.hasChipState = true
 		}
-		if err := bus.capture.AppendEvent(event); err != nil {
+		if err := bus.capture.RecordEvent(event); err != nil {
 			return false, err
 		}
 	}
@@ -776,9 +769,8 @@ func (bus *Bus) applyObservation(observation receiveObservation, timestamp time.
 		}
 	}
 	if observation.hasFrame {
-		if err := bus.capture.Append(gocan.FrameEvent{
+		if err := bus.capture.RecordFrame(gocan.FrameEvent{
 			Bus:       bus.id,
-			Timestamp: timestamp,
 			Direction: gocan.DirectionReceive,
 			Frame:     observation.frame,
 		}); err != nil {
@@ -847,7 +839,7 @@ func (bus *Bus) stopWithError(err error) {
 // stopWithEvents is called with ioMu held, after the native read.
 func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
 	for _, event := range events {
-		if err := bus.capture.AppendEvent(event); err != nil {
+		if err := bus.capture.RecordEvent(event); err != nil {
 			bus.stopWithError(err)
 			return
 		}

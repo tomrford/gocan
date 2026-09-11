@@ -60,8 +60,8 @@ func TestNetworkCapturesAcceptedTransmissionAndReception(t *testing.T) {
 	if received.Direction != gocan.DirectionReceive || received.Frame != frame {
 		t.Fatalf("received event = %+v, want destination RX frame", received)
 	}
-	if !received.Timestamp.Equal(transmitted.Timestamp) {
-		t.Fatalf("RX timestamp %s differs from TX timestamp %s", received.Timestamp, transmitted.Timestamp)
+	if received.Timestamp.Before(transmitted.Timestamp) {
+		t.Fatalf("RX timestamp %s precedes TX timestamp %s", received.Timestamp, transmitted.Timestamp)
 	}
 
 	if series := capture.Series(gocan.FrameKey{
@@ -139,7 +139,7 @@ func TestBroadcastDetectsOverrun(t *testing.T) {
 	victim := &Bus{
 		id:       2,
 		name:     "victim",
-		incoming: make(chan receivedFrame),
+		incoming: make(chan gocan.Frame),
 		failures: make(chan error, 1),
 		done:     make(chan struct{}),
 	}
@@ -147,7 +147,7 @@ func TestBroadcastDetectsOverrun(t *testing.T) {
 	network.buses[victim.id] = victim
 	network.mu.Unlock()
 
-	network.broadcast(source, receivedFrame{timestamp: time.Now()})
+	network.broadcast(source, gocan.Frame{})
 	select {
 	case err := <-victim.failures:
 		if !errors.Is(err, gocan.ErrReceiveOverrun) {

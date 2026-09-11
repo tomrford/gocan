@@ -68,11 +68,12 @@ func requireBusEvents(t *testing.T, label string, got, want []Event) {
 }
 
 type captureWriterProbe struct {
-	failAt  int
-	failure error
-	calls   int
-	frames  []uint32
-	events  []EventKind
+	failAt     int
+	failure    error
+	calls      int
+	frames     []uint32
+	events     []EventKind
+	timestamps []time.Time
 }
 
 func (writer *captureWriterProbe) WriteFrame(event FrameEvent) error {
@@ -80,6 +81,7 @@ func (writer *captureWriterProbe) WriteFrame(event FrameEvent) error {
 		return err
 	}
 	writer.frames = append(writer.frames, event.Frame.ID)
+	writer.timestamps = append(writer.timestamps, event.Timestamp)
 	return nil
 }
 
@@ -88,6 +90,7 @@ func (writer *captureWriterProbe) WriteEvent(event Event) error {
 		return err
 	}
 	writer.events = append(writer.events, event.Kind)
+	writer.timestamps = append(writer.timestamps, event.Timestamp)
 	return nil
 }
 
@@ -98,6 +101,55 @@ func (writer *captureWriterProbe) next() error {
 		return writer.failure
 	}
 	return nil
+}
+
+func TestCaptureLiveClock(t *testing.T) {
+	start := time.Now()
+	capture := NewCapture()
+	if err := capture.RecordFrame(FrameEvent{Bus: 1, Direction: DirectionReceive, Frame: Frame{ID: MaxExtendedID + 1}}); err == nil {
+		t.Fatal("accepted invalid live frame")
+	}
+	if err := capture.RecordEvent(Event{Bus: 1, Kind: EventControllerState}); err == nil {
+		t.Fatal("accepted invalid live controller state")
+	}
+	if capture.Len() != 0 {
+		t.Fatal("invalid records changed capture")
+	}
+
+	for range 2 {
+		var writers sync.WaitGroup
+		for bus := BusID(1); bus <= 4; bus++ {
+			writers.Go(func() {
+				for range 1024 {
+					// Supplied old times are ignored by live recording.
+					if err := capture.RecordFrame(FrameEvent{Bus: bus, Timestamp: captureTestBase, Direction: DirectionReceive}); err != nil {
+						t.Error(err)
+						return
+					}
+					if err := capture.RecordEvent(Event{Bus: bus, Kind: EventErrorFrame}); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+			})
+		}
+		writers.Wait()
+		end := time.Now()
+		writer := &captureWriterProbe{}
+		if _, err := capture.WriteRecordsSince(Cursor{}, writer); err != nil {
+			t.Fatal(err)
+		}
+		if len(writer.timestamps) != 8192 {
+			t.Fatalf("record count = %d, want 8192", len(writer.timestamps))
+		}
+		for i, timestamp := range writer.timestamps {
+			if timestamp.Before(start) || timestamp.After(end) {
+				t.Fatalf("record %d timestamp %s outside ordered interval [%s, %s]", i, timestamp, start, end)
+			}
+			start = timestamp
+		}
+		capture.Clear()
+	}
 }
 
 // newTestCapture builds a capture whose first chunk is small enough for tests

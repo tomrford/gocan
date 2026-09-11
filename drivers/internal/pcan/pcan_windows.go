@@ -459,9 +459,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		return err
 	}
 
-	if err := bus.capture.Append(gocan.FrameEvent{
+	if err := bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
-		Timestamp: time.Now(),
 		Direction: gocan.DirectionTransmit,
 		Frame:     frame,
 	}); err != nil {
@@ -547,10 +546,9 @@ func (bus *Bus) receiveOne() (bool, error) {
 	}
 
 	// The device timestamp buffers stay NULL by design; received frames
-	// are stamped with the host clock at read. See the package comment.
+	// are stamped by the capture clock when recorded. See the package comment.
 	var (
 		observation pcanReceiveObservation
-		timestamp   time.Time
 		status      pcanStatus
 		err         error
 	)
@@ -561,10 +559,9 @@ func (bus *Bus) receiveOne() (bool, error) {
 			uintptr(unsafe.Pointer(&message)),
 			0,
 		)
-		timestamp = time.Now()
 		status = pcanStatus(result)
 		if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-			observation, err = decodePCANStatus(status, bus.id, timestamp)
+			observation, err = decodePCANStatus(status, bus.id)
 		} else if status != pcanStatusQueueEmpty && status != pcanStatusInvalidData {
 			observation, err = decodePCANReceive(
 				message.id,
@@ -574,7 +571,6 @@ func (bus *Bus) receiveOne() (bool, error) {
 				true,
 				status,
 				bus.id,
-				timestamp,
 			)
 		}
 	} else {
@@ -584,10 +580,9 @@ func (bus *Bus) receiveOne() (bool, error) {
 			uintptr(unsafe.Pointer(&message)),
 			0,
 		)
-		timestamp = time.Now()
 		status = pcanStatus(result)
 		if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-			observation, err = decodePCANStatus(status, bus.id, timestamp)
+			observation, err = decodePCANStatus(status, bus.id)
 		} else if status != pcanStatusQueueEmpty && status != pcanStatusInvalidData {
 			observation, err = decodePCANReceive(
 				message.id,
@@ -597,7 +592,6 @@ func (bus *Bus) receiveOne() (bool, error) {
 				false,
 				status,
 				bus.id,
-				timestamp,
 			)
 		}
 	}
@@ -616,24 +610,23 @@ func (bus *Bus) receiveOne() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation, timestamp)
+	stopped, err := bus.applyObservation(observation)
 	return !stopped, err
 }
 
-func (bus *Bus) applyObservation(observation pcanReceiveObservation, timestamp time.Time) (bool, error) {
+func (bus *Bus) applyObservation(observation pcanReceiveObservation) (bool, error) {
 	if observation.terminal != nil {
 		bus.stopWithEvents(observation.terminal, observation.events[:observation.eventCount])
 		return true, nil
 	}
 	for index := range observation.eventCount {
-		if err := bus.capture.AppendEvent(observation.events[index]); err != nil {
+		if err := bus.capture.RecordEvent(observation.events[index]); err != nil {
 			return false, err
 		}
 	}
 	if observation.hasFrame {
-		if err := bus.capture.Append(gocan.FrameEvent{
+		if err := bus.capture.RecordFrame(gocan.FrameEvent{
 			Bus:       bus.id,
-			Timestamp: timestamp,
 			Direction: gocan.DirectionReceive,
 			Frame:     observation.frame,
 		}); err != nil {
@@ -650,7 +643,7 @@ func (bus *Bus) stopWithError(err error) {
 // stopWithEvents is called with ioMu held, after the native read.
 func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
 	for _, event := range events {
-		if err := bus.capture.AppendEvent(event); err != nil {
+		if err := bus.capture.RecordEvent(event); err != nil {
 			bus.stopWithError(err)
 			return
 		}

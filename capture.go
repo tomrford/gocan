@@ -38,7 +38,8 @@ const (
 // Prune discards it, so a layer that captures indefinitely must prune, and
 // decides for itself what history is worth keeping.
 type Capture struct {
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	origin time.Time
 
 	generation uint64
 	chunks     []*captureChunk
@@ -66,6 +67,7 @@ func NewCapture() *Capture {
 		initialCaptureChunkPayloadCapacity,
 	)
 	return &Capture{
+		origin:     time.Now(),
 		generation: captureEpochs.Add(1),
 		chunks:     []*captureChunk{active},
 		active:     active,
@@ -448,6 +450,22 @@ func (capture *Capture) prepareNextLocked(recordCapacity, payloadCapacity int) {
 // carry UTC timestamps with no monotonic reading, so a round-tripped event
 // may not compare equal to the original even though the instants match.
 func (capture *Capture) Append(event FrameEvent) error {
+	return capture.appendFrame(event, false)
+}
+
+// RecordFrame records a live frame, replacing event.Timestamp with the capture
+// clock. RecordFrame and RecordEvent timestamps follow append order across all
+// buses sharing this capture, using monotonic elapsed time from NewCapture's
+// wall-clock reading. Later wall-clock adjustments do not affect this clock;
+// system sleep may pause it on some platforms. Clear does not reset it.
+// Mixing these methods with supplied timestamps in Append or AppendEvent does
+// not guarantee timestamp order.
+func (capture *Capture) RecordFrame(event FrameEvent) error {
+	event.Timestamp = capture.origin
+	return capture.appendFrame(event, true)
+}
+
+func (capture *Capture) appendFrame(event FrameEvent, live bool) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -458,6 +476,10 @@ func (capture *Capture) Append(event FrameEvent) error {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
+	timestamp := event.Timestamp.UnixNano()
+	if live {
+		timestamp = capture.origin.UnixNano() + time.Since(capture.origin).Nanoseconds()
+	}
 	capture.rotate(payloadLength)
 	chunk := capture.active
 
@@ -472,7 +494,7 @@ func (capture *Capture) Append(event FrameEvent) error {
 	payloadOffset := chunk.appendPayload(event.Frame.Data[:payloadLength])
 	recordIndex := uint32(len(chunk.records))
 	chunk.records = append(chunk.records, makeFrameRecord(
-		event.Timestamp.UnixNano(),
+		timestamp,
 		frameRecordData{
 			payloadOffset: payloadOffset,
 			keyIndex:      keyState.index,
@@ -504,6 +526,17 @@ func (capture *Capture) Append(event FrameEvent) error {
 // Only the wall-clock reading of event.Timestamp is stored. Retrieved events
 // carry UTC timestamps with no monotonic reading.
 func (capture *Capture) AppendEvent(event Event) error {
+	return capture.appendEvent(event, false)
+}
+
+// RecordEvent records a live non-frame event, replacing event.Timestamp with
+// the same capture clock as RecordFrame.
+func (capture *Capture) RecordEvent(event Event) error {
+	event.Timestamp = capture.origin
+	return capture.appendEvent(event, true)
+}
+
+func (capture *Capture) appendEvent(event Event, live bool) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -511,6 +544,10 @@ func (capture *Capture) AppendEvent(event Event) error {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
+	timestamp := event.Timestamp.UnixNano()
+	if live {
+		timestamp = capture.origin.UnixNano() + time.Since(capture.origin).Nanoseconds()
+	}
 	capture.rotate(0)
 	chunk := capture.active
 	eventState, ok := chunk.eventStates[event.Bus]
@@ -520,7 +557,7 @@ func (capture *Capture) AppendEvent(event Event) error {
 
 	recordIndex := uint32(len(chunk.records))
 	chunk.records = append(chunk.records, makeEventRecord(
-		event.Timestamp.UnixNano(),
+		timestamp,
 		eventRecordData{
 			bus:              event.Bus,
 			previous:         eventState.lastRecord,

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/tomrford/gocan"
 )
@@ -67,7 +66,7 @@ func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config
 		network:            network,
 		receiveOwnMessages: config.ReceiveOwnMessages,
 		sends:              make(chan sendRequest),
-		incoming:           make(chan receivedFrame, receiveQueueCapacity),
+		incoming:           make(chan gocan.Frame, receiveQueueCapacity),
 		failures:           make(chan error, 1),
 		stop:               make(chan struct{}),
 		done:               make(chan struct{}),
@@ -82,11 +81,6 @@ type sendRequest struct {
 	result chan error
 }
 
-type receivedFrame struct {
-	frame     gocan.Frame
-	timestamp time.Time
-}
-
 // Bus is one endpoint on a virtual Network.
 type Bus struct {
 	id                 gocan.BusID
@@ -96,7 +90,7 @@ type Bus struct {
 	receiveOwnMessages bool
 
 	sends    chan sendRequest
-	incoming chan receivedFrame
+	incoming chan gocan.Frame
 	failures chan error
 	stop     chan struct{}
 	done     chan struct{}
@@ -214,18 +208,13 @@ func (bus *Bus) run() {
 			}
 			bus.stateMu.Unlock()
 
-			timestamp := time.Now()
-			err := bus.capture.Append(gocan.FrameEvent{
+			err := bus.capture.RecordFrame(gocan.FrameEvent{
 				Bus:       bus.id,
-				Timestamp: timestamp,
 				Direction: gocan.DirectionTransmit,
 				Frame:     request.frame,
 			})
 			if err == nil {
-				bus.network.broadcast(bus, receivedFrame{
-					frame:     request.frame,
-					timestamp: timestamp,
-				})
+				bus.network.broadcast(bus, request.frame)
 			}
 			request.result <- err
 
@@ -235,11 +224,10 @@ func (bus *Bus) run() {
 				bus.stateMu.Unlock()
 				continue
 			}
-			if err := bus.capture.Append(gocan.FrameEvent{
+			if err := bus.capture.RecordFrame(gocan.FrameEvent{
 				Bus:       bus.id,
-				Timestamp: received.timestamp,
 				Direction: gocan.DirectionReceive,
-				Frame:     received.frame,
+				Frame:     received,
 			}); err != nil {
 				bus.stateMu.Unlock()
 				runErr = err
@@ -249,10 +237,7 @@ func (bus *Bus) run() {
 
 		case runErr = <-bus.failures:
 			if errors.Is(runErr, gocan.ErrReceiveOverrun) {
-				event, err := gocan.NewReceiveOverrunEvent(bus.id, time.Now())
-				if err == nil {
-					err = bus.capture.AppendEvent(event)
-				}
+				err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun})
 				if err != nil {
 					runErr = err
 				}
@@ -298,7 +283,7 @@ func (bus *Bus) operationErrorLocked() error {
 	return gocan.ErrBusClosed
 }
 
-func (network *Network) broadcast(source *Bus, received receivedFrame) {
+func (network *Network) broadcast(source *Bus, received gocan.Frame) {
 	network.mu.RLock()
 	defer network.mu.RUnlock()
 
