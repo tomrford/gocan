@@ -97,15 +97,14 @@ type channelGroup struct {
 
 var _ gocan.RecordWriter = (*Writer)(nil)
 
-// NewWriter creates a measurement whose first accepted frame or event supplies
-// the start time. Until then, the header uses file creation time, which is also
-// the fallback for an empty export. Record timestamps must be between the Unix
-// epoch and the end of Go's int64 nanosecond range. Frames and events before
-// the first record's timestamp are rejected. Encoded timestamps within one bus
-// and frame kind (data or remote) must not regress. Equal timestamps are retained,
-// with the conformance limitation described in the package documentation.
-// Accepted frames retain append order.
-// Times are stored as float64 seconds relative to the start, with its UTC epoch
+// NewWriter derives start from the first accepted frame or event, falling back
+// to file creation time for empty exports. Timestamps must be between the Unix
+// epoch and the end of Go's int64 nanosecond range. Frames and events
+// before start are rejected. Encoded timestamps within one bus and frame kind
+// (data or remote) must not regress. Equal timestamps are retained, with the
+// conformance limitation described in the package documentation. Accepted
+// frames retain append order.
+// Times are stored as float64 seconds relative to start, with its UTC epoch
 // nanoseconds in the header. Relative time precision decreases for long runs.
 // Each bus may have one DBC attachment, linked from both frame structures.
 // Event markers retain their own append order separately from frame records.
