@@ -24,7 +24,8 @@ func NewFunctional(link *isotp.Functional) (*Functional, error) {
 
 // Send transmits one raw request to every server on the functional address.
 // It is intended for a request whose service data already contains
-// suppressPositiveResponse.
+// suppressPositiveResponse. It does not receive positive or negative responses;
+// callers that need replies must arrange reception on the physical addresses.
 func (functional *Functional) Send(ctx context.Context, request Request) error {
 	payload, err := request.payload()
 	if err != nil {
@@ -39,16 +40,36 @@ func (functional *Functional) SendTesterPresent(ctx context.Context) error {
 	return functional.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
 }
 
+// SendECUReset broadcasts resetType with its positive response suppressed.
+// Like Send, it does not wait for responses or for the ECUs to finish resetting.
+func (functional *Functional) SendECUReset(ctx context.Context, resetType ResetType) error {
+	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
+		return err
+	}
+	return functional.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}})
+}
+
 // SendCommunicationControl broadcasts controlType for the messages selected by
 // communicationType with its positive response suppressed.
 func (functional *Functional) SendCommunicationControl(ctx context.Context, controlType CommunicationControlType, communicationType CommunicationType) error {
-	if err := validateCommunicationControl(controlType, communicationType); err != nil {
+	data, err := communicationControlRequest(controlType, communicationType, nil)
+	if err != nil {
 		return err
 	}
-	return functional.Send(ctx, Request{
-		Service: ServiceCommunicationControl,
-		Data:    []byte{byte(controlType) | suppressPositiveResponse, byte(communicationType)},
-	})
+	data[0] |= suppressPositiveResponse
+	return functional.Send(ctx, Request{Service: ServiceCommunicationControl, Data: data})
+}
+
+// SendCommunicationControlWithNode broadcasts control type 0x04 or 0x05 with
+// enhanced address information and its positive response suppressed. nodeID is
+// the UDS nodeIdentificationNumber, as in Client.CommunicationControlWithNode.
+func (functional *Functional) SendCommunicationControlWithNode(ctx context.Context, controlType CommunicationControlType, communicationType CommunicationType, nodeID uint16) error {
+	data, err := communicationControlRequest(controlType, communicationType, &nodeID)
+	if err != nil {
+		return err
+	}
+	data[0] |= suppressPositiveResponse
+	return functional.Send(ctx, Request{Service: ServiceCommunicationControl, Data: data})
 }
 
 // SendControlDTCSetting broadcasts settingType with an optional control option

@@ -89,6 +89,9 @@ const (
 	CommunicationEnableRxDisableTx CommunicationControlType = 0x01
 	CommunicationDisableRxEnableTx CommunicationControlType = 0x02
 	CommunicationDisableRxAndTx    CommunicationControlType = 0x03
+	// These subfunctions require a node identification number; use CommunicationControlWithNode.
+	CommunicationEnableRxDisableTxWithNode CommunicationControlType = 0x04
+	CommunicationEnableRxAndTxWithNode     CommunicationControlType = 0x05
 )
 
 // CommunicationType selects the messages that CommunicationControl affects.
@@ -181,6 +184,15 @@ func (client *Client) ECUReset(ctx context.Context, resetType ResetType) ([]byte
 	return client.doEchoed(ctx, ServiceECUReset, []byte{byte(resetType)}, []byte{byte(resetType)}, "reset type", false)
 }
 
+// SendECUReset sends resetType with its positive response suppressed. Like Send,
+// it does not wait for a response or for the ECU to finish resetting.
+func (client *Client) SendECUReset(ctx context.Context, resetType ResetType) error {
+	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
+		return err
+	}
+	return client.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}})
+}
+
 // ReadDataByIdentifier reads one data identifier and returns its data record.
 func (client *Client) ReadDataByIdentifier(ctx context.Context, identifier uint16) ([]byte, error) {
 	request := make([]byte, 2)
@@ -234,14 +246,26 @@ func (client *Client) SendKey(ctx context.Context, level SecurityLevel, key []by
 }
 
 // CommunicationControl requests controlType for the messages selected by
-// communicationType and validates the subfunction echo. Control types 0x04
-// and 0x05 carry enhanced address information and are not supported.
+// communicationType and validates the subfunction echo. For control types 0x04
+// and 0x05, use CommunicationControlWithNode.
 func (client *Client) CommunicationControl(ctx context.Context, controlType CommunicationControlType, communicationType CommunicationType) error {
-	if err := validateCommunicationControl(controlType, communicationType); err != nil {
+	request, err := communicationControlRequest(controlType, communicationType, nil)
+	if err != nil {
 		return err
 	}
-	request := []byte{byte(controlType), byte(communicationType)}
-	_, err := client.doEchoed(ctx, ServiceCommunicationControl, request, request[:1], "communication control type", true)
+	_, err = client.doEchoed(ctx, ServiceCommunicationControl, request, request[:1], "communication control type", true)
+	return err
+}
+
+// CommunicationControlWithNode requests control type 0x04 or 0x05 with enhanced
+// address information and validates the subfunction echo. nodeID is the UDS
+// nodeIdentificationNumber, not a CAN identifier or an ISO-TP address.
+func (client *Client) CommunicationControlWithNode(ctx context.Context, controlType CommunicationControlType, communicationType CommunicationType, nodeID uint16) error {
+	request, err := communicationControlRequest(controlType, communicationType, &nodeID)
+	if err != nil {
+		return err
+	}
+	_, err = client.doEchoed(ctx, ServiceCommunicationControl, request, request[:1], "communication control type", true)
 	return err
 }
 
@@ -384,26 +408,34 @@ func validateSecurityLevel(level SecurityLevel) error {
 	return nil
 }
 
-// validateCommunicationControl accepts control type zero, which is a valid
+// communicationControlRequest accepts control type zero, which is a valid
 // enableRxAndTx subfunction, unlike the services covered by
 // validateSubfunction.
-func validateCommunicationControl(controlType CommunicationControlType, communicationType CommunicationType) error {
+func communicationControlRequest(controlType CommunicationControlType, communicationType CommunicationType, nodeID *uint16) ([]byte, error) {
 	if byte(controlType)&suppressPositiveResponse != 0 {
-		return fmt.Errorf("UDS communication control type %#02x sets suppressPositiveResponse", controlType)
+		return nil, fmt.Errorf("UDS communication control type %#02x sets suppressPositiveResponse", controlType)
 	}
-	if controlType == 0x04 || controlType == 0x05 {
-		return fmt.Errorf("UDS communication control type %#02x requires enhanced address information", controlType)
+	withNode := controlType == CommunicationEnableRxDisableTxWithNode || controlType == CommunicationEnableRxAndTxWithNode
+	if withNode && nodeID == nil {
+		return nil, fmt.Errorf("UDS communication control type %#02x requires enhanced address information", controlType)
+	}
+	if !withNode && nodeID != nil {
+		return nil, fmt.Errorf("UDS communication control type %#02x does not accept enhanced address information", controlType)
 	}
 	if controlType == 0x7f {
-		return fmt.Errorf("UDS communication control type %#02x is reserved", controlType)
+		return nil, fmt.Errorf("UDS communication control type %#02x is reserved", controlType)
 	}
 	if communicationType&0x0c != 0 {
-		return fmt.Errorf("UDS communication type %#02x sets reserved bits", communicationType)
+		return nil, fmt.Errorf("UDS communication type %#02x sets reserved bits", communicationType)
 	}
 	if communicationType&0x03 == 0 {
-		return fmt.Errorf("UDS communication type %#02x selects neither normal nor network-management communication", communicationType)
+		return nil, fmt.Errorf("UDS communication type %#02x selects neither normal nor network-management communication", communicationType)
 	}
-	return nil
+	request := []byte{byte(controlType), byte(communicationType)}
+	if nodeID != nil {
+		request = binary.BigEndian.AppendUint16(request, *nodeID)
+	}
+	return request, nil
 }
 
 func validateMemoryLocation(location MemoryLocation) error {

@@ -144,6 +144,9 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 
 // Send transmits request without waiting for a response. It is intended for a
 // request whose service data already contains suppressPositiveResponse.
+// A nil error confirms transmission only; negative responses and any final
+// response following ResponsePending are not collected. Callers must allow the
+// server to finish before starting another exchange on the same receive address.
 func (client *Client) Send(ctx context.Context, request Request) error {
 	payload, err := request.payload()
 	if err != nil {
