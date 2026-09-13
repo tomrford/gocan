@@ -130,6 +130,25 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		t.Fatalf("ECU: %v", err)
 	}
 
+	for _, resetType := range []uds.ResetType{0, 0x7f, 0x81} {
+		if err := functional.SendECUReset(ctx, resetType); err == nil {
+			t.Fatalf("functional SendECUReset accepted %#x", resetType)
+		}
+	}
+	for _, control := range []struct {
+		typeID uds.CommunicationControlType
+		comm   uds.CommunicationType
+	}{{0x03, 1}, {0x84, 1}, {0x04, 0}, {0x05, 4}} {
+		if err := functional.SendCommunicationControlWithNode(ctx, control.typeID, control.comm, 0x1234); err == nil {
+			t.Fatalf("functional SendCommunicationControlWithNode accepted %#v", control)
+		}
+	}
+	for _, controlType := range []uds.CommunicationControlType{0x04, 0x05} {
+		if err := functional.SendCommunicationControl(ctx, controlType, uds.CommunicationTypeNormal); err == nil {
+			t.Fatalf("functional SendCommunicationControl accepted %#x without a node", controlType)
+		}
+	}
+	// The first broadcast also proves the rejected requests emitted no traffic.
 	broadcasts := []struct {
 		send func() error
 		want []byte
@@ -139,6 +158,22 @@ func TestClientExchangeLifecycle(t *testing.T) {
 				return functional.SendCommunicationControl(ctx, uds.CommunicationDisableRxAndTx, uds.CommunicationTypeNormalAndNetworkManagement)
 			},
 			want: []byte{0x28, 0x83, 0x03},
+		},
+		{
+			send: func() error { return functional.SendECUReset(ctx, uds.ResetHard) },
+			want: []byte{0x11, 0x81},
+		},
+		{
+			send: func() error {
+				return functional.SendCommunicationControlWithNode(ctx, uds.CommunicationEnableRxDisableTxWithNode, uds.CommunicationTypeNormal, 0x1234)
+			},
+			want: []byte{0x28, 0x84, 0x01, 0x12, 0x34},
+		},
+		{
+			send: func() error {
+				return functional.SendCommunicationControlWithNode(ctx, uds.CommunicationEnableRxAndTxWithNode, uds.CommunicationTypeNormal, 0x1234)
+			},
+			want: []byte{0x28, 0x85, 0x01, 0x12, 0x34},
 		},
 		{
 			send: func() error { return functional.SendControlDTCSetting(ctx, uds.DTCSettingOff, nil) },
