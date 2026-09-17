@@ -133,9 +133,6 @@ type Client struct {
 }
 
 func New(bus gocan.Bus, config Config) (*Client, error) {
-	if config.TransmitRetryTimeout < 0 {
-		return nil, errors.New("XCP transmit retry timeout must not be negative")
-	}
 	if bus == nil || bus.Capture() == nil {
 		return nil, errors.New("XCP requires a bus with a capture")
 	}

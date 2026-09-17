@@ -118,7 +118,6 @@ type Link struct {
 	flowControlTimeout      time.Duration
 	consecutiveFrameTimeout time.Duration
 	waitFrameLimit          uint8
-	transmitRetryTimeout    time.Duration
 
 	// sending and receiving are one-token channels. Holding sending grants
 	// exclusive transmission; holding receiving grants exclusive receive progress.
@@ -175,10 +174,7 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	transmitRetryTimeout, err := configuredTimeout(config.TransmitRetryTimeout, 0, "transmit retry")
-	if err != nil {
-		return nil, err
-	}
+	transmitter.transmitRetryTimeout = config.TransmitRetryTimeout
 	transmitter.maximumPayloadLength = config.MaximumPayloadLength
 	if transmitter.maximumPayloadLength == 0 {
 		transmitter.maximumPayloadLength = defaultMaximumPayloadLength
@@ -198,7 +194,6 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 		flowControlTimeout:      flowControlTimeout,
 		consecutiveFrameTimeout: consecutiveFrameTimeout,
 		waitFrameLimit:          waitFrameLimit,
-		transmitRetryTimeout:    transmitRetryTimeout,
 		sending:                 make(chan struct{}, 1),
 		receiving:               make(chan struct{}, 1),
 		cursor:                  capture.End(),

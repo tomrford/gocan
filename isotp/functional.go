@@ -33,8 +33,7 @@ type FunctionalConfig struct {
 // one CAN frame, and there is no receive path: servers that answer do so on
 // their own physical addresses.
 type Functional struct {
-	bus                  gocan.Bus
-	transmitRetryTimeout time.Duration
+	bus gocan.Bus
 	transmitter
 }
 
@@ -49,11 +48,8 @@ func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) 
 		return nil, err
 	}
 	transmitter.maximumPayloadLength = transmitter.singleFrameCapacity()
-	timeout, err := configuredTimeout(config.TransmitRetryTimeout, 0, "transmit retry")
-	if err != nil {
-		return nil, err
-	}
-	return &Functional{bus: bus, transmitter: transmitter, transmitRetryTimeout: timeout}, nil
+	transmitter.transmitRetryTimeout = config.TransmitRetryTimeout
+	return &Functional{bus: bus, transmitter: transmitter}, nil
 }
 
 // Send transmits one payload in one Single Frame. A payload that does not fit

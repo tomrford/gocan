@@ -82,9 +82,6 @@ func start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, generate func(
 	if config.Period <= 0 {
 		return nil, fmt.Errorf("cyclic task period must be positive: %s", config.Period)
 	}
-	if config.TransmitRetryTimeout < 0 {
-		return nil, errors.New("cyclic transmit retry timeout must not be negative")
-	}
 	if generate == nil {
 		if err := frame.Validate(); err != nil {
 			return nil, err
@@ -234,6 +231,8 @@ func (task *Task) send(anchor time.Time) error {
 		defer cancel()
 	}
 	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
+	// A driver interrupted by Stop may return a bare context.Canceled. Report
+	// the stop cause instead so Err stays nil after an explicit Stop.
 	if errors.Is(err, context.Canceled) && task.ctx.Err() != nil {
 		return context.Cause(task.ctx)
 	}

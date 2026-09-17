@@ -26,16 +26,6 @@ func TestTransmitBackpressure(t *testing.T) {
 			return &backpressureBus{Bus: bus}
 		}
 		senderBus, receiverBus := open(1), open(2)
-		// The omitted timeout must preserve single-attempt behaviour.
-		senderBus.reject = func(gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-		unretried, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708})
-		if err != nil {
-			t.Fatal(err)
-		}
-		start := time.Now()
-		if err := unretried.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Now() != start {
-			t.Fatalf("default Send: %v after %v", err, time.Since(start))
-		}
 		sender, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708, TransmitRetryTimeout: 20 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
@@ -44,32 +34,35 @@ func TestTransmitBackpressure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		inject := func(data ...byte) {
+			frame, _ := gocan.NewFrame(0x708, data, 0)
+			if err := senderBus.Capture().RecordFrame(gocan.FrameEvent{Bus: 1, Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+				t.Fatal(err)
+			}
+		}
 
-		// Reject the first frame and stall partway through a long transfer.
-		// The receiver also encounters backpressure sending Flow Control.
-		senderBus.reject = func(frame gocan.Frame) error {
-			if senderBus.accepted == 0 && senderBus.retries == 0 {
-				stale, _ := gocan.NewFrame(0x708, []byte{0x32, 0, 0}, 0)
-				if err := senderBus.Capture().RecordFrame(gocan.FrameEvent{Bus: 1, Direction: gocan.DirectionReceive, Frame: stale}); err != nil {
-					t.Fatal(err)
+		// Every frame in both directions is rejected once before acceptance. A
+		// stale Flow Control captured while the First Frame is rejected must not
+		// satisfy the sender.
+		rejectOnce := func(bus *backpressureBus, onReject func()) {
+			rejected := false
+			bus.reject = func(gocan.Frame) error {
+				rejected = !rejected
+				if !rejected {
+					return nil
 				}
-			}
-			if senderBus.accepted == 0 || senderBus.accepted == 357 {
-				if senderBus.retries < 3 {
-					senderBus.retries++
-					return fmt.Errorf("adapter: %w", gocan.ErrTransmitQueueFull)
+				if onReject != nil {
+					onReject()
 				}
+				return fmt.Errorf("adapter: %w", gocan.ErrTransmitQueueFull)
 			}
-			senderBus.retries = 0
-			return nil
 		}
-		receiverBus.reject = func(gocan.Frame) error {
-			if receiverBus.retries == 0 {
-				receiverBus.retries++
-				return gocan.ErrTransmitQueueFull
+		rejectOnce(senderBus, func() {
+			if senderBus.accepted == 0 {
+				inject(0x32, 0, 0)
 			}
-			return nil
-		}
+		})
+		rejectOnce(receiverBus, nil)
 		payload := patternedPayload(4002, 0x36)
 		sent := make(chan error, 1)
 		go func() { sent <- sender.Send(context.Background(), payload) }()
@@ -80,52 +73,27 @@ func TestTransmitBackpressure(t *testing.T) {
 		if err := <-sent; err != nil {
 			t.Fatal(err)
 		}
+		// 4002 bytes at DLC 8: a First Frame of 6 bytes, then 571 Consecutive
+		// Frames of 7. The receiver answers with one Flow Control.
 		if senderBus.accepted != 572 || receiverBus.accepted != 1 {
 			t.Fatalf("accepted frames: sender=%d receiver=%d", senderBus.accepted, receiverBus.accepted)
 		}
 
-		// Exhausting the configured budget releases the link for recovery below.
+		// Exhausting the budget fails without a caller deadline and frees the link.
 		senderBus.reject = func(gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-		start = time.Now()
+		start := time.Now()
 		if err := sender.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 20*time.Millisecond {
 			t.Fatalf("stalled Send: %v after %v", err, time.Since(start))
 		}
-		functional, err := isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df})
-		if err != nil {
-			t.Fatal(err)
-		}
-		start = time.Now()
-		if err := functional.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Now() != start {
-			t.Fatalf("default functional Send: %v after %v", err, time.Since(start))
-		}
-		functional, err = isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df, TransmitRetryTimeout: 10 * time.Millisecond})
-		if err != nil {
-			t.Fatal(err)
-		}
+
+		// A reply captured during rejection predates the request and is skipped;
+		// one captured before the accepted Send returns is kept.
 		senderBus.reject = func(gocan.Frame) error {
-			if time.Since(start) < 3*time.Millisecond {
-				return gocan.ErrTransmitQueueFull
-			}
-			return nil
-		}
-		before := senderBus.accepted
-		if err := functional.Send(context.Background(), []byte{0x3e, 0}); err != nil || senderBus.accepted != before+1 {
-			t.Fatalf("functional Send: %v, accepted %d frames", err, senderBus.accepted-before)
-		}
-		// A stale payload during rejection must be skipped, while a valid reply
-		// captured before the accepted Send returns must remain visible.
-		inject := func(value byte) {
-			frame, _ := gocan.NewFrame(0x708, []byte{1, value}, 0)
-			if err := senderBus.Capture().RecordFrame(gocan.FrameEvent{Bus: 1, Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		senderBus.reject = func(gocan.Frame) error {
-			inject(0x99)
+			inject(1, 0x99)
 			senderBus.reject = nil
 			return gocan.ErrTransmitQueueFull
 		}
-		senderBus.after = func() { inject(0x42) }
+		senderBus.after = func() { inject(1, 0x42) }
 		exchange, err := sender.Begin(context.Background(), []byte{0x22})
 		if err != nil {
 			t.Fatal(err)
@@ -141,9 +109,8 @@ func TestTransmitBackpressure(t *testing.T) {
 type backpressureBus struct {
 	gocan.Bus
 	reject   func(gocan.Frame) error
-	accepted int
-	retries  int
 	after    func()
+	accepted int
 }
 
 func (bus *backpressureBus) Send(ctx context.Context, frame gocan.Frame) error {

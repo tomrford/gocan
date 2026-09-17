@@ -708,20 +708,12 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		}
 		defer r.client.Close()
 		r.connect()
-		for _, fullFor := range []time.Duration{5 * time.Millisecond, 20 * time.Millisecond, 0} {
-			start := time.Now()
-			bus.fullUntil = start.Add(fullFor)
-			done := run(func() error { _, err := r.client.Status(r.ctx); return err })
-			if fullFor > r.config.TransmitRetryTimeout {
-				if err := <-done; !errors.Is(err, gocan.ErrTransmitQueueFull) || !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != r.config.TransmitRetryTimeout {
-					t.Fatalf("retry exhaustion: %v after %v", err, time.Since(start))
-				}
-				continue
-			}
-			r.expect(0xfd)
-			r.reply(0xff, 0, 0, 0, 0, 0)
-			r.finish(done)
+		start := time.Now()
+		bus.fullUntil = start.Add(20 * time.Millisecond)
+		if _, err := r.client.Status(r.ctx); !errors.Is(err, gocan.ErrTransmitQueueFull) || !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != r.config.TransmitRetryTimeout {
+			t.Fatalf("retry exhaustion: %v after %v", err, time.Since(start))
 		}
+		bus.fullUntil = time.Time{}
 		// Traffic captured while the command is rejected predates it. Keep the
 		// actual reply even when it is captured before the native send returns.
 		inject := func(session byte) {

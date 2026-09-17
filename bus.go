@@ -79,9 +79,6 @@ type Bus interface {
 // a native call in progress must finish with a definite result even if its
 // context expires. An accepted frame is never retried.
 func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration) error {
-	if bus == nil {
-		return errors.New("CAN send requires a bus")
-	}
 	if retryTimeout < 0 {
 		return errors.New("CAN transmit retry timeout must not be negative")
 	}
@@ -105,6 +102,8 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 			return errors.Join(err, cause)
 		case <-timer.C:
 		}
+		// The timer can win a race with expiry. Report the rejection joined with
+		// its cause rather than a bare context error from the driver.
 		if cause := context.Cause(ctx); cause != nil {
 			return errors.Join(err, cause)
 		}
