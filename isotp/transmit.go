@@ -80,7 +80,23 @@ func (link *Link) waitFlowControl(ctx context.Context) (pdu, error) {
 }
 
 func (link *Link) sendFrame(ctx context.Context, frame gocan.Frame) error {
-	return link.bus.Send(ctx, frame)
+	err := link.bus.Send(ctx, frame)
+	if !errors.Is(err, gocan.ErrTransmitQueueFull) {
+		return err
+	}
+	// Queue rejection means this frame was not accepted. Retry it without
+	// advancing the ISO-TP sequence, but bound a permanently stalled adapter.
+	retryContext, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	for {
+		if waitErr := waitContext(retryContext, time.Millisecond); waitErr != nil {
+			return fmt.Errorf("%w: %w", err, waitErr)
+		}
+		err = link.bus.Send(retryContext, frame)
+		if !errors.Is(err, gocan.ErrTransmitQueueFull) {
+			return err
+		}
+	}
 }
 
 func (link *Link) nextPDUWithTimeout(ctx context.Context, timeout time.Duration, timeoutError error) (pdu, error) {
