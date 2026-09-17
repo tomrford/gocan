@@ -697,6 +697,31 @@ func TestDefiniteSendOutcome(t *testing.T) {
 			t.Fatalf("accepted send not tracked: %v", err)
 		}
 		r.synchronize()
+		// Opt-in retries recover queue rejection before creating an outstanding
+		// command. Their budget is independent of the response timeout.
+		r.client.Close()
+		r.config.TransmitRetryTimeout = 10 * time.Millisecond
+		r.config.Timeout = 2 * time.Millisecond
+		r.client, err = xcp.New(bus, r.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.client.Close()
+		r.connect()
+		for _, fullFor := range []time.Duration{5 * time.Millisecond, 20 * time.Millisecond, 0} {
+			start := time.Now()
+			bus.fullUntil = start.Add(fullFor)
+			done := run(func() error { _, err := r.client.Status(r.ctx); return err })
+			if fullFor > r.config.TransmitRetryTimeout {
+				if err := <-done; !errors.Is(err, gocan.ErrTransmitQueueFull) || !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != r.config.TransmitRetryTimeout {
+					t.Fatalf("retry exhaustion: %v after %v", err, time.Since(start))
+				}
+				continue
+			}
+			r.expect(0xfd)
+			r.reply(0xff, 0, 0, 0, 0, 0)
+			r.finish(done)
+		}
 	})
 }
 
@@ -704,11 +729,15 @@ func TestDefiniteSendOutcome(t *testing.T) {
 // the native API is returning it. It delegates all accepted traffic to virtual.
 type outcomeBus struct {
 	gocan.Bus
-	reject error
-	after  func()
+	reject    error
+	after     func()
+	fullUntil time.Time
 }
 
 func (bus *outcomeBus) Send(ctx context.Context, frame gocan.Frame) error {
+	if time.Now().Before(bus.fullUntil) {
+		return gocan.ErrTransmitQueueFull
+	}
 	err, after := bus.reject, bus.after
 	bus.reject, bus.after = nil, nil
 	if err == nil {

@@ -50,7 +50,7 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		client.cursor = client.capture.End()
 		client.retaining = true
 		client.mu.Unlock()
-		if err := client.bus.Send(ctx, frame); err != nil {
+		if err := gocan.Send(ctx, client.bus, frame, client.config.TransmitRetryTimeout); err != nil {
 			// Bus.Send reports a definite native result. A rejected send has created
 			// no outstanding command, so it must not poison a synchronised session.
 			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {

@@ -26,7 +26,7 @@ func TestTransmitBackpressure(t *testing.T) {
 			return &backpressureBus{Bus: bus}
 		}
 		senderBus, receiverBus := open(1), open(2)
-		sender, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708})
+		sender, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708, TransmitRetryTimeout: 20 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -35,8 +35,8 @@ func TestTransmitBackpressure(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Reject the first frame, then stall after 356 accepted consecutive
-		// frames, matching the Vector flash failure. Also exercise FC retries.
+		// Reject the first frame and stall partway through a long transfer.
+		// The receiver also encounters backpressure sending Flow Control.
 		senderBus.reject = func(frame gocan.Frame) error {
 			if senderBus.accepted == 0 || senderBus.accepted == 357 {
 				if senderBus.retries < 3 {
@@ -76,14 +76,17 @@ func TestTransmitBackpressure(t *testing.T) {
 			if cancelEarly {
 				time.AfterFunc(5*time.Millisecond, cancel)
 			}
+			start := time.Now()
 			err := sender.Send(ctx, []byte{0x3e, 0})
 			cancel()
 			want := context.DeadlineExceeded
+			wantElapsed := 20 * time.Millisecond
 			if cancelEarly {
 				want = context.Canceled
+				wantElapsed = 5 * time.Millisecond
 			}
-			if !errors.Is(err, want) {
-				t.Fatalf("stalled Send: %v, want %v", err, want)
+			if !errors.Is(err, want) || time.Since(start) != wantElapsed {
+				t.Fatalf("stalled Send: %v after %v, want %v after %v", err, time.Since(start), want, wantElapsed)
 			}
 		}
 		senderBus.reject = func(gocan.Frame) error { return gocan.ErrBusOff }
@@ -94,6 +97,21 @@ func TestTransmitBackpressure(t *testing.T) {
 		senderBus.reject = nil
 		if err := sender.Send(context.Background(), []byte{0x3e, 0}); err != nil {
 			t.Fatalf("Send after recovery: %v", err)
+		}
+		functional, err := isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df, TransmitRetryTimeout: 10 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start = time.Now()
+		senderBus.reject = func(gocan.Frame) error {
+			if time.Since(start) < 3*time.Millisecond {
+				return gocan.ErrTransmitQueueFull
+			}
+			return nil
+		}
+		before := senderBus.accepted
+		if err := functional.Send(context.Background(), []byte{0x3e, 0}); err != nil || senderBus.accepted != before+1 {
+			t.Fatalf("functional Send: %v, accepted %d frames", err, senderBus.accepted-before)
 		}
 	})
 }

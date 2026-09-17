@@ -3,6 +3,7 @@ package isotp
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/tomrford/gocan"
 )
@@ -22,6 +23,9 @@ type FunctionalConfig struct {
 	// PaddingByte fills both requested padding and the padding required to reach
 	// a legal CAN FD data length.
 	PaddingByte byte
+	// TransmitRetryTimeout bounds queue-full retries. Zero selects one second;
+	// caller deadlines may shorten it. Acceptance does not confirm delivery.
+	TransmitRetryTimeout time.Duration
 }
 
 // Functional transmits functionally addressed ISO-TP payloads. ISO 15765-2
@@ -29,7 +33,8 @@ type FunctionalConfig struct {
 // one CAN frame, and there is no receive path: servers that answer do so on
 // their own physical addresses.
 type Functional struct {
-	bus gocan.Bus
+	bus                  gocan.Bus
+	transmitRetryTimeout time.Duration
 	transmitter
 }
 
@@ -44,7 +49,11 @@ func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) 
 		return nil, err
 	}
 	transmitter.maximumPayloadLength = transmitter.singleFrameCapacity()
-	return &Functional{bus: bus, transmitter: transmitter}, nil
+	timeout, err := configuredTimeout(config.TransmitRetryTimeout, defaultTransmitRetryTimeout, "transmit retry")
+	if err != nil {
+		return nil, err
+	}
+	return &Functional{bus: bus, transmitter: transmitter, transmitRetryTimeout: timeout}, nil
 }
 
 // Send transmits one payload in one Single Frame. A payload that does not fit
@@ -54,5 +63,5 @@ func (functional *Functional) Send(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	return functional.bus.Send(ctx, transmission.firstFrame)
+	return gocan.Send(ctx, functional.bus, transmission.firstFrame, functional.transmitRetryTimeout)
 }

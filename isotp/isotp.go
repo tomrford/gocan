@@ -24,6 +24,7 @@ const (
 	defaultMaximumPayloadLength    = 4095
 	defaultTransmitDataLength      = 8
 	defaultWaitFrameLimit          = 10
+	defaultTransmitRetryTimeout    = time.Second
 )
 
 var (
@@ -73,6 +74,10 @@ type Config struct {
 	AdvertisedSeparationTime time.Duration
 	FlowControlTimeout       time.Duration
 	ConsecutiveFrameTimeout  time.Duration
+	// TransmitRetryTimeout bounds queue-full retries for each transmitted frame,
+	// including Flow Control. Zero selects one second. This is a local queue
+	// budget, not a peer timing guarantee; caller deadlines may shorten it.
+	TransmitRetryTimeout time.Duration
 
 	// WaitFrameLimit is how many consecutive Flow Control Wait frames a peer may
 	// send before a transmission fails. Zero selects 10 to tolerate peers that
@@ -113,6 +118,7 @@ type Link struct {
 	flowControlTimeout      time.Duration
 	consecutiveFrameTimeout time.Duration
 	waitFrameLimit          uint8
+	transmitRetryTimeout    time.Duration
 
 	// sending and receiving are one-token channels. Holding sending grants
 	// exclusive transmission; holding receiving grants exclusive receive progress.
@@ -169,6 +175,10 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if err != nil {
 		return nil, err
 	}
+	transmitRetryTimeout, err := configuredTimeout(config.TransmitRetryTimeout, defaultTransmitRetryTimeout, "transmit retry")
+	if err != nil {
+		return nil, err
+	}
 	transmitter.maximumPayloadLength = config.MaximumPayloadLength
 	if transmitter.maximumPayloadLength == 0 {
 		transmitter.maximumPayloadLength = defaultMaximumPayloadLength
@@ -188,6 +198,7 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 		flowControlTimeout:      flowControlTimeout,
 		consecutiveFrameTimeout: consecutiveFrameTimeout,
 		waitFrameLimit:          waitFrameLimit,
+		transmitRetryTimeout:    transmitRetryTimeout,
 		sending:                 make(chan struct{}, 1),
 		receiving:               make(chan struct{}, 1),
 		cursor:                  capture.End(),
@@ -197,8 +208,9 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	return link, nil
 }
 
-// Send transmits one complete ISO-TP payload and returns when the peer has
-// accepted all of it. The Link is free again once Send returns.
+// Send transmits one complete ISO-TP payload and returns when the local bus has
+// accepted every frame. This does not confirm delivery to the peer. The Link is
+// free again once Send returns.
 //
 // A segmented payload additionally repositions the receive position so that
 // only Flow Control sent in reply to this payload can satisfy it.

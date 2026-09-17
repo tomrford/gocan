@@ -16,6 +16,17 @@ var ErrStopped = errors.New("cyclic task is stopped")
 
 var errStopRequested = errors.New("cyclic task stop requested")
 
+// Config controls a recurring transmission schedule.
+type Config struct {
+	// Period is the positive interval between scheduled occurrences.
+	Period time.Duration
+	// TransmitRetryTimeout bounds queue-full retries for each occurrence.
+	// Zero disables retries. Retries also end at the next scheduled occurrence
+	// after frame generation; exhaustion stops the task. Native sends already
+	// in progress finish with their definite result even if the deadline elapses.
+	TransmitRetryTimeout time.Duration
+}
+
 // Task repeatedly sends fixed or generated complete raw CAN frames.
 //
 // A Task sends immediately when started, then retains that schedule's original
@@ -27,10 +38,11 @@ var errStopRequested = errors.New("cyclic task stop requested")
 // and waits for any active callback or send to finish. Err reports the terminal
 // error, or nil after Stop.
 type Task struct {
-	bus      gocan.Bus
-	period   time.Duration
-	frame    gocan.Frame
-	generate func() (gocan.Frame, error)
+	bus          gocan.Bus
+	period       time.Duration
+	retryTimeout time.Duration
+	frame        gocan.Frame
+	generate     func() (gocan.Frame, error)
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -43,8 +55,8 @@ type Task struct {
 
 // Start sends frame once, then starts recurring transmission every period.
 // It returns only after the first send has been accepted by bus.
-func Start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, period time.Duration) (*Task, error) {
-	return start(ctx, bus, frame, nil, period)
+func Start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, config Config) (*Task, error) {
+	return start(ctx, bus, frame, nil, config)
 }
 
 // StartFunc calls generate before each send, validates the returned frame, and
@@ -56,32 +68,41 @@ func Start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, period time.Du
 // promptly, since cancellation and Stop cannot interrupt them. Callers must
 // synchronise any state shared with the callback. A callback must not call Stop
 // on its own Task, since Stop waits for the callback to return.
-func StartFunc(ctx context.Context, bus gocan.Bus, generate func() (gocan.Frame, error), period time.Duration) (*Task, error) {
+func StartFunc(ctx context.Context, bus gocan.Bus, generate func() (gocan.Frame, error), config Config) (*Task, error) {
 	if generate == nil {
 		return nil, errors.New("cyclic task requires a frame callback")
 	}
-	return start(ctx, bus, gocan.Frame{}, generate, period)
+	return start(ctx, bus, gocan.Frame{}, generate, config)
 }
 
-func start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, generate func() (gocan.Frame, error), period time.Duration) (*Task, error) {
+func start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, generate func() (gocan.Frame, error), config Config) (*Task, error) {
 	if bus == nil {
 		return nil, errors.New("cyclic task requires a bus")
 	}
-	if period <= 0 {
-		return nil, fmt.Errorf("cyclic task period must be positive: %s", period)
+	if config.Period <= 0 {
+		return nil, fmt.Errorf("cyclic task period must be positive: %s", config.Period)
+	}
+	if config.TransmitRetryTimeout < 0 {
+		return nil, errors.New("cyclic transmit retry timeout must not be negative")
+	}
+	if generate == nil {
+		if err := frame.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	taskContext, cancel := context.WithCancelCause(ctx)
 	task := &Task{
-		bus:      bus,
-		period:   period,
-		frame:    frame,
-		generate: generate,
-		ctx:      taskContext,
-		cancel:   cancel,
-		done:     make(chan struct{}),
+		bus:          bus,
+		period:       config.Period,
+		retryTimeout: config.TransmitRetryTimeout,
+		frame:        frame,
+		generate:     generate,
+		ctx:          taskContext,
+		cancel:       cancel,
+		done:         make(chan struct{}),
 	}
 	anchor := time.Now()
-	if err := task.send(); err != nil {
+	if err := task.send(anchor); err != nil {
 		cancel(err)
 		return nil, err
 	}
@@ -167,7 +188,7 @@ func (task *Task) run(anchor time.Time) {
 			return
 
 		case <-timer.C:
-			if err := task.send(); err != nil {
+			if err := task.send(anchor); err != nil {
 				runErr = err
 				return
 			}
@@ -178,7 +199,7 @@ func (task *Task) run(anchor time.Time) {
 	}
 }
 
-func (task *Task) send() error {
+func (task *Task) send(anchor time.Time) error {
 	if err := context.Cause(task.ctx); err != nil {
 		return err
 	}
@@ -198,16 +219,25 @@ func (task *Task) send() error {
 	}
 
 	task.mu.Lock()
-	defer task.mu.Unlock()
 	if task.generate != nil {
 		task.frame = generated
-	} else if err := task.frame.Validate(); err != nil {
-		return err
 	}
+	frame := task.frame
+	task.mu.Unlock()
 	if err := context.Cause(task.ctx); err != nil {
 		return err
 	}
-	return task.bus.Send(task.ctx, task.frame)
+	ctx := task.ctx
+	if task.retryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, nextDeadline(anchor, task.period, time.Now()))
+		defer cancel()
+	}
+	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
+	if errors.Is(err, context.Canceled) && task.ctx.Err() != nil {
+		return context.Cause(task.ctx)
+	}
+	return err
 }
 
 func (task *Task) finish(err error) {
