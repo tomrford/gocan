@@ -3,6 +3,7 @@ package isotp
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/tomrford/gocan"
 )
@@ -22,6 +23,9 @@ type FunctionalConfig struct {
 	// PaddingByte fills both requested padding and the padding required to reach
 	// a legal CAN FD data length.
 	PaddingByte byte
+	// TransmitRetryTimeout bounds queue-full retries. Zero disables retries;
+	// caller deadlines may shorten it. Acceptance does not confirm delivery.
+	TransmitRetryTimeout time.Duration
 }
 
 // Functional transmits functionally addressed ISO-TP payloads. ISO 15765-2
@@ -44,6 +48,7 @@ func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) 
 		return nil, err
 	}
 	transmitter.maximumPayloadLength = transmitter.singleFrameCapacity()
+	transmitter.transmitRetryTimeout = config.TransmitRetryTimeout
 	return &Functional{bus: bus, transmitter: transmitter}, nil
 }
 
@@ -54,5 +59,5 @@ func (functional *Functional) Send(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	return functional.bus.Send(ctx, transmission.firstFrame)
+	return gocan.Send(ctx, functional.bus, transmission.firstFrame, functional.transmitRetryTimeout)
 }

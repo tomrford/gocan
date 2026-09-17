@@ -3,6 +3,7 @@ package gocan
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
@@ -57,6 +58,7 @@ var (
 // A full native transmit queue is reported as ErrTransmitQueueFull. Send does
 // not wait for queue space or append a rejected transmission; callers decide
 // whether and how to retry under their context.
+// The package-level Send function provides bounded queue-full retries.
 type Bus interface {
 	ID() BusID
 	Name() string
@@ -65,4 +67,50 @@ type Bus interface {
 	Done() <-chan struct{}
 	Err() error
 	Close() error
+}
+
+// Send hands frame to bus, retrying only ErrTransmitQueueFull. A zero
+// retryTimeout makes one attempt; a positive value bounds waiting from the
+// first rejection. A negative value is invalid. The caller's earlier deadline,
+// cancellation, or bus closure ends retries. Rejected frames are never recorded
+// as accepted transmissions, and other errors return immediately.
+//
+// This waits for queue acceptance, not delivery on the wire. As with Bus.Send,
+// a native call in progress must finish with a definite result even if its
+// context expires. An accepted frame is never retried.
+func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration) error {
+	if retryTimeout < 0 {
+		return errors.New("CAN transmit retry timeout must not be negative")
+	}
+	err := bus.Send(ctx, frame)
+	if retryTimeout == 0 || !errors.Is(err, ErrTransmitQueueFull) {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, retryTimeout)
+	defer cancel()
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, context.Cause(ctx))
+		case <-bus.Done():
+			cause := bus.Err()
+			if cause == nil {
+				cause = ErrBusClosed
+			}
+			return errors.Join(err, cause)
+		case <-timer.C:
+		}
+		// The timer can win a race with expiry. Report the rejection joined with
+		// its cause rather than a bare context error from the driver.
+		if cause := context.Cause(ctx); cause != nil {
+			return errors.Join(err, cause)
+		}
+		err = bus.Send(ctx, frame)
+		if !errors.Is(err, ErrTransmitQueueFull) {
+			return err
+		}
+		timer.Reset(time.Millisecond)
+	}
 }

@@ -54,6 +54,7 @@ type transmitter struct {
 	padFrames            bool
 	paddingByte          byte
 	maximumPayloadLength uint32
+	transmitRetryTimeout time.Duration
 }
 
 // newTransmitter validates the transmit-side configuration common to New and

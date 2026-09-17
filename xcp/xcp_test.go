@@ -697,6 +697,49 @@ func TestDefiniteSendOutcome(t *testing.T) {
 			t.Fatalf("accepted send not tracked: %v", err)
 		}
 		r.synchronize()
+		// Opt-in retries recover queue rejection before creating an outstanding
+		// command.
+		r.client.Close()
+		r.config.TransmitRetryTimeout = 10 * time.Millisecond
+		r.client, err = xcp.New(bus, r.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.client.Close()
+		r.connect()
+		// Traffic captured while the command is rejected predates it. Keep the
+		// actual reply even when it is captured before the native send returns.
+		inject := func(session byte) {
+			frame, _ := gocan.NewFrame(r.config.ReceiveID, []byte{0xff, session, 0, 0, 0, 0}, 0)
+			if err := r.capture.RecordFrame(gocan.FrameEvent{Bus: r.tester.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bus.reject = gocan.ErrTransmitQueueFull
+		bus.after = func() {
+			inject(7)
+			bus.after = func() { inject(1) }
+		}
+		if status, err := r.client.Status(r.ctx); err != nil || status.Session != 1 {
+			t.Fatalf("reply after retry: %+v, %v", status, err)
+		}
+		// Losing the accepted TX record must fail promptly, including when the
+		// pre-send capture was empty, and must retain command uncertainty.
+		r.client.Close()
+		synctest.Wait()
+		r.capture.Clear()
+		r.client, err = xcp.New(bus, r.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.client.Close()
+		bus.after = r.capture.Clear
+		if _, err := r.client.Connect(r.ctx); !errors.Is(err, gocan.ErrCursorOutOfRange) {
+			t.Fatalf("lost accepted transmission: %v", err)
+		}
+		if _, err := r.client.Status(r.ctx); !errors.Is(err, xcp.ErrSynchronizationRequired) {
+			t.Fatalf("lost transmission discarded outstanding command: %v", err)
+		}
 	})
 }
 

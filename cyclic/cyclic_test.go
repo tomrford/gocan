@@ -30,7 +30,7 @@ func TestTaskLifecycle(t *testing.T) {
 	}
 
 	cursor := capture.End()
-	task, err := cyclic.Start(context.Background(), bus, initial, 10*time.Millisecond)
+	task, err := cyclic.Start(context.Background(), bus, initial, cyclic.Config{Period: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestStopWaitsForSendInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	task, err := cyclic.Start(context.Background(), bus, frame, time.Millisecond)
+	task, err := cyclic.Start(context.Background(), bus, frame, cyclic.Config{Period: time.Millisecond})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
