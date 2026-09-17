@@ -130,7 +130,7 @@ func testLifecycle(t *testing.T, open Pair) {
 		if err != nil {
 			t.Fatalf("NewFrame: %v", err)
 		}
-		if err := a.Send(context.Background(), frame, 0); err != nil {
+		if err := a.Send(context.Background(), frame); err != nil {
 			t.Fatalf("cycle %d: Send: %v", cycle, err)
 		}
 		event, _ := nextEvent(t, capture, frameKey(a, frame, gocan.DirectionTransmit), gocan.Cursor{})
@@ -151,13 +151,13 @@ func testLifecycle(t *testing.T, open Pair) {
 		if err := a.Close(); err != nil {
 			t.Fatalf("cycle %d: repeated Close: %v", cycle, err)
 		}
-		if err := a.Send(context.Background(), frame, 0); !errors.Is(err, gocan.ErrBusClosed) {
+		if err := a.Send(context.Background(), frame); !errors.Is(err, gocan.ErrBusClosed) {
 			t.Fatalf("cycle %d: Send after close = %v, want ErrBusClosed", cycle, err)
 		}
 
 		if b != nil {
 			// Closing one bus must not affect its peers or the capture.
-			if err := b.Send(context.Background(), frame, 0); err != nil {
+			if err := b.Send(context.Background(), frame); err != nil {
 				t.Fatalf("cycle %d: peer Send after close: %v", cycle, err)
 			}
 			nextEvent(t, capture, frameKey(b, frame, gocan.DirectionTransmit), gocan.Cursor{})
@@ -192,7 +192,7 @@ func testFirstFrameAfterOpen(t *testing.T, open Pair) {
 		if err != nil {
 			t.Fatalf("NewFrame: %v", err)
 		}
-		if err := a.Send(context.Background(), frame, 0); err != nil {
+		if err := a.Send(context.Background(), frame); err != nil {
 			t.Fatalf("sample %d: Send immediately after Open: %v", sample, err)
 		}
 
@@ -222,7 +222,7 @@ func testRejectsInvalid(t *testing.T, open Pair) {
 		{ID: 0x100, Flags: gocan.FrameBitRateSwitch},
 	}
 	for _, frame := range invalid {
-		if err := a.Send(context.Background(), frame, 0); err == nil {
+		if err := a.Send(context.Background(), frame); err == nil {
 			t.Fatalf("Send accepted invalid frame %+v", frame)
 		}
 	}
@@ -234,13 +234,7 @@ func testRejectsInvalid(t *testing.T, open Pair) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := a.Send(context.Background(), frame, -time.Millisecond); err == nil {
-		t.Fatal("Send accepted a negative retry timeout")
-	}
-	if got := len(capture.Frames()); got != 0 {
-		t.Fatalf("capture holds %d frames after invalid retry timeout", got)
-	}
-	if err := a.Send(context.Background(), frame, time.Second); err != nil {
+	if err := a.Send(context.Background(), frame); err != nil {
 		t.Fatalf("Send after rejections: %v", err)
 	}
 	nextEvent(t, capture, frameKey(a, frame, gocan.DirectionTransmit), gocan.Cursor{})
@@ -260,7 +254,7 @@ func testCancellation(t *testing.T, open Pair) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	switch err := a.Send(ctx, frame, 0); {
+	switch err := a.Send(ctx, frame); {
 	case err == nil:
 		event, _ := nextEvent(t, capture, frameKey(a, frame, gocan.DirectionTransmit), gocan.Cursor{})
 		if event.Direction != gocan.DirectionTransmit {
@@ -313,7 +307,7 @@ func testFrameShapes(t *testing.T, open Pair, caps Capabilities) {
 			// Both directions: each endpoint transmits, the other receives.
 			for _, side := range []struct{ from, to gocan.Bus }{{a, b}, {b, a}} {
 				cursor := capture.End()
-				if err := side.from.Send(context.Background(), shape.frame, 0); err != nil {
+				if err := side.from.Send(context.Background(), shape.frame); err != nil {
 					t.Fatalf("Send on %s: %v", side.from.Name(), err)
 				}
 
@@ -368,7 +362,7 @@ func testConcurrentTraffic(t *testing.T, open Pair) {
 					t.Errorf("NewFrame: %v", err)
 					return
 				}
-				if err := a.Send(context.Background(), frame, 0); err != nil {
+				if err := a.Send(context.Background(), frame); err != nil {
 					t.Errorf("Send %d/%d: %v", g, seq, err)
 					return
 				}
@@ -421,12 +415,12 @@ func testOverrun(t *testing.T, open Pair, caps Capabilities) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := b.Send(context.Background(), frame, 0); !errors.Is(err, gocan.ErrReceiveOverrun) && !errors.Is(err, gocan.ErrBusClosed) {
+	if err := b.Send(context.Background(), frame); !errors.Is(err, gocan.ErrReceiveOverrun) && !errors.Is(err, gocan.ErrBusClosed) {
 		t.Fatalf("Send on overrun bus = %v, want the stop reason", err)
 	}
 
 	// The failure is contained: the peer and the capture keep working.
-	if err := a.Send(context.Background(), frame, 0); err != nil {
+	if err := a.Send(context.Background(), frame); err != nil {
 		t.Fatalf("peer Send after overrun: %v", err)
 	}
 	nextEvent(t, capture, frameKey(a, frame, gocan.DirectionTransmit), gocan.Cursor{})

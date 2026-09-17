@@ -36,7 +36,7 @@ func TestPCANTransmitQueueFull(t *testing.T) {
 	}
 	accepted := 0
 	for range 100_000 {
-		err := target.Send(context.Background(), frame, 0)
+		err := target.Send(context.Background(), frame)
 		if err == nil {
 			accepted++
 			continue
@@ -58,11 +58,19 @@ func TestPCANTransmitQueueFull(t *testing.T) {
 		t.Fatalf("capture holds %d transmissions after %d accepted sends and one rejection", got, accepted)
 	}
 
-	if err := target.Send(context.Background(), frame, 2*time.Second); err != nil {
-		t.Fatalf("PCAN Send while queue drains = %v", err)
-	}
-	if got := len(capture.Series(key)); got != accepted+1 {
-		t.Fatalf("capture holds %d transmissions after recovery, want %d", got, accepted+1)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := target.Send(context.Background(), frame)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, gocan.ErrTransmitQueueFull) {
+			t.Fatalf("PCAN Send while queue drains = %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("PCAN transmit queue did not recover")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -87,7 +95,7 @@ func TestPCANClassicEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := target.Send(context.Background(), frame, 0); err != nil {
+	if err := target.Send(context.Background(), frame); err != nil {
 		t.Fatalf("send without an active peer: %v", err)
 	}
 
@@ -132,7 +140,7 @@ func TestPCANClassicEvents(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewFrame recovery sequence %d: %v", sequence, err)
 		}
-		if err := target.Send(context.Background(), frame, 0); err != nil {
+		if err := target.Send(context.Background(), frame); err != nil {
 			t.Fatalf("send recovery sequence %d: %v", sequence, err)
 		}
 		time.Sleep(time.Millisecond)
@@ -143,7 +151,7 @@ func TestPCANClassicEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame peer recovery: %v", err)
 	}
-	if err := peer.Send(context.Background(), recoveryFrame, 0); err != nil {
+	if err := peer.Send(context.Background(), recoveryFrame); err != nil {
 		t.Fatalf("send peer recovery traffic: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

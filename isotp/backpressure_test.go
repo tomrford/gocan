@@ -11,7 +11,6 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/virtual"
-	"github.com/tomrford/gocan/internal/driverstate"
 	"github.com/tomrford/gocan/isotp"
 )
 
@@ -27,11 +26,21 @@ func TestTransmitBackpressure(t *testing.T) {
 			return &backpressureBus{Bus: bus}
 		}
 		senderBus, receiverBus := open(1), open(2)
+		// The omitted timeout must preserve single-attempt behaviour.
+		senderBus.reject = func(gocan.Frame) error { return gocan.ErrTransmitQueueFull }
+		unretried, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if err := unretried.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Now() != start {
+			t.Fatalf("default Send: %v after %v", err, time.Since(start))
+		}
 		sender, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708, TransmitRetryTimeout: 20 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
-		receiver, err := isotp.New(receiverBus, isotp.Config{TransmitID: 0x708, ReceiveID: 0x700})
+		receiver, err := isotp.New(receiverBus, isotp.Config{TransmitID: 0x708, ReceiveID: 0x700, TransmitRetryTimeout: 20 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,41 +84,24 @@ func TestTransmitBackpressure(t *testing.T) {
 			t.Fatalf("accepted frames: sender=%d receiver=%d", senderBus.accepted, receiverBus.accepted)
 		}
 
-		// A stalled adapter is bounded even without a caller deadline; an
-		// earlier cancellation must release the link for the next operation.
-		for _, cancelEarly := range []bool{false, true} {
-			senderBus.reject = func(gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-			ctx, cancel := context.WithCancel(context.Background())
-			if cancelEarly {
-				time.AfterFunc(5*time.Millisecond, cancel)
-			}
-			start := time.Now()
-			err := sender.Send(ctx, []byte{0x3e, 0})
-			cancel()
-			want := context.DeadlineExceeded
-			wantElapsed := 20 * time.Millisecond
-			if cancelEarly {
-				want = context.Canceled
-				wantElapsed = 5 * time.Millisecond
-			}
-			if !errors.Is(err, want) || time.Since(start) != wantElapsed {
-				t.Fatalf("stalled Send: %v after %v, want %v after %v", err, time.Since(start), want, wantElapsed)
-			}
+		// Exhausting the configured budget releases the link for recovery below.
+		senderBus.reject = func(gocan.Frame) error { return gocan.ErrTransmitQueueFull }
+		start = time.Now()
+		if err := sender.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 20*time.Millisecond {
+			t.Fatalf("stalled Send: %v after %v", err, time.Since(start))
 		}
-		senderBus.reject = func(gocan.Frame) error { return gocan.ErrBusOff }
-		start := time.Now()
-		if err := sender.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, gocan.ErrBusOff) || time.Now() != start {
-			t.Fatalf("fatal Send: %v", err)
-		}
-		senderBus.reject = nil
-		if err := sender.Send(context.Background(), []byte{0x3e, 0}); err != nil {
-			t.Fatalf("Send after recovery: %v", err)
-		}
-		functional, err := isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df, TransmitRetryTimeout: 10 * time.Millisecond})
+		functional, err := isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df})
 		if err != nil {
 			t.Fatal(err)
 		}
 		start = time.Now()
+		if err := functional.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Now() != start {
+			t.Fatalf("default functional Send: %v after %v", err, time.Since(start))
+		}
+		functional, err = isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df, TransmitRetryTimeout: 10 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
 		senderBus.reject = func(gocan.Frame) error {
 			if time.Since(start) < 3*time.Millisecond {
 				return gocan.ErrTransmitQueueFull
@@ -154,11 +146,7 @@ type backpressureBus struct {
 	after    func()
 }
 
-func (bus *backpressureBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
-	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
-}
-
-func (bus *backpressureBus) send(ctx context.Context, frame gocan.Frame) error {
+func (bus *backpressureBus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -167,7 +155,7 @@ func (bus *backpressureBus) send(ctx context.Context, frame gocan.Frame) error {
 			return err
 		}
 	}
-	if err := bus.Bus.Send(ctx, frame, 0); err != nil {
+	if err := bus.Bus.Send(ctx, frame); err != nil {
 		return err
 	}
 	bus.accepted++

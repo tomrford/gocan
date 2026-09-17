@@ -122,7 +122,7 @@ func TestVectorFDMismatchedDataBitrateEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := sender.Send(context.Background(), frame, 0); err != nil {
+	if err := sender.Send(context.Background(), frame); err != nil {
 		t.Fatalf("send with mismatched data-phase timing: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func runVectorEventRecovery(t *testing.T, setup vectorEventSetup) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := vectorBus.Send(context.Background(), frame, 0); err != nil {
+	if err := vectorBus.Send(context.Background(), frame); err != nil {
 		t.Fatalf("send without an active peer: %v", err)
 	}
 
@@ -239,7 +239,7 @@ func runVectorEventRecovery(t *testing.T, setup vectorEventSetup) {
 	if err != nil {
 		t.Fatalf("NewFrame recovery: %v", err)
 	}
-	if err := peer.Send(context.Background(), recoveryFrame, 0); err != nil {
+	if err := peer.Send(context.Background(), recoveryFrame); err != nil {
 		t.Fatalf("send recovery traffic: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -256,7 +256,7 @@ func runVectorEventRecovery(t *testing.T, setup vectorEventSetup) {
 		if err != nil {
 			t.Fatalf("NewFrame recovery sequence %d: %v", sequence, err)
 		}
-		if err := vectorBus.Send(context.Background(), frame, 0); err != nil {
+		if err := vectorBus.Send(context.Background(), frame); err != nil {
 			t.Fatalf("send Vector recovery sequence %d: %v", sequence, err)
 		}
 		time.Sleep(time.Millisecond)

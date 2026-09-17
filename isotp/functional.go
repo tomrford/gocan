@@ -23,7 +23,7 @@ type FunctionalConfig struct {
 	// PaddingByte fills both requested padding and the padding required to reach
 	// a legal CAN FD data length.
 	PaddingByte byte
-	// TransmitRetryTimeout bounds queue-full retries. Zero selects one second;
+	// TransmitRetryTimeout bounds queue-full retries. Zero disables retries;
 	// caller deadlines may shorten it. Acceptance does not confirm delivery.
 	TransmitRetryTimeout time.Duration
 }
@@ -49,7 +49,7 @@ func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) 
 		return nil, err
 	}
 	transmitter.maximumPayloadLength = transmitter.singleFrameCapacity()
-	timeout, err := configuredTimeout(config.TransmitRetryTimeout, defaultTransmitRetryTimeout, "transmit retry")
+	timeout, err := configuredTimeout(config.TransmitRetryTimeout, 0, "transmit retry")
 	if err != nil {
 		return nil, err
 	}
@@ -63,5 +63,5 @@ func (functional *Functional) Send(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	return functional.bus.Send(ctx, transmission.firstFrame, functional.transmitRetryTimeout)
+	return gocan.Send(ctx, functional.bus, transmission.firstFrame, functional.transmitRetryTimeout)
 }

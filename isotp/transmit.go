@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/internal/driverstate"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 // transmit sends one complete payload. Callers must hold the sending token, and
@@ -18,7 +18,7 @@ func (link *Link) transmit(ctx context.Context, transmission transmission, recei
 		return err
 	}
 	if receiving {
-		cursor, err := driverstate.SentCursor(link.bus, transmission.firstFrame, link.Cursor())
+		cursor, err := transport.SentCursor(link.bus, transmission.firstFrame, link.Cursor())
 		if err != nil {
 			if errors.Is(err, gocan.ErrCursorOutOfRange) {
 				link.setCursor(gocan.Cursor{})
@@ -91,7 +91,7 @@ func (link *Link) waitFlowControl(ctx context.Context) (pdu, error) {
 }
 
 func (link *Link) sendFrame(ctx context.Context, frame gocan.Frame) error {
-	return link.bus.Send(ctx, frame, link.transmitRetryTimeout)
+	return gocan.Send(ctx, link.bus, frame, link.transmitRetryTimeout)
 }
 
 func (link *Link) nextPDUWithTimeout(ctx context.Context, timeout time.Duration, timeoutError error) (pdu, error) {

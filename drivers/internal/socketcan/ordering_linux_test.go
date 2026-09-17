@@ -53,7 +53,7 @@ func TestVCanReplyDuringSend(t *testing.T) {
 			Bus: peer.ID(), ID: request.ID, Direction: gocan.DirectionReceive,
 		}, gocan.Cursor{})
 		if err == nil {
-			err = peer.Send(ctx, reply, 0)
+			err = peer.Send(ctx, reply)
 		}
 		replied <- err
 	}()
@@ -68,7 +68,7 @@ func TestVCanReplyDuringSend(t *testing.T) {
 		defer cancel()
 		_, _, _ = capture.Next(wait, replyKey, gocan.Cursor{})
 	}
-	if err := target.Send(ctx, request, 0); err != nil {
+	if err := target.Send(ctx, request); err != nil {
 		t.Fatal(err)
 	}
 	if peerErr != nil {
@@ -91,7 +91,7 @@ func TestVCanReplyDuringSend(t *testing.T) {
 	}
 	// Close after the reply leaves acquisition waiting on an idle socket.
 	closeBus(target)
-	if err := target.Send(ctx, request, 0); !errors.Is(err, gocan.ErrBusClosed) {
+	if err := target.Send(ctx, request); !errors.Is(err, gocan.ErrBusClosed) {
 		t.Fatalf("Send after Close = %v", err)
 	}
 }

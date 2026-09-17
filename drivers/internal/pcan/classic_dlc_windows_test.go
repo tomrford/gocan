@@ -35,7 +35,7 @@ func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
 
 	rejected := gocan.Frame{ID: 0x6e0, DLC: 9}
 	copy(rejected.Data[:8], []byte{9, 1, 2, 3, 4, 5, 6, 7})
-	if err := a.Send(context.Background(), rejected, 0); err == nil {
+	if err := a.Send(context.Background(), rejected); err == nil {
 		t.Fatal("classical API accepted DLC 9")
 	}
 
@@ -44,7 +44,7 @@ func TestPCANClassicAPIRejectsDLCAboveEightHardware(t *testing.T) {
 		t.Fatalf("build DLC 8 recovery frame: %v", err)
 	}
 	cursor := capture.End()
-	if err := a.Send(context.Background(), accepted, 0); err != nil {
+	if err := a.Send(context.Background(), accepted); err != nil {
 		t.Fatalf("send DLC 8 after rejection: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

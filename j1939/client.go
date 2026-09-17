@@ -389,7 +389,7 @@ func (c *Client) frame(ctx context.Context, priority uint8, pgn PGN, source, des
 	}
 	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	err = c.bus.Send(ctx, frame, 0)
+	err = c.bus.Send(ctx, frame)
 	if err == nil {
 		c.sent++
 	}

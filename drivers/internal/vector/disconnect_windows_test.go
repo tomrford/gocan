@@ -57,7 +57,7 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := first.Send(context.Background(), frame, 0); err != nil {
+	if err := first.Send(context.Background(), frame); err != nil {
 		t.Fatalf("send before disconnect: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -84,7 +84,7 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 		case <-second.Done():
 			sendErr = second.Err()
 		case <-ticker.C:
-			sendErr = first.Send(context.Background(), frame, 0)
+			sendErr = first.Send(context.Background(), frame)
 		case <-deadline.C:
 			t.Fatal("timed out waiting for the selected Vector USB adapter to disconnect")
 		}

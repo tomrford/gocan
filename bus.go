@@ -55,19 +55,63 @@ var (
 // normal Close. ID is the one-based channel stored in captures and trace files;
 // Name is its human-readable label. Close is idempotent.
 //
-// Send's retryTimeout controls queue-full retries. Zero makes one attempt;
-// a positive value bounds waiting from the first ErrTransmitQueueFull rejection.
-// Negative values are invalid. Earlier caller deadlines, cancellation and bus
-// closure end retries. Other errors return immediately. Rejected frames are
-// never appended to Capture; an accepted frame is never retried. Queue-space
-// waits release driver I/O locks so receive progress and other sends can proceed.
-// Acceptance does not confirm delivery on the wire.
+// A full native transmit queue is reported as ErrTransmitQueueFull. Send does
+// not wait for queue space or append a rejected transmission; callers decide
+// whether and how to retry under their context.
+// The package-level Send function provides bounded queue-full retries.
 type Bus interface {
 	ID() BusID
 	Name() string
 	Capture() *Capture
-	Send(ctx context.Context, frame Frame, retryTimeout time.Duration) error
+	Send(context.Context, Frame) error
 	Done() <-chan struct{}
 	Err() error
 	Close() error
+}
+
+// Send hands frame to bus, retrying only ErrTransmitQueueFull. A zero
+// retryTimeout makes one attempt; a positive value bounds waiting from the
+// first rejection. A negative value is invalid. The caller's earlier deadline,
+// cancellation, or bus closure ends retries. Rejected frames are never recorded
+// as accepted transmissions, and other errors return immediately.
+//
+// This waits for queue acceptance, not delivery on the wire. As with Bus.Send,
+// a native call in progress must finish with a definite result even if its
+// context expires. An accepted frame is never retried.
+func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration) error {
+	if bus == nil {
+		return errors.New("CAN send requires a bus")
+	}
+	if retryTimeout < 0 {
+		return errors.New("CAN transmit retry timeout must not be negative")
+	}
+	err := bus.Send(ctx, frame)
+	if retryTimeout == 0 || !errors.Is(err, ErrTransmitQueueFull) {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, retryTimeout)
+	defer cancel()
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, context.Cause(ctx))
+		case <-bus.Done():
+			cause := bus.Err()
+			if cause == nil {
+				cause = ErrBusClosed
+			}
+			return errors.Join(err, cause)
+		case <-timer.C:
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			return errors.Join(err, cause)
+		}
+		err = bus.Send(ctx, frame)
+		if !errors.Is(err, ErrTransmitQueueFull) {
+			return err
+		}
+		timer.Reset(time.Millisecond)
+	}
 }

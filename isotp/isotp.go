@@ -24,7 +24,6 @@ const (
 	defaultMaximumPayloadLength    = 4095
 	defaultTransmitDataLength      = 8
 	defaultWaitFrameLimit          = 10
-	defaultTransmitRetryTimeout    = time.Second
 )
 
 var (
@@ -75,7 +74,7 @@ type Config struct {
 	FlowControlTimeout       time.Duration
 	ConsecutiveFrameTimeout  time.Duration
 	// TransmitRetryTimeout bounds queue-full retries for each transmitted frame,
-	// including Flow Control. Zero selects one second. This is a local queue
+	// including Flow Control. Zero disables retries. This is a local queue
 	// budget, not a peer timing guarantee; caller deadlines may shorten it.
 	TransmitRetryTimeout time.Duration
 
@@ -176,7 +175,7 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	transmitRetryTimeout, err := configuredTimeout(config.TransmitRetryTimeout, defaultTransmitRetryTimeout, "transmit retry")
+	transmitRetryTimeout, err := configuredTimeout(config.TransmitRetryTimeout, 0, "transmit retry")
 	if err != nil {
 		return nil, err
 	}

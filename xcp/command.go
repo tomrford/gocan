@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/internal/driverstate"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 // Wire layouts are corroborated by Vector XCPlite xcp.h (CONNECT/GET_STATUS/
@@ -52,7 +52,7 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		client.cursor = beforeSend
 		client.retaining = true
 		client.mu.Unlock()
-		if err := client.bus.Send(ctx, frame, client.config.TransmitRetryTimeout); err != nil {
+		if err := gocan.Send(ctx, client.bus, frame, client.config.TransmitRetryTimeout); err != nil {
 			// Bus.Send reports a definite native result. A rejected send has created
 			// no outstanding command, so it must not poison a synchronised session.
 			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
@@ -64,7 +64,7 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 			client.connected = false
 		}
 		client.pending = request.Command
-		cursor, err := driverstate.SentCursor(client.bus, frame, beforeSend)
+		cursor, err := transport.SentCursor(client.bus, frame, beforeSend)
 		if err != nil {
 			return Response{}, err
 		}

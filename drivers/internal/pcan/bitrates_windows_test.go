@@ -61,7 +61,7 @@ func TestPCANClassicalBitrateMatrix(t *testing.T) {
 					t.Fatalf("NewFrame: %v", err)
 				}
 				cursor := capture.End()
-				if err := sender.Send(context.Background(), frame, 0); err != nil {
+				if err := sender.Send(context.Background(), frame); err != nil {
 					t.Fatalf("send from bus %d at %d bit/s: %v", sender.ID(), rate, err)
 				}
 				for _, receiver := range buses {

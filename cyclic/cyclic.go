@@ -233,7 +233,7 @@ func (task *Task) send(anchor time.Time) error {
 		ctx, cancel = context.WithDeadline(ctx, nextDeadline(anchor, task.period, time.Now()))
 		defer cancel()
 	}
-	err := task.bus.Send(ctx, frame, task.retryTimeout)
+	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
 	if errors.Is(err, context.Canceled) && task.ctx.Err() != nil {
 		return context.Cause(task.ctx)
 	}

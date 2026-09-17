@@ -30,7 +30,7 @@ func TestNetworkCapturesAcceptedTransmissionAndReception(t *testing.T) {
 		t.Fatalf("NewFrame: %v", err)
 	}
 	beforeSend := capture.End()
-	if err := source.Send(context.Background(), frame, 0); err != nil {
+	if err := source.Send(context.Background(), frame); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestTerminalFailureRejectsLaterSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := bus.Send(context.Background(), frame, 0); !errors.Is(err, gocan.ErrReceiveOverrun) {
+	if err := bus.Send(context.Background(), frame); !errors.Is(err, gocan.ErrReceiveOverrun) {
 		t.Fatalf("Send after terminal failure = %v, want ErrReceiveOverrun", err)
 	}
 
@@ -186,7 +186,7 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 	if first.Err() != nil {
 		t.Fatalf("first Err after normal close = %v, want nil", first.Err())
 	}
-	if err := first.Send(context.Background(), gocan.Frame{}, 0); !errors.Is(err, gocan.ErrBusClosed) {
+	if err := first.Send(context.Background(), gocan.Frame{}); !errors.Is(err, gocan.ErrBusClosed) {
 		t.Fatalf("Send after close error = %v, want ErrBusClosed", err)
 	}
 
@@ -195,7 +195,7 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 		t.Fatalf("NewFrame: %v", err)
 	}
 	cursor := capture.End()
-	if err := second.Send(context.Background(), frame, 0); err != nil {
+	if err := second.Send(context.Background(), frame); err != nil {
 		t.Fatalf("second Send after first closed: %v", err)
 	}
 

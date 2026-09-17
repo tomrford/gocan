@@ -1,4 +1,4 @@
-package driverstate_test
+package gocan_test
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/internal/driverstate"
 )
 
 func TestSendRetryLifecycle(t *testing.T) {
@@ -22,14 +21,19 @@ func TestSendRetryLifecycle(t *testing.T) {
 			return fmt.Errorf("adapter: %w", gocan.ErrTransmitQueueFull)
 		}
 		start := time.Now()
-		if err := bus.Send(context.Background(), frame, 0); !errors.Is(err, gocan.ErrTransmitQueueFull) || calls != 1 || time.Now() != start {
+		if err := gocan.Send(context.Background(), bus, frame, 0); !errors.Is(err, gocan.ErrTransmitQueueFull) || calls != 1 || time.Now() != start {
 			t.Fatalf("single attempt: %v, calls=%d, elapsed=%v", err, calls, time.Since(start))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Millisecond)
 		defer cancel()
-		err := bus.Send(ctx, frame, time.Second)
+		err := gocan.Send(ctx, bus, frame, time.Second)
 		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Since(start) != 3*time.Millisecond {
 			t.Fatalf("caller deadline: %v after %v", err, time.Since(start))
+		}
+		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrBusOff }
+		start = time.Now()
+		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusOff) || time.Now() != start {
+			t.Fatalf("fatal Send: %v after %v", err, time.Since(start))
 		}
 		// Cancellation cannot turn an accepted native send into a rejection.
 		calls = 0
@@ -44,13 +48,13 @@ func TestSendRetryLifecycle(t *testing.T) {
 			time.Sleep(3 * time.Millisecond)
 			return nil
 		}
-		if err := bus.Send(context.Background(), frame, 2*time.Millisecond); err != nil || calls != 2 {
+		if err := gocan.Send(context.Background(), bus, frame, 2*time.Millisecond); err != nil || calls != 2 {
 			t.Fatalf("definite acceptance: %v, calls=%d", err, calls)
 		}
 		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrTransmitQueueFull }
 		time.AfterFunc(2*time.Millisecond, func() { close(bus.done) })
 		start = time.Now()
-		if err := bus.Send(context.Background(), frame, time.Second); !errors.Is(err, gocan.ErrBusClosed) || time.Since(start) != 2*time.Millisecond {
+		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusClosed) || time.Since(start) != 2*time.Millisecond {
 			t.Fatalf("closed bus: %v after %v", err, time.Since(start))
 		}
 	})
@@ -62,8 +66,8 @@ type sendBus struct {
 	done chan struct{}
 }
 
-func (bus *sendBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
-	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
+func (bus *sendBus) Send(ctx context.Context, frame gocan.Frame) error {
+	return bus.send(ctx, frame)
 }
 func (bus *sendBus) Done() <-chan struct{} { return bus.done }
 func (bus *sendBus) Err() error            { return nil }

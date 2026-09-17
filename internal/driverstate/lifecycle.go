@@ -1,4 +1,4 @@
-// Package driverstate contains lifecycle state and send policies shared by CAN drivers.
+// Package driverstate contains lifecycle state shared by native CAN drivers.
 package driverstate
 
 import (

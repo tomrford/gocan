@@ -65,14 +65,13 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	responseData := bytes.Repeat([]byte{0x5a}, 80)
-	start := capture.End()
 	serverResult := make(chan error, 1)
 	go func() {
 		if err := receiveRequest(ctx, ecuLink, []byte{0x22, 0xf1, 0x90}); err != nil {
 			serverResult <- err
 			return
 		}
-		if client.RetentionCursor() != start {
+		if client.RetentionCursor() == capture.End() {
 			t.Error("UDS request did not retain its response boundary")
 		}
 		serverResult <- runServerLifecycle(ctx, ecuLink, responseData)

@@ -831,7 +831,7 @@ func (peer *rawPeer) sendFrame(ctx context.Context, data []byte, full bool) erro
 	if err != nil {
 		return err
 	}
-	return peer.bus.Send(ctx, frame, 0)
+	return peer.bus.Send(ctx, frame)
 }
 
 func patternedPayload(length int, first byte) []byte {
@@ -916,11 +916,11 @@ type gatedBus struct {
 	gate <-chan struct{}
 }
 
-func (bus *gatedBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+func (bus *gatedBus) Send(ctx context.Context, frame gocan.Frame) error {
 	select {
 	case <-bus.gate:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return bus.Bus.Send(ctx, frame, retryTimeout)
+	return bus.Bus.Send(ctx, frame)
 }

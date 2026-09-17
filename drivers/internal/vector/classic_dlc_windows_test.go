@@ -164,7 +164,7 @@ func assertClassicalDLCs(
 			}
 
 			cursor := capture.End()
-			if err := sender.Send(context.Background(), frame, 0); err != nil {
+			if err := sender.Send(context.Background(), frame); err != nil {
 				t.Fatalf("send DLC %d remote=%t from %s: %v", dlc, remote, sender.Name(), err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), classicalDLCHardwareTimeout)

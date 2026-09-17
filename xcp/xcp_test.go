@@ -12,7 +12,6 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/virtual"
-	"github.com/tomrford/gocan/internal/driverstate"
 	"github.com/tomrford/gocan/xcp"
 )
 
@@ -768,18 +767,14 @@ type outcomeBus struct {
 	fullUntil time.Time
 }
 
-func (bus *outcomeBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
-	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
-}
-
-func (bus *outcomeBus) send(ctx context.Context, frame gocan.Frame) error {
+func (bus *outcomeBus) Send(ctx context.Context, frame gocan.Frame) error {
 	if time.Now().Before(bus.fullUntil) {
 		return gocan.ErrTransmitQueueFull
 	}
 	err, after := bus.reject, bus.after
 	bus.reject, bus.after = nil, nil
 	if err == nil {
-		err = bus.Bus.Send(ctx, frame, 0)
+		err = bus.Bus.Send(ctx, frame)
 	}
 	if after != nil {
 		after()
@@ -873,7 +868,7 @@ func (r *rig) reply(data ...byte) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	if err := r.ecu.Send(r.ctx, frame, 0); err != nil {
+	if err := r.ecu.Send(r.ctx, frame); err != nil {
 		r.t.Fatal(err)
 	}
 }
