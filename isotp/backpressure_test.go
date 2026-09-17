@@ -11,6 +11,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/virtual"
+	"github.com/tomrford/gocan/internal/driverstate"
 	"github.com/tomrford/gocan/isotp"
 )
 
@@ -38,6 +39,12 @@ func TestTransmitBackpressure(t *testing.T) {
 		// Reject the first frame and stall partway through a long transfer.
 		// The receiver also encounters backpressure sending Flow Control.
 		senderBus.reject = func(frame gocan.Frame) error {
+			if senderBus.accepted == 0 && senderBus.retries == 0 {
+				stale, _ := gocan.NewFrame(0x708, []byte{0x32, 0, 0}, 0)
+				if err := senderBus.Capture().RecordFrame(gocan.FrameEvent{Bus: 1, Direction: gocan.DirectionReceive, Frame: stale}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if senderBus.accepted == 0 || senderBus.accepted == 357 {
 				if senderBus.retries < 3 {
 					senderBus.retries++
@@ -113,6 +120,29 @@ func TestTransmitBackpressure(t *testing.T) {
 		if err := functional.Send(context.Background(), []byte{0x3e, 0}); err != nil || senderBus.accepted != before+1 {
 			t.Fatalf("functional Send: %v, accepted %d frames", err, senderBus.accepted-before)
 		}
+		// A stale payload during rejection must be skipped, while a valid reply
+		// captured before the accepted Send returns must remain visible.
+		inject := func(value byte) {
+			frame, _ := gocan.NewFrame(0x708, []byte{1, value}, 0)
+			if err := senderBus.Capture().RecordFrame(gocan.FrameEvent{Bus: 1, Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		senderBus.reject = func(gocan.Frame) error {
+			inject(0x99)
+			senderBus.reject = nil
+			return gocan.ErrTransmitQueueFull
+		}
+		senderBus.after = func() { inject(0x42) }
+		exchange, err := sender.Begin(context.Background(), []byte{0x22})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err = exchange.Next(context.Background(), time.Second)
+		exchange.Close()
+		if err != nil || !bytes.Equal(got, []byte{0x42}) {
+			t.Fatalf("reply after retry: %x, %v", got, err)
+		}
 	})
 }
 
@@ -121,9 +151,14 @@ type backpressureBus struct {
 	reject   func(gocan.Frame) error
 	accepted int
 	retries  int
+	after    func()
 }
 
-func (bus *backpressureBus) Send(ctx context.Context, frame gocan.Frame) error {
+func (bus *backpressureBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
+}
+
+func (bus *backpressureBus) send(ctx context.Context, frame gocan.Frame) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -132,9 +167,12 @@ func (bus *backpressureBus) Send(ctx context.Context, frame gocan.Frame) error {
 			return err
 		}
 	}
-	if err := bus.Bus.Send(ctx, frame); err != nil {
+	if err := bus.Bus.Send(ctx, frame, 0); err != nil {
 		return err
 	}
 	bus.accepted++
+	if bus.after != nil {
+		bus.after()
+	}
 	return nil
 }

@@ -43,6 +43,7 @@ const (
 // Config describes a single ECU using the same extended/FD format in both
 // directions. Bit rates belong to the already-open bus. Reuse one Client per
 // endpoint; multiple clients cannot distinguish replies on the same receive ID.
+// The client must exclusively own its transmit ID during each operation.
 type Config struct {
 	TransmitID uint32
 	ReceiveID  uint32

@@ -10,6 +10,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/cyclic"
+	"github.com/tomrford/gocan/internal/driverstate"
 )
 
 func TestGeneratedSchedule(t *testing.T) {
@@ -217,8 +218,8 @@ type callbackBus struct {
 func (bus *callbackBus) ID() gocan.BusID         { return 1 }
 func (bus *callbackBus) Name() string            { return "callback" }
 func (bus *callbackBus) Capture() *gocan.Capture { return nil }
-func (bus *callbackBus) Send(ctx context.Context, frame gocan.Frame) error {
-	return bus.send(ctx, frame)
+func (bus *callbackBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
 }
 func (bus *callbackBus) Done() <-chan struct{} { return nil }
 func (bus *callbackBus) Err() error            { return nil }

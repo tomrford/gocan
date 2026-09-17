@@ -106,6 +106,7 @@ type Config struct {
 //
 // Reuse one Link for each logical endpoint: separately constructed Links with
 // an overlapping bus and receive address cannot distinguish their traffic.
+// The Link must exclusively own its transmit ID during each operation.
 type Link struct {
 	bus     gocan.Bus
 	capture *gocan.Capture
@@ -234,7 +235,7 @@ func (link *Link) Send(ctx context.Context, payload []byte) error {
 
 	operationContext, cancel := link.operationContext(ctx)
 	defer cancel()
-	return withCause(operationContext, link.transmit(operationContext, transmission))
+	return withCause(operationContext, link.transmit(operationContext, transmission, transmission.multiFrame))
 }
 
 // Receive waits for and reassembles the next complete ISO-TP payload sent to
@@ -256,8 +257,8 @@ func (link *Link) Receive(ctx context.Context) ([]byte, error) {
 // the payloads that arrive after it. The caller must Close the Exchange.
 //
 // ISO-TP has no transaction identifier, so Begin repositions the link's receive
-// position immediately before its first frame reaches the bus and discards any
-// unread payload. For the life of the Exchange the endpoint must not carry
+// position to the accepted first frame's capture record and discards earlier
+// unread payloads. For the life of the Exchange the endpoint must not carry
 // unrelated traffic on its receive address.
 func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) {
 	transmission, err := link.prepareTransmission(payload)
@@ -273,12 +274,11 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 	}
 
 	exchange := link.newExchange()
-	// Keep this boundary short: validation, first-frame construction, and bus
-	// lifecycle wiring all happen before the receive frontier is captured.
+	// Retain the send interval until transmit locates the accepted first frame.
 	link.startReception(true)
 	operationContext, cancel := exchange.operationContext(ctx)
 	defer cancel()
-	if err := link.transmit(operationContext, transmission); err != nil {
+	if err := link.transmit(operationContext, transmission, true); err != nil {
 		// Resolve the cause before Close cancels the exchange context, or the
 		// real transport failure is replaced by ErrExchangeClosed.
 		failure := withCause(operationContext, err)

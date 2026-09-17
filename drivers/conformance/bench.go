@@ -32,7 +32,7 @@ func RoundTripBenchmark(b *testing.B, capture *gocan.Capture, sender, receiver g
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := sender.Send(ctx, frame); err != nil {
+		if err := sender.Send(ctx, frame, 0); err != nil {
 			b.Fatalf("Send: %v", err)
 		}
 		_, next, err := capture.Next(ctx, key, cursor)
@@ -70,7 +70,7 @@ func SaturatedCaptureBenchmark(b *testing.B, capture *gocan.Capture, sender, rec
 	// duration estimation.
 	const primeLimit = 100_000
 	for {
-		err := sender.Send(ctx, frame)
+		err := sender.Send(ctx, frame, 0)
 		if err == nil {
 			if sent++; sent > primeLimit {
 				b.Fatalf("transmit queue accepted %d frames without saturating", sent)
@@ -88,7 +88,7 @@ func SaturatedCaptureBenchmark(b *testing.B, capture *gocan.Capture, sender, rec
 		// One reception frees exactly one wire slot for the next send.
 		waitNext(ctx)
 		for {
-			err := sender.Send(ctx, frame)
+			err := sender.Send(ctx, frame, 0)
 			if err == nil {
 				sent++
 				break

@@ -7,14 +7,25 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/driverstate"
 )
 
 // transmit sends one complete payload. Callers must hold the sending token, and
 // the receiving token as well when the transmission is segmented, because
 // waitFlowControl advances the link's receive position.
-func (link *Link) transmit(ctx context.Context, transmission transmission) error {
+func (link *Link) transmit(ctx context.Context, transmission transmission, receiving bool) error {
 	if err := link.sendFrame(ctx, transmission.firstFrame); err != nil {
 		return err
+	}
+	if receiving {
+		cursor, err := driverstate.SentCursor(link.bus, transmission.firstFrame, link.Cursor())
+		if err != nil {
+			if errors.Is(err, gocan.ErrCursorOutOfRange) {
+				link.setCursor(gocan.Cursor{})
+			}
+			return err
+		}
+		link.setCursor(cursor)
 	}
 	if !transmission.multiFrame {
 		return nil
@@ -80,7 +91,7 @@ func (link *Link) waitFlowControl(ctx context.Context) (pdu, error) {
 }
 
 func (link *Link) sendFrame(ctx context.Context, frame gocan.Frame) error {
-	return gocan.Send(ctx, link.bus, frame, link.transmitRetryTimeout)
+	return link.bus.Send(ctx, frame, link.transmitRetryTimeout)
 }
 
 func (link *Link) nextPDUWithTimeout(ctx context.Context, timeout time.Duration, timeoutError error) (pdu, error) {

@@ -87,7 +87,7 @@ func runVectorTransmitQueueFull(t *testing.T, setup vectorSaturationSetup) {
 
 	accepted := 0
 	for range 10_000 {
-		err := vectorBus.Send(context.Background(), setup.frame)
+		err := vectorBus.Send(context.Background(), setup.frame, 0)
 		if err == nil {
 			accepted++
 			continue
@@ -109,19 +109,11 @@ func runVectorTransmitQueueFull(t *testing.T, setup vectorSaturationSetup) {
 		t.Fatalf("capture holds %d transmissions after %d accepted sends and one rejection", got, accepted)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		err := vectorBus.Send(context.Background(), setup.frame)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, gocan.ErrTransmitQueueFull) {
-			t.Fatalf("Vector Send while queue drains = %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Vector transmit queue did not recover")
-		}
-		time.Sleep(time.Millisecond)
+	if err := vectorBus.Send(context.Background(), setup.frame, 2*time.Second); err != nil {
+		t.Fatalf("Vector Send while queue drains = %v", err)
+	}
+	if got := len(capture.Series(key)); got != accepted+1 {
+		t.Fatalf("capture holds %d transmissions after recovery, want %d", got, accepted+1)
 	}
 }
 
@@ -283,7 +275,7 @@ func sendThreeAdapterLoad(t *testing.T, buses []gocan.Bus, framesPerAdapter int,
 					errors <- fmt.Errorf("build frame from %s: %w", bus.Name(), err)
 					return
 				}
-				if err := bus.Send(context.Background(), frame); err != nil {
+				if err := bus.Send(context.Background(), frame, 0); err != nil {
 					errors <- fmt.Errorf("send sequence %d from %s: %w", sequence, bus.Name(), err)
 					return
 				}
@@ -345,7 +337,7 @@ func assertPeerTraffic(t *testing.T, capture *gocan.Capture, from, to gocan.Bus,
 		t.Fatalf("build peer frame: %v", err)
 	}
 	cursor := capture.End()
-	if err := from.Send(context.Background(), frame); err != nil {
+	if err := from.Send(context.Background(), frame, 0); err != nil {
 		t.Fatalf("send from %s after peer close: %v", from.Name(), err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hardwareLoadTimeout)

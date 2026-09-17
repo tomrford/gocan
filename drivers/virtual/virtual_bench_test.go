@@ -40,7 +40,7 @@ func BenchmarkSendToPeerCapture(b *testing.B) {
 
 	b.ReportAllocs()
 	for i := 0; b.Loop(); i++ {
-		if err := sender.Send(ctx, frame); err != nil {
+		if err := sender.Send(ctx, frame, 0); err != nil {
 			b.Fatalf("Send: %v", err)
 		}
 		_, next, err := capture.Next(ctx, key, cursor)

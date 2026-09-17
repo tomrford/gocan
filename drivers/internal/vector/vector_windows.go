@@ -497,7 +497,11 @@ func (bus *Bus) Name() string { return bus.name }
 func (bus *Bus) Capture() *gocan.Capture { return bus.capture }
 
 // Send hands frame to the XL Driver Library and records an accepted transmission.
-func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
+func (bus *Bus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
+}
+
+func (bus *Bus) send(ctx context.Context, frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {
 		return err
 	}

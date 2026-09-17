@@ -408,7 +408,11 @@ func (bus *Bus) Capture() *gocan.Capture {
 }
 
 // Send hands frame to PCAN-Basic and records an accepted transmission.
-func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
+func (bus *Bus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
+}
+
+func (bus *Bus) send(ctx context.Context, frame gocan.Frame) error {
 	if err := validateSendFrame(frame, bus.fd); err != nil {
 		return err
 	}

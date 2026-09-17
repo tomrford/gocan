@@ -38,7 +38,7 @@ func (b *activeBus) Capture() *gocan.Capture { return b.capture }
 func (b *activeBus) Done() <-chan struct{}   { return b.done }
 func (b *activeBus) Err() error              { return nil }
 func (b *activeBus) Close() error            { close(b.done); return nil }
-func (b *activeBus) Send(ctx context.Context, f gocan.Frame) error {
+func (b *activeBus) Send(ctx context.Context, f gocan.Frame, _ time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

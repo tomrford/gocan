@@ -339,9 +339,9 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 			// Other virtual buses record RX copies after Send returns. Wait
 			// until those appends finish so retention snapshots are stable.
 			synctest.Wait()
-			start := capture.End()
 			go func() { sent <- sender.Send(ctx, payload) }()
 			synctest.Wait()
+			retained := sender.RetentionCursor()
 			if index < 2 {
 				// Queue behind a blocked single-frame send, then behind a segmented
 				// send waiting for Flow Control. Only the latter needs history.
@@ -359,7 +359,7 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 				if err := capture.AppendEvent(gocan.Event{Bus: 1, Timestamp: time.Now(), Kind: gocan.EventErrorFrame}); err != nil {
 					t.Fatal(err)
 				}
-				want := start
+				want := retained
 				if index == 0 {
 					want = capture.End()
 				}
@@ -831,7 +831,7 @@ func (peer *rawPeer) sendFrame(ctx context.Context, data []byte, full bool) erro
 	if err != nil {
 		return err
 	}
-	return peer.bus.Send(ctx, frame)
+	return peer.bus.Send(ctx, frame, 0)
 }
 
 func patternedPayload(length int, first byte) []byte {
@@ -916,11 +916,11 @@ type gatedBus struct {
 	gate <-chan struct{}
 }
 
-func (bus *gatedBus) Send(ctx context.Context, frame gocan.Frame) error {
+func (bus *gatedBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
 	select {
 	case <-bus.gate:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return bus.Bus.Send(ctx, frame)
+	return bus.Bus.Send(ctx, frame, retryTimeout)
 }

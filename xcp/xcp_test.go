@@ -12,6 +12,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/virtual"
+	"github.com/tomrford/gocan/internal/driverstate"
 	"github.com/tomrford/gocan/xcp"
 )
 
@@ -722,6 +723,39 @@ func TestDefiniteSendOutcome(t *testing.T) {
 			r.reply(0xff, 0, 0, 0, 0, 0)
 			r.finish(done)
 		}
+		// Traffic captured while the command is rejected predates it. Keep the
+		// actual reply even when it is captured before the native send returns.
+		inject := func(session byte) {
+			frame, _ := gocan.NewFrame(r.config.ReceiveID, []byte{0xff, session, 0, 0, 0, 0}, 0)
+			if err := r.capture.RecordFrame(gocan.FrameEvent{Bus: r.tester.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bus.reject = gocan.ErrTransmitQueueFull
+		bus.after = func() {
+			inject(7)
+			bus.after = func() { inject(1) }
+		}
+		if status, err := r.client.Status(r.ctx); err != nil || status.Session != 1 {
+			t.Fatalf("reply after retry: %+v, %v", status, err)
+		}
+		// Losing the accepted TX record must fail promptly, including when the
+		// pre-send capture was empty, and must retain command uncertainty.
+		r.client.Close()
+		synctest.Wait()
+		r.capture.Clear()
+		r.client, err = xcp.New(bus, r.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.client.Close()
+		bus.after = r.capture.Clear
+		if _, err := r.client.Connect(r.ctx); !errors.Is(err, gocan.ErrCursorOutOfRange) {
+			t.Fatalf("lost accepted transmission: %v", err)
+		}
+		if _, err := r.client.Status(r.ctx); !errors.Is(err, xcp.ErrSynchronizationRequired) {
+			t.Fatalf("lost transmission discarded outstanding command: %v", err)
+		}
 	})
 }
 
@@ -734,14 +768,18 @@ type outcomeBus struct {
 	fullUntil time.Time
 }
 
-func (bus *outcomeBus) Send(ctx context.Context, frame gocan.Frame) error {
+func (bus *outcomeBus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
+}
+
+func (bus *outcomeBus) send(ctx context.Context, frame gocan.Frame) error {
 	if time.Now().Before(bus.fullUntil) {
 		return gocan.ErrTransmitQueueFull
 	}
 	err, after := bus.reject, bus.after
 	bus.reject, bus.after = nil, nil
 	if err == nil {
-		err = bus.Bus.Send(ctx, frame)
+		err = bus.Bus.Send(ctx, frame, 0)
 	}
 	if after != nil {
 		after()
@@ -835,7 +873,7 @@ func (r *rig) reply(data ...byte) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	if err := r.ecu.Send(r.ctx, frame); err != nil {
+	if err := r.ecu.Send(r.ctx, frame, 0); err != nil {
 		r.t.Fatal(err)
 	}
 }

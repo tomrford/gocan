@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/driverstate"
 )
 
 const receiveQueueCapacity = 1024
@@ -122,7 +124,11 @@ func (bus *Bus) Capture() *gocan.Capture {
 
 // Send hands frame to the virtual network and records the accepted
 // transmission before returning.
-func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
+func (bus *Bus) Send(ctx context.Context, frame gocan.Frame, retryTimeout time.Duration) error {
+	return driverstate.Send(ctx, bus, frame, retryTimeout, bus.send)
+}
+
+func (bus *Bus) send(ctx context.Context, frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {
 		return err
 	}

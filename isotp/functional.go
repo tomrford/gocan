@@ -63,5 +63,5 @@ func (functional *Functional) Send(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	return gocan.Send(ctx, functional.bus, transmission.firstFrame, functional.transmitRetryTimeout)
+	return functional.bus.Send(ctx, transmission.firstFrame, functional.transmitRetryTimeout)
 }
