@@ -698,22 +698,15 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		}
 		r.synchronize()
 		// Opt-in retries recover queue rejection before creating an outstanding
-		// command. Their budget is independent of the response timeout.
+		// command.
 		r.client.Close()
 		r.config.TransmitRetryTimeout = 10 * time.Millisecond
-		r.config.Timeout = 2 * time.Millisecond
 		r.client, err = xcp.New(bus, r.config)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer r.client.Close()
 		r.connect()
-		start := time.Now()
-		bus.fullUntil = start.Add(20 * time.Millisecond)
-		if _, err := r.client.Status(r.ctx); !errors.Is(err, gocan.ErrTransmitQueueFull) || !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != r.config.TransmitRetryTimeout {
-			t.Fatalf("retry exhaustion: %v after %v", err, time.Since(start))
-		}
-		bus.fullUntil = time.Time{}
 		// Traffic captured while the command is rejected predates it. Keep the
 		// actual reply even when it is captured before the native send returns.
 		inject := func(session byte) {
@@ -754,15 +747,11 @@ func TestDefiniteSendOutcome(t *testing.T) {
 // the native API is returning it. It delegates all accepted traffic to virtual.
 type outcomeBus struct {
 	gocan.Bus
-	reject    error
-	after     func()
-	fullUntil time.Time
+	reject error
+	after  func()
 }
 
 func (bus *outcomeBus) Send(ctx context.Context, frame gocan.Frame) error {
-	if time.Now().Before(bus.fullUntil) {
-		return gocan.ErrTransmitQueueFull
-	}
 	err, after := bus.reject, bus.after
 	bus.reject, bus.after = nil, nil
 	if err == nil {

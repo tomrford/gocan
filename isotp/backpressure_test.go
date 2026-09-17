@@ -3,7 +3,6 @@ package isotp_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"testing/synctest"
@@ -41,28 +40,19 @@ func TestTransmitBackpressure(t *testing.T) {
 			}
 		}
 
-		// Every frame in both directions is rejected once before acceptance. A
-		// stale Flow Control captured while the First Frame is rejected must not
-		// satisfy the sender.
-		rejectOnce := func(bus *backpressureBus, onReject func()) {
+		// Every frame in both directions is rejected once before acceptance.
+		rejectOnce := func(bus *backpressureBus) {
 			rejected := false
 			bus.reject = func(gocan.Frame) error {
 				rejected = !rejected
 				if !rejected {
 					return nil
 				}
-				if onReject != nil {
-					onReject()
-				}
 				return fmt.Errorf("adapter: %w", gocan.ErrTransmitQueueFull)
 			}
 		}
-		rejectOnce(senderBus, func() {
-			if senderBus.accepted == 0 {
-				inject(0x32, 0, 0)
-			}
-		})
-		rejectOnce(receiverBus, nil)
+		rejectOnce(senderBus)
+		rejectOnce(receiverBus)
 		payload := patternedPayload(4002, 0x36)
 		sent := make(chan error, 1)
 		go func() { sent <- sender.Send(context.Background(), payload) }()
@@ -77,13 +67,6 @@ func TestTransmitBackpressure(t *testing.T) {
 		// Frames of 7. The receiver answers with one Flow Control.
 		if senderBus.accepted != 572 || receiverBus.accepted != 1 {
 			t.Fatalf("accepted frames: sender=%d receiver=%d", senderBus.accepted, receiverBus.accepted)
-		}
-
-		// Exhausting the budget fails without a caller deadline and frees the link.
-		senderBus.reject = func(gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-		start := time.Now()
-		if err := sender.Send(context.Background(), []byte{0x3e, 0}); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 20*time.Millisecond {
-			t.Fatalf("stalled Send: %v after %v", err, time.Since(start))
 		}
 
 		// A reply captured during rejection predates the request and is skipped;

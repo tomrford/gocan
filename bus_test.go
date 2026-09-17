@@ -30,6 +30,11 @@ func TestSendRetryLifecycle(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Since(start) != 3*time.Millisecond {
 			t.Fatalf("caller deadline: %v after %v", err, time.Since(start))
 		}
+		start = time.Now()
+		err = gocan.Send(context.Background(), bus, frame, 5*time.Millisecond)
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Since(start) != 5*time.Millisecond {
+			t.Fatalf("retry budget: %v after %v", err, time.Since(start))
+		}
 		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrBusOff }
 		start = time.Now()
 		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusOff) || time.Now() != start {
