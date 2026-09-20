@@ -296,6 +296,16 @@ func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk, prun
 	return index, int(cursor.record), nil
 }
 
+// newestCursor returns the last record in views, or cursor when they are empty.
+func newestCursor(cursor Cursor, generation uint64, views []captureView) Cursor {
+	for i := len(views) - 1; i >= 0; i-- {
+		if count := len(views[i].records); count > 0 {
+			return Cursor{generation: generation, chunk: views[i].sequence, record: uint32(count - 1)}
+		}
+	}
+	return cursor
+}
+
 func (chunk *captureChunk) appendPayload(data []byte) uint32 {
 	offset := uint32(len(chunk.payload))
 	chunk.payload = append(chunk.payload, data...)
@@ -1001,15 +1011,7 @@ func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor, e
 		}
 	}
 
-	next := cursor
-	for i := len(views) - 1; i >= 0; i-- {
-		if count := len(views[i].records); count > 0 {
-			next = Cursor{generation: generation, chunk: views[i].sequence, record: uint32(count - 1)}
-			break
-		}
-	}
-
-	return views, skip, next, nil
+	return views, skip, newestCursor(cursor, generation, views), nil
 }
 
 func recordKindCount(views []captureView, skip int, kind captureRecordKind) int {
@@ -1073,13 +1075,7 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 	// (possibly much older) series tail, so cursors remain global positions
 	// and never move backwards: an input cursor always lies at or before the
 	// capture's current tail.
-	next := cursor
-	for i := len(views) - 1; i >= 0; i-- {
-		if count := len(views[i].records); count > 0 {
-			next = Cursor{generation: generation, chunk: views[i].sequence, record: uint32(count - 1)}
-			break
-		}
-	}
+	next := newestCursor(cursor, generation, views)
 
 	// Record indexes within a chunk follow append order and prevByKey links
 	// strictly decrease, so the cursor's position is a walk stop condition:
@@ -1159,13 +1155,7 @@ func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Curso
 		}
 	}
 
-	next := cursor
-	for i := len(views) - 1; i >= 0; i-- {
-		if count := len(views[i].records); count > 0 {
-			next = Cursor{generation: generation, chunk: views[i].sequence, record: uint32(count - 1)}
-			break
-		}
-	}
+	next := newestCursor(cursor, generation, views)
 
 	total := 0
 	for i := range views {
