@@ -6,13 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/tomrford/gocan"
 )
 
 var errWriterClosed = errors.New("ASC writer is closed")
+
+const hexDigits = "0123456789ABCDEF"
 
 // Writer writes frames and events to an ASC stream.
 //
@@ -31,6 +33,9 @@ type Writer struct {
 	closed  bool
 	start   time.Time
 	last    time.Time
+
+	// scratch holds the complete record under construction.
+	scratch []byte
 }
 
 var _ gocan.RecordWriter = (*Writer)(nil)
@@ -46,17 +51,30 @@ func (writer *Writer) WriteFrame(event gocan.FrameEvent) error {
 		return err
 	}
 
-	var body strings.Builder
-	id := fmt.Sprintf("%X", event.Frame.ID)
-	if event.Frame.Flags.Has(gocan.FrameExtended) {
-		id += "x"
+	buf, err := writer.beginRecord(event.Timestamp)
+	if err != nil {
+		return err
 	}
-	direction := "Rx"
-	if event.Direction == gocan.DirectionTransmit {
-		direction = "Tx"
-	}
-
 	if event.Frame.Flags.Has(gocan.FrameFD) {
+		buf = append(buf, "CANFD "...)
+		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
+		buf = append(buf, ' ')
+		buf = appendDirection(buf, event.Direction)
+		buf = append(buf, ' ')
+		buf = appendHexUpper(buf, event.Frame.ID)
+		if event.Frame.Flags.Has(gocan.FrameExtended) {
+			buf = append(buf, 'x')
+		}
+		buf = append(buf, " - "...)
+		buf = append(buf, boolDigit(event.Frame.Flags.Has(gocan.FrameBitRateSwitch))+'0')
+		buf = append(buf, ' ')
+		buf = append(buf, boolDigit(event.Frame.Flags.Has(gocan.FrameErrorStateIndicator))+'0')
+		buf = append(buf, ' ')
+		buf = strconv.AppendUint(buf, uint64(event.Frame.DLC), 16)
+		buf = append(buf, ' ')
+		buf = strconv.AppendInt(buf, int64(event.Frame.DataLength()), 10)
+		buf = appendData(buf, event.Frame)
+
 		flags := uint32(1 << 12)
 		if event.Frame.Flags.Has(gocan.FrameBitRateSwitch) {
 			flags |= 1 << 13
@@ -64,27 +82,27 @@ func (writer *Writer) WriteFrame(event gocan.FrameEvent) error {
 		if event.Frame.Flags.Has(gocan.FrameErrorStateIndicator) {
 			flags |= 1 << 14
 		}
-		fmt.Fprintf(
-			&body,
-			"CANFD %d %s %s - %d %d %x %d",
-			event.Bus,
-			direction,
-			id,
-			boolDigit(event.Frame.Flags.Has(gocan.FrameBitRateSwitch)),
-			boolDigit(event.Frame.Flags.Has(gocan.FrameErrorStateIndicator)),
-			event.Frame.DLC,
-			event.Frame.DataLength(),
-		)
-		writeData(&body, event.Frame)
-		fmt.Fprintf(&body, " 0 0 %X 0 0 0 0 0", flags)
-	} else if event.Frame.Flags.Has(gocan.FrameRemote) {
-		fmt.Fprintf(&body, "%d %s %s r %x", event.Bus, id, direction, event.Frame.DLC)
+		buf = append(buf, " 0 0 "...)
+		buf = appendHexUpper(buf, flags)
+		buf = append(buf, " 0 0 0 0 0"...)
 	} else {
-		fmt.Fprintf(&body, "%d %s %s d %x", event.Bus, id, direction, event.Frame.DLC)
-		writeData(&body, event.Frame)
+		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
+		buf = append(buf, ' ')
+		buf = appendHexUpper(buf, event.Frame.ID)
+		if event.Frame.Flags.Has(gocan.FrameExtended) {
+			buf = append(buf, 'x')
+		}
+		buf = append(buf, ' ')
+		buf = appendDirection(buf, event.Direction)
+		if event.Frame.Flags.Has(gocan.FrameRemote) {
+			buf = append(buf, " r "...)
+		} else {
+			buf = append(buf, " d "...)
+		}
+		buf = strconv.AppendUint(buf, uint64(event.Frame.DLC), 16)
+		buf = appendData(buf, event.Frame)
 	}
-
-	return writer.writeRecord(event.Timestamp, body.String())
+	return writer.writeRecord(event.Timestamp, buf)
 }
 
 // WriteEvent writes one non-frame Capture event. ASC has native forms for
@@ -95,21 +113,33 @@ func (writer *Writer) WriteEvent(event gocan.Event) error {
 		return err
 	}
 
-	var body string
+	buf, err := writer.beginRecord(event.Timestamp)
+	if err != nil {
+		return err
+	}
 	switch event.Kind {
 	case gocan.EventControllerState:
-		body = fmt.Sprintf("CAN %d Status:chip status %s", event.Bus, controllerState(event.ControllerState))
+		buf = append(buf, "CAN "...)
+		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
+		buf = append(buf, " Status:chip status "...)
+		buf = append(buf, controllerState(event.ControllerState)...)
 		if event.ErrorCountsKnown {
-			body += fmt.Sprintf(" - TxErr: %d RxErr: %d", event.TXErrorCount, event.RXErrorCount)
+			buf = append(buf, " - TxErr: "...)
+			buf = strconv.AppendInt(buf, int64(event.TXErrorCount), 10)
+			buf = append(buf, " RxErr: "...)
+			buf = strconv.AppendInt(buf, int64(event.RXErrorCount), 10)
 		}
 	case gocan.EventErrorFrame:
-		body = fmt.Sprintf("%d ErrorFrame", event.Bus)
+		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
+		buf = append(buf, " ErrorFrame"...)
 	case gocan.EventReceiveOverrun:
-		body = fmt.Sprintf("CAN %d Status:receive queue overrun", event.Bus)
+		buf = append(buf, "CAN "...)
+		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
+		buf = append(buf, " Status:receive queue overrun"...)
 	default:
 		return fmt.Errorf("unsupported gocan event kind %d", event.Kind)
 	}
-	return writer.writeRecord(event.Timestamp, body)
+	return writer.writeRecord(event.Timestamp, buf)
 }
 
 // Flush writes buffered data to the underlying writer.
@@ -132,23 +162,31 @@ func (writer *Writer) Close() error {
 	return writer.output.Flush()
 }
 
-func (writer *Writer) writeRecord(timestamp time.Time, body string) error {
+func (writer *Writer) beginRecord(timestamp time.Time) ([]byte, error) {
 	if writer.closed {
-		return errWriterClosed
+		return nil, errWriterClosed
 	}
 	if !writer.started {
 		if err := writer.writeHeader(timestamp); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if timestamp.Before(writer.last) {
-		return fmt.Errorf("ASC timestamp %s precedes previous record %s", timestamp, writer.last)
+		return nil, fmt.Errorf("ASC timestamp %s precedes previous record %s", timestamp, writer.last)
 	}
 
 	offset := timestamp.Sub(writer.start).Microseconds()
-	seconds := offset / 1_000_000
-	microseconds := offset % 1_000_000
-	if _, err := fmt.Fprintf(writer.output, "%9d.%06d %s\n", seconds, microseconds, body); err != nil {
+	// The ASC timestamp field is "%9d.%06d": seconds right-aligned in nine
+	// characters, microseconds zero-padded to six.
+	buf := appendPadded(writer.scratch[:0], offset/1_000_000, 9, ' ')
+	buf = append(buf, '.')
+	buf = appendPadded(buf, offset%1_000_000, 6, '0')
+	return append(buf, ' '), nil
+}
+
+func (writer *Writer) writeRecord(timestamp time.Time, buf []byte) error {
+	writer.scratch = append(buf, '\n')
+	if _, err := writer.output.Write(writer.scratch); err != nil {
 		return err
 	}
 	writer.last = timestamp
@@ -171,13 +209,47 @@ func (writer *Writer) writeHeader(timestamp time.Time) error {
 	return nil
 }
 
-func writeData(output *strings.Builder, frame gocan.Frame) {
+func appendData(dst []byte, frame gocan.Frame) []byte {
 	for _, value := range frame.Data[:frame.DataLength()] {
-		fmt.Fprintf(output, " %02X", value)
+		dst = append(dst, ' ', hexDigits[value>>4], hexDigits[value&0x0f])
 	}
+	return dst
 }
 
-func boolDigit(value bool) int {
+func appendHexUpper(dst []byte, value uint32) []byte {
+	start := len(dst)
+	dst = strconv.AppendUint(dst, uint64(value), 16)
+	for i := start; i < len(dst); i++ {
+		if dst[i] >= 'a' && dst[i] <= 'f' {
+			dst[i] -= 'a' - 'A'
+		}
+	}
+	return dst
+}
+
+// appendPadded appends value right-aligned in width characters, filling the
+// gap with fill.
+func appendPadded(dst []byte, value int64, width int, fill byte) []byte {
+	start := len(dst)
+	dst = strconv.AppendInt(dst, value, 10)
+	if padding := width - (len(dst) - start); padding > 0 {
+		dst = append(dst, make([]byte, padding)...)
+		copy(dst[start+padding:], dst[start:])
+		for i := 0; i < padding; i++ {
+			dst[start+i] = fill
+		}
+	}
+	return dst
+}
+
+func appendDirection(dst []byte, direction gocan.Direction) []byte {
+	if direction == gocan.DirectionTransmit {
+		return append(dst, "Tx"...)
+	}
+	return append(dst, "Rx"...)
+}
+
+func boolDigit(value bool) byte {
 	if value {
 		return 1
 	}
