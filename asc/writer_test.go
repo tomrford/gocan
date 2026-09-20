@@ -2,6 +2,8 @@ package asc_test
 
 import (
 	"bytes"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +104,14 @@ func TestWriterStreamsCapture(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := writer.WriteFrame(gocan.FrameEvent{
+		Bus: 1, Timestamp: start, Direction: gocan.DirectionReceive, Frame: classic,
+	}); err == nil {
+		t.Fatal("accepted frame after Close")
+	}
+	if err := writer.WriteEvent(state); err == nil {
+		t.Fatal("accepted event after Close")
+	}
 
 	var lines []string
 	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
@@ -142,26 +152,57 @@ func TestWriterTimestampField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first record starts the measurement, so the checked record follows
-	// it by one second.
-	if err := writer.WriteFrame(gocan.FrameEvent{
-		Bus: 1, Timestamp: start, Direction: gocan.DirectionReceive, Frame: classic,
-	}); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		offset time.Duration
+		prefix string
+	}{
+		{0, "        0.000000"},
+		{time.Microsecond, "        0.000001"},
+		{time.Second - time.Microsecond, "        0.999999"},
+		{time.Second, "        1.000000"},
+		{1_000_000_000 * time.Second, "1000000000.000000"},
 	}
-	if err := writer.WriteFrame(gocan.FrameEvent{
-		Bus: 1, Timestamp: start.Add(time.Second), Direction: gocan.DirectionReceive, Frame: classic,
-	}); err != nil {
-		t.Fatal(err)
+	for _, test := range tests {
+		if err := writer.WriteFrame(gocan.FrameEvent{
+			Bus: 1, Timestamp: start.Add(test.offset), Direction: gocan.DirectionReceive, Frame: classic,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
-	last := lines[len(lines)-2] // the record, before the End TriggerBlock footer
-	const want = "        1.000000 1 123 Rx d 1 AA"
-	if last != want {
-		t.Fatalf("ASC record line = %q, want %q", last, want)
+	// The records follow the header and precede the End TriggerBlock footer.
+	records := lines[len(lines)-1-len(tests) : len(lines)-1]
+	for i, test := range tests {
+		if want := test.prefix + " 1 123 Rx d 1 AA"; records[i] != want {
+			t.Fatalf("ASC record line = %q, want %q", records[i], want)
+		}
+	}
+}
+
+func BenchmarkWriter(b *testing.B) {
+	for _, size := range []int{8, 64} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			var flags gocan.FrameFlags
+			if size > 8 {
+				flags = gocan.FrameFD | gocan.FrameExtended | gocan.FrameBitRateSwitch
+			}
+			frame, err := gocan.NewFrame(0x123, make([]byte, size), flags)
+			if err != nil {
+				b.Fatal(err)
+			}
+			event := gocan.FrameEvent{Bus: 1, Timestamp: time.Now(), Direction: gocan.DirectionReceive, Frame: frame}
+			writer := asc.NewWriter(io.Discard)
+			b.Cleanup(func() { _ = writer.Close() })
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := writer.WriteFrame(event); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

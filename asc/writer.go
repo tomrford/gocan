@@ -34,7 +34,7 @@ type Writer struct {
 	start   time.Time
 	last    time.Time
 
-	// scratch holds the record body under construction between writes.
+	// scratch holds the complete record under construction.
 	scratch []byte
 }
 
@@ -51,7 +51,10 @@ func (writer *Writer) WriteFrame(event gocan.FrameEvent) error {
 		return err
 	}
 
-	buf := writer.scratch[:0]
+	buf, err := writer.beginRecord(event.Timestamp)
+	if err != nil {
+		return err
+	}
 	if event.Frame.Flags.Has(gocan.FrameFD) {
 		buf = append(buf, "CANFD "...)
 		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
@@ -82,17 +85,6 @@ func (writer *Writer) WriteFrame(event gocan.FrameEvent) error {
 		buf = append(buf, " 0 0 "...)
 		buf = appendHexUpper(buf, flags)
 		buf = append(buf, " 0 0 0 0 0"...)
-	} else if event.Frame.Flags.Has(gocan.FrameRemote) {
-		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
-		buf = append(buf, ' ')
-		buf = appendHexUpper(buf, event.Frame.ID)
-		if event.Frame.Flags.Has(gocan.FrameExtended) {
-			buf = append(buf, 'x')
-		}
-		buf = append(buf, ' ')
-		buf = appendDirection(buf, event.Direction)
-		buf = append(buf, " r "...)
-		buf = strconv.AppendUint(buf, uint64(event.Frame.DLC), 16)
 	} else {
 		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
 		buf = append(buf, ' ')
@@ -102,13 +94,15 @@ func (writer *Writer) WriteFrame(event gocan.FrameEvent) error {
 		}
 		buf = append(buf, ' ')
 		buf = appendDirection(buf, event.Direction)
-		buf = append(buf, " d "...)
+		if event.Frame.Flags.Has(gocan.FrameRemote) {
+			buf = append(buf, " r "...)
+		} else {
+			buf = append(buf, " d "...)
+		}
 		buf = strconv.AppendUint(buf, uint64(event.Frame.DLC), 16)
 		buf = appendData(buf, event.Frame)
 	}
-	writer.scratch = buf
-
-	return writer.writeRecord(event.Timestamp)
+	return writer.writeRecord(event.Timestamp, buf)
 }
 
 // WriteEvent writes one non-frame Capture event. ASC has native forms for
@@ -119,7 +113,10 @@ func (writer *Writer) WriteEvent(event gocan.Event) error {
 		return err
 	}
 
-	buf := writer.scratch[:0]
+	buf, err := writer.beginRecord(event.Timestamp)
+	if err != nil {
+		return err
+	}
 	switch event.Kind {
 	case gocan.EventControllerState:
 		buf = append(buf, "CAN "...)
@@ -142,9 +139,7 @@ func (writer *Writer) WriteEvent(event gocan.Event) error {
 	default:
 		return fmt.Errorf("unsupported gocan event kind %d", event.Kind)
 	}
-	writer.scratch = buf
-
-	return writer.writeRecord(event.Timestamp)
+	return writer.writeRecord(event.Timestamp, buf)
 }
 
 // Flush writes buffered data to the underlying writer.
@@ -167,35 +162,31 @@ func (writer *Writer) Close() error {
 	return writer.output.Flush()
 }
 
-// writeRecord emits the frozen body in scratch behind the timestamp prefix.
-func (writer *Writer) writeRecord(timestamp time.Time) error {
+func (writer *Writer) beginRecord(timestamp time.Time) ([]byte, error) {
 	if writer.closed {
-		return errWriterClosed
+		return nil, errWriterClosed
 	}
 	if !writer.started {
 		if err := writer.writeHeader(timestamp); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if timestamp.Before(writer.last) {
-		return fmt.Errorf("ASC timestamp %s precedes previous record %s", timestamp, writer.last)
+		return nil, fmt.Errorf("ASC timestamp %s precedes previous record %s", timestamp, writer.last)
 	}
 
 	offset := timestamp.Sub(writer.start).Microseconds()
 	// The ASC timestamp field is "%9d.%06d": seconds right-aligned in nine
 	// characters, microseconds zero-padded to six.
-	prefix := appendPadded(nil, offset/1_000_000, 9, ' ')
-	prefix = append(prefix, '.')
-	prefix = appendPadded(prefix, offset%1_000_000, 6, '0')
-	prefix = append(prefix, ' ')
+	buf := appendPadded(writer.scratch[:0], offset/1_000_000, 9, ' ')
+	buf = append(buf, '.')
+	buf = appendPadded(buf, offset%1_000_000, 6, '0')
+	return append(buf, ' '), nil
+}
 
-	if _, err := writer.output.Write(prefix); err != nil {
-		return err
-	}
+func (writer *Writer) writeRecord(timestamp time.Time, buf []byte) error {
+	writer.scratch = append(buf, '\n')
 	if _, err := writer.output.Write(writer.scratch); err != nil {
-		return err
-	}
-	if err := writer.output.WriteByte('\n'); err != nil {
 		return err
 	}
 	writer.last = timestamp
@@ -226,18 +217,12 @@ func appendData(dst []byte, frame gocan.Frame) []byte {
 }
 
 func appendHexUpper(dst []byte, value uint32) []byte {
-	if value == 0 {
-		return append(dst, '0')
-	}
-	var digits [8]byte
-	count := 0
-	for value > 0 {
-		digits[count] = hexDigits[value&0xf]
-		value >>= 4
-		count++
-	}
-	for i := count - 1; i >= 0; i-- {
-		dst = append(dst, digits[i])
+	start := len(dst)
+	dst = strconv.AppendUint(dst, uint64(value), 16)
+	for i := start; i < len(dst); i++ {
+		if dst[i] >= 'a' && dst[i] <= 'f' {
+			dst[i] -= 'a' - 'A'
+		}
 	}
 	return dst
 }
