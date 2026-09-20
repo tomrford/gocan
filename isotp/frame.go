@@ -164,7 +164,8 @@ func (transmitter *transmitter) makeFrame(data []byte, fullLength bool) (gocan.F
 		return gocan.Frame{}, fmt.Errorf("%w: invalid transport frame length %d", ErrProtocol, targetLength)
 	}
 	if targetLength != len(data) {
-		padded := make([]byte, targetLength)
+		var buffer [gocan.MaxDataLength]byte
+		padded := buffer[:targetLength]
 		copy(padded, data)
 		for index := len(data); index < len(padded); index++ {
 			padded[index] = transmitter.paddingByte

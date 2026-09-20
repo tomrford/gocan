@@ -47,7 +47,8 @@ func (link *Link) transmit(ctx context.Context, transmission transmission, repos
 			}
 			capacity := link.transmitDataLength - 1
 			end := min(transmission.offset+capacity, len(transmission.payload))
-			data := make([]byte, 1+end-transmission.offset)
+			var buffer [gocan.MaxDataLength]byte
+			data := buffer[:1+end-transmission.offset]
 			data[0] = 0x20 | sequence
 			copy(data[1:], transmission.payload[transmission.offset:end])
 			frame, err := link.makeFrame(data, false)
