@@ -131,3 +131,37 @@ func TestWriterStreamsCapture(t *testing.T) {
 		}
 	}
 }
+
+// TestWriterTimestampField checks the untrimmed nine-character seconds field,
+// which a leading-space trim would hide.
+func TestWriterTimestampField(t *testing.T) {
+	start := time.Date(2026, time.August, 1, 12, 34, 56, 0, time.UTC)
+	var output bytes.Buffer
+	writer := asc.NewWriter(&output)
+	classic, err := gocan.NewFrame(0x123, []byte{0xaa}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first record starts the measurement, so the checked record follows
+	// it by one second.
+	if err := writer.WriteFrame(gocan.FrameEvent{
+		Bus: 1, Timestamp: start, Direction: gocan.DirectionReceive, Frame: classic,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteFrame(gocan.FrameEvent{
+		Bus: 1, Timestamp: start.Add(time.Second), Direction: gocan.DirectionReceive, Frame: classic,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
+	last := lines[len(lines)-2] // the record, before the End TriggerBlock footer
+	const want = "        1.000000 1 123 Rx d 1 AA"
+	if last != want {
+		t.Fatalf("ASC record line = %q, want %q", last, want)
+	}
+}
