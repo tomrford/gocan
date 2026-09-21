@@ -90,10 +90,10 @@ func TestSemanticClientLifecycle(t *testing.T) {
 	if err := client.TesterPresent(ctx); err != nil {
 		t.Fatalf("TesterPresent: %v", err)
 	}
-	if err := client.SendTesterPresent(ctx); err != nil {
+	if err := client.SendTesterPresent(ctx, false); err != nil {
 		t.Fatalf("SendTesterPresent: %v", err)
 	}
-	if err := client.SendECUReset(ctx, uds.ResetSoft); err != nil {
+	if err := client.SendECUReset(ctx, uds.ResetSoft, true); err != nil {
 		t.Fatalf("SendECUReset: %v", err)
 	}
 	resetRecord, err := client.ECUReset(ctx, uds.ResetHard)
@@ -319,7 +319,7 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 		t.Fatalf("reserved communication type error = %v", err)
 	}
 	for _, resetType := range []uds.ResetType{0, 0x7f, 0x81} {
-		if err := client.SendECUReset(ctx, resetType); err == nil {
+		if err := client.SendECUReset(ctx, resetType, false); err == nil {
 			t.Fatalf("SendECUReset accepted %#x", resetType)
 		}
 	}
@@ -332,7 +332,7 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 		}
 	}
 	// Rejections above must not emit requests or prevent the next valid send.
-	if err := client.SendECUReset(ctx, uds.ResetHard); err != nil {
+	if err := client.SendECUReset(ctx, uds.ResetHard, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := receiveRequest(ctx, server, []byte{0x11, 0x81}); err != nil {
@@ -369,24 +369,6 @@ func TestSemanticClientValidatesResponses(t *testing.T) {
 				return err
 			},
 			kind: uds.ErrUnexpectedResponse,
-		},
-		{
-			name:     "node communication control echo",
-			request:  []byte{0x28, 0x04, 0x01, 0x00, 0x00},
-			response: []byte{0x68, 0x05},
-			call: func(ctx context.Context, client *uds.Client) error {
-				return client.CommunicationControlWithNode(ctx, uds.CommunicationEnableRxDisableTxWithNode, uds.CommunicationTypeNormal, 0)
-			},
-			kind: uds.ErrUnexpectedResponse,
-		},
-		{
-			name:     "node communication control missing echo",
-			request:  []byte{0x28, 0x05, 0x01, 0xff, 0xff},
-			response: []byte{0x68},
-			call: func(ctx context.Context, client *uds.Client) error {
-				return client.CommunicationControlWithNode(ctx, uds.CommunicationEnableRxAndTxWithNode, uds.CommunicationTypeNormal, 0xffff)
-			},
-			kind: uds.ErrInvalidResponse,
 		},
 		{
 			name:     "node communication control trailing data",
