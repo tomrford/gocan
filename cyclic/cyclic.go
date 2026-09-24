@@ -71,6 +71,8 @@ func Start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, config Config)
 // promptly, since cancellation and Stop cannot interrupt them. Callers must
 // synchronise any state shared with the callback, which may run before StartFunc
 // returns. A callback may call Stop, but must not wait on its own Task's Done.
+// If the callback uses the returned Task, synchronise its publication (for
+// example, through a channel) before accessing it.
 func StartFunc(ctx context.Context, bus gocan.Bus, generate func() (gocan.Frame, error), config Config) (*Task, error) {
 	if generate == nil {
 		return nil, errors.New("cyclic task requires a frame callback")
