@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -34,7 +35,10 @@ func TestTaskLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(task.Stop)
+	t.Cleanup(func() {
+		task.Stop()
+		<-task.Done()
+	})
 
 	key := gocan.FrameKey{
 		Bus:       bus.ID(),
@@ -70,6 +74,7 @@ func TestTaskLifecycle(t *testing.T) {
 	}
 
 	task.Stop()
+	<-task.Done()
 	if err := task.Err(); err != nil {
 		t.Fatalf("Err after Stop = %v, want nil", err)
 	}
@@ -84,79 +89,81 @@ func TestTaskLifecycle(t *testing.T) {
 	}
 }
 
-func TestStopWaitsForSendInProgress(t *testing.T) {
-	bus := &blockingBus{
-		sendStarted: make(chan struct{}, 1),
-		releaseSend: make(chan struct{}),
-	}
-	t.Cleanup(func() {
-		select {
-		case <-bus.releaseSend:
-		default:
-			close(bus.releaseSend)
-		}
-	})
-	frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	task, err := cyclic.Start(context.Background(), bus, frame, cyclic.Config{Period: time.Millisecond})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	select {
-	case <-bus.sendStarted:
-	case <-time.After(time.Second):
-		t.Fatal("recurring send did not start")
-	}
-
-	stopped := make(chan struct{})
-	go func() {
-		task.Stop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-		t.Fatal("Stop returned while Send was still in progress")
-	case <-time.After(10 * time.Millisecond):
-	}
-
-	close(bus.releaseSend)
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after Send completed")
-	}
-	if err := task.Err(); err != nil {
-		t.Fatalf("Err after Stop = %v, want nil", err)
+func TestStopDuringSend(t *testing.T) {
+	for name, blockedSend := range map[string]int{"first": 1, "later": 2} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				started, release := make(chan struct{}), make(chan struct{})
+				sends := 0
+				bus := &callbackBus{send: func(context.Context, gocan.Frame) error {
+					sends++
+					if sends == blockedSend {
+						close(started)
+						<-release
+					}
+					return nil
+				}}
+				task, err := cyclic.Start(context.Background(), bus, gocan.Frame{ID: 1}, cyclic.Config{Period: time.Millisecond})
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-started
+				task.Stop()
+				task.Stop()
+				if err := task.Update(gocan.Frame{ID: 2}); !errors.Is(err, cyclic.ErrStopped) {
+					t.Fatalf("Update after Stop = %v, want ErrStopped", err)
+				}
+				select {
+				case <-task.Done():
+					t.Fatal("Done closed while Send was still in progress")
+				default:
+				}
+				close(release)
+				<-task.Done()
+				if task.Err() != nil || sends != blockedSend {
+					t.Fatalf("Err = %v, sends = %d; want nil, %d", task.Err(), sends, blockedSend)
+				}
+			})
+		})
 	}
 }
 
-type blockingBus struct {
-	sends       int
-	sendStarted chan struct{}
-	releaseSend chan struct{}
-}
-
-func (bus *blockingBus) ID() gocan.BusID { return 1 }
-
-func (bus *blockingBus) Name() string { return "blocking" }
-
-func (bus *blockingBus) Capture() *gocan.Capture { return nil }
-
-func (bus *blockingBus) Send(context.Context, gocan.Frame) error {
-	bus.sends++
-	if bus.sends == 1 {
+func TestStartValidation(t *testing.T) {
+	ctx := context.Background()
+	bus := &callbackBus{send: func(context.Context, gocan.Frame) error {
+		t.Error("invalid startup sent a frame")
 		return nil
+	}}
+	config := cyclic.Config{Period: time.Second}
+	for name, start := range map[string]func() (*cyclic.Task, error){
+		"bus": func() (*cyclic.Task, error) {
+			return cyclic.Start(ctx, nil, gocan.Frame{}, config)
+		},
+		"period": func() (*cyclic.Task, error) {
+			return cyclic.Start(ctx, bus, gocan.Frame{}, cyclic.Config{})
+		},
+		"frame": func() (*cyclic.Task, error) {
+			return cyclic.Start(ctx, bus, gocan.Frame{ID: gocan.MaxStandardID + 1}, config)
+		},
+		"callback": func() (*cyclic.Task, error) {
+			return cyclic.StartFunc(ctx, bus, nil, config)
+		},
+		"retry timeout": func() (*cyclic.Task, error) {
+			return cyclic.StartFunc(ctx, bus, func() (gocan.Frame, error) {
+				t.Error("invalid startup called the generator")
+				return gocan.Frame{}, nil
+			}, cyclic.Config{Period: time.Second, TransmitRetryTimeout: -time.Second})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task, err := start()
+			if task != nil {
+				task.Stop()
+				<-task.Done()
+			}
+			if task != nil || err == nil {
+				t.Fatalf("Start = %v, %v; want nil Task and argument error", task, err)
+			}
+		})
 	}
-	bus.sendStarted <- struct{}{}
-	<-bus.releaseSend
-	return nil
 }
-
-func (bus *blockingBus) Done() <-chan struct{} { return nil }
-
-func (bus *blockingBus) Err() error { return nil }
-
-func (bus *blockingBus) Close() error { return nil }
