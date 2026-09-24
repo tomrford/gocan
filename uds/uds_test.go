@@ -72,7 +72,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		name      string
 		request   []byte
 		responses [][]byte
-		mode      string // Empty for Do, "send" for send-only, "wait" for waiting Send.
+		mode      string // Empty for Do, "send" for Send, "wait" for SendAwaitNRC.
 		want      []byte
 		kind      error
 		nrc       uds.ResponseCode
@@ -131,10 +131,13 @@ func TestClientExchangeLifecycle(t *testing.T) {
 			request := uds.Request{Service: uds.ServiceID(step.request[0]), Data: step.request[1:]}
 			var response uds.Response
 			var err error
-			if step.mode == "" {
+			switch step.mode {
+			case "":
 				response, err = client.Do(callContext, request)
-			} else {
-				err = client.Send(callContext, request, step.mode == "wait")
+			case "wait":
+				err = client.SendAwaitNRC(callContext, request)
+			default:
+				err = client.Send(callContext, request)
 			}
 			var negative *uds.NegativeResponseError
 			if step.nrc != 0 {
@@ -144,8 +147,8 @@ func TestClientExchangeLifecycle(t *testing.T) {
 			} else if !errors.Is(err, step.kind) {
 				t.Fatalf("error = %v, want %v", err, step.kind)
 			}
-			if step.blockFlow && !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("Flow Control failure lost its retry deadline: %v", err)
+			if step.blockFlow && errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("spent retry budget reported a caller deadline: %v", err)
 			}
 			if !bytes.Equal(response.Data, step.want) || step.want != nil && response.Service != request.Service {
 				t.Fatalf("response = %#v, want service %#x data %x", response, request.Service, step.want)

@@ -59,7 +59,7 @@ type transmitter struct {
 
 // newTransmitter validates the transmit-side configuration common to New and
 // NewFunctional. The caller sets maximumPayloadLength.
-func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength uint8, padFrames bool, paddingByte byte) (transmitter, error) {
+func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength uint8, padFrames bool, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
 	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
 		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", unsupported)
 	}
@@ -76,12 +76,16 @@ func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength uint8,
 	if err := validateTransmitDataLength(transmitDataLength, flags.Has(gocan.FrameFD)); err != nil {
 		return transmitter{}, err
 	}
+	if retryTimeout < 0 {
+		return transmitter{}, errors.New("ISO-TP transmit retry timeout must not be negative")
+	}
 	return transmitter{
-		transmitID:         transmitID,
-		frameFlags:         flags,
-		transmitDataLength: transmitDataLength,
-		padFrames:          padFrames,
-		paddingByte:        paddingByte,
+		transmitID:           transmitID,
+		frameFlags:           flags,
+		transmitDataLength:   transmitDataLength,
+		padFrames:            padFrames,
+		paddingByte:          paddingByte,
+		transmitRetryTimeout: retryTimeout,
 	}, nil
 }
 

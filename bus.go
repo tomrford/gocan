@@ -71,8 +71,9 @@ type Bus interface {
 
 // Send hands frame to bus, retrying only ErrTransmitQueueFull. A zero
 // retryTimeout makes one attempt; a positive value bounds waiting from the
-// first rejection. A negative value is invalid. The caller's earlier deadline,
-// cancellation, or bus closure ends retries. Rejected frames are never recorded
+// first rejection and returns the last rejection once spent. A negative value is
+// invalid. The caller's earlier deadline, cancellation, or bus closure ends
+// retries, joined to the rejection. Rejected frames are never recorded
 // as accepted transmissions, and other errors return immediately.
 //
 // This waits for queue acceptance, not delivery on the wire. As with Bus.Send,
@@ -86,14 +87,14 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 	if retryTimeout == 0 || !errors.Is(err, ErrTransmitQueueFull) {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, retryTimeout)
+	// The budget's cause keeps its expiry distinct from the caller's deadline.
+	ctx, cancel := context.WithTimeoutCause(ctx, retryTimeout, ErrTransmitQueueFull)
 	defer cancel()
 	timer := time.NewTimer(time.Millisecond)
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return errors.Join(err, context.Cause(ctx))
 		case <-bus.Done():
 			cause := bus.Err()
 			if cause == nil {
@@ -102,12 +103,20 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 			return errors.Join(err, cause)
 		case <-timer.C:
 		}
-		// The timer can win a race with expiry. Report the rejection joined with
-		// its cause rather than a bare context error from the driver.
-		if cause := context.Cause(ctx); cause != nil {
+		// The timer can win a race with expiry. Report the rejection rather than
+		// a bare context error from the driver.
+		if cause := context.Cause(ctx); errors.Is(cause, ErrTransmitQueueFull) {
+			return err
+		} else if cause != nil {
 			return errors.Join(err, cause)
 		}
-		err = bus.Send(ctx, frame)
+		nextErr := bus.Send(ctx, frame)
+		// Expiry while the driver waits for its lock still ends retries with
+		// the last rejection. A definite acceptance or other failure wins.
+		if ctx.Err() != nil && errors.Is(nextErr, ctx.Err()) {
+			continue
+		}
+		err = nextErr
 		if !errors.Is(err, ErrTransmitQueueFull) {
 			return err
 		}

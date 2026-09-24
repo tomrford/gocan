@@ -52,8 +52,8 @@ type SessionControlResponse struct {
 
 // ApplySessionTiming uses timing for subsequent exchanges. Callers can clamp
 // values or add transport margin before applying server timing. It must not be
-// called concurrently with Do or Send with waitNRC true. Send with waitNRC false
-// never reads the timeouts, so a send-only background keep-alive remains safe.
+// called concurrently with Do or SendAwaitNRC. Send never reads the timeouts,
+// so a send-only background keep-alive remains safe.
 func (client *Client) ApplySessionTiming(timing SessionTiming) error {
 	if timing.P2ServerMax <= 0 {
 		return fmt.Errorf("UDS P2 server maximum must be positive")
@@ -184,14 +184,13 @@ func (client *Client) ECUReset(ctx context.Context, resetType ResetType) ([]byte
 	return client.doEchoed(ctx, ServiceECUReset, []byte{byte(resetType)}, []byte{byte(resetType)}, "reset type", false)
 }
 
-// SendECUReset sends resetType with its positive response suppressed.
-// waitNRC selects the response waiting policy described by Send; neither mode
-// waits for the ECU to finish resetting.
-func (client *Client) SendECUReset(ctx context.Context, resetType ResetType, waitNRC bool) error {
+// SendECUReset sends resetType with its positive response suppressed, as Send.
+// It does not wait for the ECU to finish resetting.
+func (client *Client) SendECUReset(ctx context.Context, resetType ResetType) error {
 	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
 		return err
 	}
-	return client.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}}, waitNRC)
+	return client.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}})
 }
 
 // ReadDataByIdentifier reads one data identifier and returns its data record.
@@ -347,9 +346,9 @@ func (client *Client) TesterPresent(ctx context.Context) error {
 }
 
 // SendTesterPresent sends a tester-present request with its positive response
-// suppressed. waitNRC selects the response waiting policy described by Send.
-func (client *Client) SendTesterPresent(ctx context.Context, waitNRC bool) error {
-	return client.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}}, waitNRC)
+// suppressed, as Send.
+func (client *Client) SendTesterPresent(ctx context.Context) error {
+	return client.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
 }
 
 func (client *Client) do(ctx context.Context, service ServiceID, data []byte) ([]byte, error) {

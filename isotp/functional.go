@@ -43,12 +43,11 @@ func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) 
 	if bus == nil {
 		return nil, errors.New("ISO-TP functional path requires a bus")
 	}
-	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte)
+	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte, config.TransmitRetryTimeout)
 	if err != nil {
 		return nil, err
 	}
 	transmitter.maximumPayloadLength = transmitter.singleFrameCapacity()
-	transmitter.transmitRetryTimeout = config.TransmitRetryTimeout
 	return &Functional{bus: bus, transmitter: transmitter}, nil
 }
 

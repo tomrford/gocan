@@ -228,7 +228,7 @@ func TestRetryScheduleAndStop(t *testing.T) {
 				t.Fatal(err)
 			}
 			<-task.Done()
-			if !errors.Is(task.Err(), context.DeadlineExceeded) || time.Since(start) != min(budget, config.Period) || calls != 1 {
+			if err := task.Err(); !errors.Is(err, gocan.ErrTransmitQueueFull) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != min(budget, config.Period) || calls != 1 {
 				t.Fatalf("budget %v: %v after %v, generated %d times", budget, task.Err(), time.Since(start), calls)
 			}
 		}

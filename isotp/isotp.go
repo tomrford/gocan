@@ -157,7 +157,7 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if capture == nil {
 		return nil, errors.New("ISO-TP bus requires a capture")
 	}
-	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte)
+	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte, config.TransmitRetryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +177,6 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	transmitter.transmitRetryTimeout = config.TransmitRetryTimeout
 	transmitter.maximumPayloadLength = config.MaximumPayloadLength
 	if transmitter.maximumPayloadLength == 0 {
 		transmitter.maximumPayloadLength = defaultMaximumPayloadLength
