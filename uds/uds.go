@@ -69,17 +69,17 @@ type Config struct {
 
 // Client exchanges raw UDS requests over one ISO-TP link.
 //
-// A Client logically owns its Link. Do and Send may be called concurrently,
-// but callers must not operate the Link independently or construct another
-// Client around it.
+// A Client logically owns its Link. Do, Send, and SendAwaitNRC may be called
+// concurrently, but callers must not operate the Link independently or
+// construct another Client around it.
 type Client struct {
 	link          *isotp.Link
 	p2Timeout     time.Duration
 	p2StarTimeout time.Duration
 }
 
-// RetentionCursor returns receive progress during an active Do, response-waiting
-// Send, or segmented Send, and the capture's end otherwise. Pass it with other
+// RetentionCursor returns receive progress during an active Do, SendAwaitNRC,
+// or segmented Send, and the capture's end otherwise. Pass it with other
 // readers' cursors to Capture.Prune. Queued calls and send-only single frames
 // do not retain history.
 // Unsolicited responses received while idle are not protected.
