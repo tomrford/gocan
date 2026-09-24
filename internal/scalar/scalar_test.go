@@ -44,20 +44,28 @@ func TestJSONIntegers(t *testing.T) {
 	}{
 		{"0", 0, 0, true, true},
 		{"-0.0", 0, 0, true, true},
+		{"0e99999999999999999999", 0, 0, true, true},
+		{"-0.000E-99999999999999999999", 0, 0, true, true},
 		{"1.0", 1, 1, true, true},
 		{"1e3", 1000, 1000, true, true},
 		{"1200e-2", 12, 12, true, true},
+		{"0.000001e6", 1, 1, true, true},
 		{"-2E+1", -20, 0, true, false},
 		{"9007199254740993.0", 9007199254740993, 9007199254740993, true, true},
 		{"9223372036854775807", math.MaxInt64, math.MaxInt64, true, true},
 		{"-9223372036854775808", math.MinInt64, 0, true, false},
+		{"-9.223372036854775808e18", math.MinInt64, 0, true, false},
 		{"9223372036854775808", 0, 1 << 63, false, true},
 		{"18446744073709551615", 0, math.MaxUint64, false, true},
 		{"1.8446744073709551615e19", 0, math.MaxUint64, false, true},
 		{"18446744073709551616", 0, 0, false, false},
+		{"1.8446744073709551616e19", 0, 0, false, false},
 		{"-9223372036854775809", 0, 0, false, false},
+		{"-9.223372036854775809e18", 0, 0, false, false},
 		{"1.00000000000000000001", 0, 0, false, false},
 		{"1e-400", 0, 0, false, false},
+		{"1e1000000", 0, 0, false, false},
+		{"1e-1000001", 0, 0, false, false},
 	} {
 		t.Run(string(test.number), func(t *testing.T) {
 			if value, err := ExactSigned(test.number); (err == nil) != test.signedOK || err == nil && value != test.signed {
@@ -77,15 +85,19 @@ func TestJSONFloats(t *testing.T) {
 		ok     bool
 	}{
 		{"-0.0", math.Copysign(0, -1), true},
+		{"0e99999999999999999999", 0, true},
+		{"-0.000E-99999999999999999999", math.Copysign(0, -1), true},
+		{"1e-1000001", 0, true},
+		{"-1e-1000001", math.Copysign(0, -1), true},
 		{"0.1", 0.1, true},
 		{"2.5e-1", 0.25, true},
 		{"9007199254740992", 1 << 53, true},
-		{"9007199254740993", 0, false},
-		{"9007199254740993.0", 0, false},
-		{"9.007199254740993e15", 0, false},
+		{"9007199254740993", 1 << 53, true},
+		{"9007199254740993.0", 1 << 53, true},
+		{"9.007199254740993e15", 1 << 53, true},
 		{"9007199254740994", 1<<53 + 2, true},
 		{"-9223372036854775808", -0x1p63, true},
-		{"18446744073709551615", 0, false},
+		{"18446744073709551615", 0x1p64, true},
 		{"1e400", 0, false},
 	} {
 		t.Run(string(test.number), func(t *testing.T) {

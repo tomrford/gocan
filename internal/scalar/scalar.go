@@ -10,6 +10,8 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"strconv"
+	"strings"
 )
 
 // Choice assigns a label to one exact raw integer value.
@@ -156,6 +158,11 @@ func DecodeSigned(bits uint32, raw uint64) int64 {
 // ExactSigned converts a Go numeric value to int64 without loss.
 func ExactSigned(value any) (int64, error) {
 	if number, ok := value.(json.Number); ok {
+		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+			if integer, err := number.Int64(); err == nil {
+				return integer, nil
+			}
+		}
 		rational, err := jsonRational(number)
 		if err != nil {
 			return 0, err
@@ -191,6 +198,11 @@ func ExactSigned(value any) (int64, error) {
 // ExactUnsigned converts a Go numeric value to uint64 without loss.
 func ExactUnsigned(value any) (uint64, error) {
 	if number, ok := value.(json.Number); ok {
+		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+			if integer, err := strconv.ParseUint(string(number), 10, 64); err == nil {
+				return integer, nil
+			}
+		}
 		rational, err := jsonRational(number)
 		if err != nil {
 			return 0, err
@@ -223,20 +235,14 @@ func ExactUnsigned(value any) (uint64, error) {
 	}
 }
 
-// NumericFloat converts a Go numeric value to float64. An integer that float64
-// cannot represent exactly is rejected rather than rounded. Fractional
-// json.Number values round to the nearest float64.
+// NumericFloat converts a Go numeric value to float64. Native Go integers that
+// float64 cannot represent exactly are rejected. JSON numbers use normal
+// float64 rounding, including underflow to zero, and reject overflow.
 func NumericFloat(value any) (float64, error) {
 	if number, ok := value.(json.Number); ok {
-		rational, err := jsonRational(number)
-		if err != nil {
-			return 0, err
+		if !json.Valid([]byte(number)) {
+			return 0, fmt.Errorf("invalid JSON number %q", number)
 		}
-		floating, exact := rational.Float64()
-		if math.IsInf(floating, 0) || rational.IsInt() && !exact {
-			return 0, fmt.Errorf("value %s cannot be represented as float64 without overflow or integer precision loss", number)
-		}
-		// Parse the original spelling to preserve floating-point negative zero.
 		return number.Float64()
 	}
 	reflected := reflect.ValueOf(value)
@@ -265,14 +271,25 @@ func NumericFloat(value any) (float64, error) {
 	}
 }
 
-// jsonRational retains the exact decimal value, including exponent notation.
-// Validate JSON syntax first because Rat.SetString also accepts fractions and
-// non-decimal literals.
+// jsonRational is the fallback for exact integer conversion. A float magnitude
+// check rejects huge exponents before Rat.SetString can expand them. Rounded
+// boundary values still reach the exact check; float64 never supplies the integer.
 func jsonRational(number json.Number) (*big.Rat, error) {
-	if json.Valid([]byte(number)) {
-		if rational, ok := new(big.Rat).SetString(string(number)); ok {
-			return rational, nil
+	floating, err := NumericFloat(number)
+	if err != nil {
+		return nil, err
+	}
+	if floating == 0 {
+		mantissa, _, _ := strings.Cut(strings.ToLower(string(number)), "e")
+		if strings.Trim(mantissa, "-0.") == "" {
+			return new(big.Rat), nil
 		}
+	}
+	if math.Abs(floating) < 1 || floating < -0x1p63 || floating > 0x1p64 {
+		return nil, fmt.Errorf("value %s is outside the integer range", number)
+	}
+	if rational, ok := new(big.Rat).SetString(string(number)); ok {
+		return rational, nil
 	}
 	return nil, fmt.Errorf("invalid or unsupported JSON number %q", number)
 }
