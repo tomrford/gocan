@@ -158,6 +158,20 @@ func TestFailuresReleaseLink(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	waiting, err := link.Begin(ctx, []byte{0x3e, 0})
+	if err != nil {
+		t.Fatalf("Begin before response timeouts: %v", err)
+	}
+	t.Cleanup(waiting.Close)
+	if _, err := waiting.Next(ctx, 5*time.Millisecond); !errors.Is(err, isotp.ErrFirstFrameTimeout) {
+		t.Fatalf("Next without a response = %v, want ErrFirstFrameTimeout", err)
+	}
+	deadlineContext, cancelDeadline := context.WithTimeout(ctx, time.Millisecond)
+	defer cancelDeadline()
+	if _, err := waiting.Next(deadlineContext, time.Second); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Next past caller deadline = %v, want context.DeadlineExceeded", err)
+	}
+	waiting.Close()
 	peer := rawPeer{
 		bus:        ecu,
 		capture:    capture,

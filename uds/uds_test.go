@@ -28,13 +28,15 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecuBus.Close() })
 
-	testerLink, err := isotp.New(testerBus, isotp.Config{
+	testerTransport := &flowControlBus{Bus: testerBus}
+	testerLink, err := isotp.New(testerTransport, isotp.Config{
 		TransmitID: 0x7e0,
 		ReceiveID:  0x7e8,
 		// Keep the segmented response in progress beyond P2* after its First
 		// Frame arrives.
 		AdvertisedSeparationTime: 30 * time.Millisecond,
 		ConsecutiveFrameTimeout:  200 * time.Millisecond,
+		TransmitRetryTimeout:     5 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New tester link: %v", err)
@@ -77,6 +79,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		timeout   time.Duration
 		cancel    bool
 		partial   bool
+		blockFlow bool
 	}{
 		{name: "segmented DID", request: []byte{0x22, 0xf1, 0x90}, responses: [][]byte{{0x7f, 0x22, 0x78}, append([]byte{0x62}, responseData...)}, want: responseData},
 		{name: "rejected routine", request: []byte{0x31, 1, 0x12, 0x34}, responses: [][]byte{{0x7f, 0x31, 0x22}}, nrc: 0x22},
@@ -92,10 +95,14 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		{name: "suppressed pending timeout", request: []byte{0x10, 0x83}, mode: "wait", responses: [][]byte{{0x7f, 0x10, 0x78}}, kind: uds.ErrP2StarTimeout},
 		{name: "cancel suppressed wait", request: []byte{0x11, 0x81}, mode: "wait", cancel: true, kind: context.Canceled},
 		{name: "reset after cancellation", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
+		{name: "suppressed Flow Control timeout", request: []byte{0x11, 0x81}, mode: "wait", partial: true, blockFlow: true, kind: gocan.ErrTransmitQueueFull},
+		{name: "unsuppressed Flow Control timeout", request: []byte{0x11, 1}, partial: true, blockFlow: true, kind: gocan.ErrTransmitQueueFull},
+		{name: "reset after Flow Control timeout", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
 		{name: "incomplete suppressed response", request: []byte{0x11, 0x81}, mode: "wait", partial: true, kind: isotp.ErrConsecutiveFrameTimeout},
 	}
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
+			testerTransport.block = step.blockFlow
 			callContext, cancelCall := context.WithCancel(ctx)
 			if step.timeout != 0 {
 				cancelCall()
@@ -136,6 +143,9 @@ func TestClientExchangeLifecycle(t *testing.T) {
 				}
 			} else if !errors.Is(err, step.kind) {
 				t.Fatalf("error = %v, want %v", err, step.kind)
+			}
+			if step.blockFlow && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Flow Control failure lost its retry deadline: %v", err)
 			}
 			if !bytes.Equal(response.Data, step.want) || step.want != nil && response.Service != request.Service {
 				t.Fatalf("response = %#v, want service %#x data %x", response, request.Service, step.want)
@@ -202,6 +212,18 @@ func TestClientExchangeLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+type flowControlBus struct {
+	gocan.Bus
+	block bool
+}
+
+func (bus *flowControlBus) Send(ctx context.Context, frame gocan.Frame) error {
+	if bus.block && frame.Data[0]>>4 == 3 {
+		return gocan.ErrTransmitQueueFull
+	}
+	return bus.Bus.Send(ctx, frame)
 }
 
 func receiveRequest(ctx context.Context, link *isotp.Link, want []byte) error {

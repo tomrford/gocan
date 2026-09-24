@@ -213,7 +213,7 @@ func parseResponse(service ServiceID, payload []byte) (Response, *NegativeRespon
 
 func nextWithTimeout(ctx context.Context, exchange *isotp.Exchange, timeout time.Duration, timeoutError error) ([]byte, error) {
 	payload, err := exchange.Next(ctx, timeout)
-	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+	if errors.Is(err, isotp.ErrFirstFrameTimeout) {
 		return nil, timeoutError
 	}
 	return payload, err
