@@ -5,9 +5,13 @@
 package scalar
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
+	"strconv"
+	"strings"
 )
 
 // Choice assigns a label to one exact raw integer value.
@@ -17,9 +21,12 @@ type Choice struct {
 }
 
 // StringValue matches values of string kind, so a named string type carries a
-// label or text the same way a plain string does. It mirrors how the numeric
-// conversions accept any value of the right kind.
+// label or text the same way a plain string does, except json.Number, which
+// always denotes a number.
 func StringValue(value any) (string, bool) {
+	if _, ok := value.(json.Number); ok {
+		return "", false
+	}
 	reflected := reflect.ValueOf(value)
 	if reflected.IsValid() && reflected.Kind() == reflect.String {
 		return reflected.String(), true
@@ -150,6 +157,21 @@ func DecodeSigned(bits uint32, raw uint64) int64 {
 
 // ExactSigned converts a Go numeric value to int64 without loss.
 func ExactSigned(value any) (int64, error) {
+	if number, ok := value.(json.Number); ok {
+		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+			if integer, err := number.Int64(); err == nil {
+				return integer, nil
+			}
+		}
+		rational, err := jsonRational(number)
+		if err != nil {
+			return 0, err
+		}
+		if !rational.IsInt() || !rational.Num().IsInt64() {
+			return 0, fmt.Errorf("value %s is not an exact int64", number)
+		}
+		return rational.Num().Int64(), nil
+	}
 	reflected := reflect.ValueOf(value)
 	if !reflected.IsValid() {
 		return 0, fmt.Errorf("value is nil")
@@ -175,6 +197,21 @@ func ExactSigned(value any) (int64, error) {
 
 // ExactUnsigned converts a Go numeric value to uint64 without loss.
 func ExactUnsigned(value any) (uint64, error) {
+	if number, ok := value.(json.Number); ok {
+		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+			if integer, err := strconv.ParseUint(string(number), 10, 64); err == nil {
+				return integer, nil
+			}
+		}
+		rational, err := jsonRational(number)
+		if err != nil {
+			return 0, err
+		}
+		if !rational.IsInt() || !rational.Num().IsUint64() {
+			return 0, fmt.Errorf("value %s is not an exact uint64", number)
+		}
+		return rational.Num().Uint64(), nil
+	}
 	reflected := reflect.ValueOf(value)
 	if !reflected.IsValid() {
 		return 0, fmt.Errorf("value is nil")
@@ -198,9 +235,16 @@ func ExactUnsigned(value any) (uint64, error) {
 	}
 }
 
-// NumericFloat converts a Go numeric value to float64. An integer that float64
-// cannot represent exactly is rejected rather than rounded.
+// NumericFloat converts a Go numeric value to float64. Native Go integers that
+// float64 cannot represent exactly are rejected. JSON numbers use normal
+// float64 rounding, including underflow to zero, and reject overflow.
 func NumericFloat(value any) (float64, error) {
+	if number, ok := value.(json.Number); ok {
+		if !json.Valid([]byte(number)) {
+			return 0, fmt.Errorf("invalid JSON number %q", number)
+		}
+		return number.Float64()
+	}
 	reflected := reflect.ValueOf(value)
 	if !reflected.IsValid() {
 		return 0, fmt.Errorf("value is nil")
@@ -225,4 +269,27 @@ func NumericFloat(value any) (float64, error) {
 	default:
 		return 0, fmt.Errorf("value has type %T, want a number", value)
 	}
+}
+
+// jsonRational is the fallback for exact integer conversion. A float magnitude
+// check rejects huge exponents before Rat.SetString can expand them. Rounded
+// boundary values still reach the exact check; float64 never supplies the integer.
+func jsonRational(number json.Number) (*big.Rat, error) {
+	floating, err := NumericFloat(number)
+	if err != nil {
+		return nil, err
+	}
+	if floating == 0 {
+		mantissa, _, _ := strings.Cut(strings.ToLower(string(number)), "e")
+		if strings.Trim(mantissa, "-0.") == "" {
+			return new(big.Rat), nil
+		}
+	}
+	if math.Abs(floating) < 1 || floating < -0x1p63 || floating > 0x1p64 {
+		return nil, fmt.Errorf("value %s is outside the integer range", number)
+	}
+	if rational, ok := new(big.Rat).SetString(string(number)); ok {
+		return rational, nil
+	}
+	return nil, fmt.Errorf("invalid or unsupported JSON number %q", number)
 }

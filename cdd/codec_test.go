@@ -2,6 +2,7 @@ package cdd_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -36,6 +37,12 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	}
 	if values["Heater"] != "On" || values["Coolant"] != 25.0 || values["Cycles"] != uint64(7) {
 		t.Fatalf("thermal values = %#v", values)
+	}
+	jsonPayload, err := thermal.Read[0].PositiveResponse.Record.Encode(cdd.Values{
+		"Heater": json.Number("1"), "Coolant": json.Number("25.0"), "Cycles": json.Number("7e0"),
+	})
+	if err != nil || !bytes.Equal(jsonPayload, payload) {
+		t.Fatalf("JSON thermal payload = %x, %v; want %x", jsonPayload, err, payload)
 	}
 
 	// An off-grid physical value is quantized to the nearest raw value.
@@ -82,6 +89,17 @@ func TestDIDCodecLifecycle(t *testing.T) {
 		!reflect.DeepEqual(values["Coefficients"], []uint64{1, 2, 3, 4}) ||
 		values["Gain"] != 0.25 || values["ExactCounter"] != uint64(1<<53)+1 {
 		t.Fatalf("nameplate values = %#v", values)
+	}
+	nameplateValues["Coefficients"] = []json.Number{"1", "2.0", "3e0", "4"}
+	nameplateValues["Gain"] = json.Number("0.25")
+	nameplateValues["ExactCounter"] = json.Number("9007199254740993.0")
+	jsonPayload, err = nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues)
+	if err != nil || !bytes.Equal(jsonPayload, wantNameplate) {
+		t.Fatalf("JSON nameplate payload = %x, %v; want %x", jsonPayload, err, wantNameplate)
+	}
+	nameplateValues["SerialNumber"] = json.Number("123456789012")
+	if _, err := nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues); err == nil {
+		t.Fatal("ASCII field accepted json.Number as text")
 	}
 
 	buffer, ok := database.DIDByName("UploadBuffer")
