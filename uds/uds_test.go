@@ -28,12 +28,15 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ecuBus.Close() })
 
-	testerLink, err := isotp.New(testerBus, isotp.Config{
+	testerTransport := &flowControlBus{Bus: testerBus}
+	testerLink, err := isotp.New(testerTransport, isotp.Config{
 		TransmitID: 0x7e0,
 		ReceiveID:  0x7e8,
 		// Keep the segmented response in progress beyond P2* after its First
 		// Frame arrives.
 		AdvertisedSeparationTime: 30 * time.Millisecond,
+		ConsecutiveFrameTimeout:  200 * time.Millisecond,
+		TransmitRetryTimeout:     5 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New tester link: %v", err)
@@ -65,71 +68,107 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	responseData := bytes.Repeat([]byte{0x5a}, 80)
-	serverResult := make(chan error, 1)
-	go func() {
-		if err := receiveRequest(ctx, ecuLink, []byte{0x22, 0xf1, 0x90}); err != nil {
-			serverResult <- err
-			return
+	steps := []struct {
+		name      string
+		request   []byte
+		responses [][]byte
+		mode      string // Empty for Do, "send" for send-only, "wait" for waiting Send.
+		want      []byte
+		kind      error
+		nrc       uds.ResponseCode
+		timeout   time.Duration
+		cancel    bool
+		partial   bool
+		blockFlow bool
+	}{
+		{name: "segmented DID", request: []byte{0x22, 0xf1, 0x90}, responses: [][]byte{{0x7f, 0x22, 0x78}, append([]byte{0x62}, responseData...)}, want: responseData},
+		{name: "rejected routine", request: []byte{0x31, 1, 0x12, 0x34}, responses: [][]byte{{0x7f, 0x31, 0x22}}, nrc: 0x22},
+		{name: "send-only tester", request: []byte{0x3e, 0x80}, mode: "send", timeout: 100 * time.Millisecond},
+		{name: "pending session timeout", request: []byte{0x10, 3}, responses: [][]byte{{0x7f, 0x10, 0x78}}, kind: uds.ErrP2StarTimeout},
+		{name: "reset after timeout", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
+		{name: "mislabeled pending", request: []byte{0x36, 1}, responses: [][]byte{{0x7f, 0x31, 0x78}, {0x76, 1}}, want: []byte{1}},
+		{name: "suppressed silence", request: []byte{0x11, 0x81}, mode: "wait"},
+		{name: "unsuppressed silence", request: []byte{0x11, 1}, kind: uds.ErrP2Timeout},
+		{name: "deadline before P2", request: []byte{0x3e, 0x80}, mode: "wait", timeout: 100 * time.Millisecond, kind: context.DeadlineExceeded},
+		{name: "suppressed rejection", request: []byte{0x11, 0x81}, mode: "wait", responses: [][]byte{{0x7f, 0x11, 0x22}}, nrc: 0x22},
+		{name: "suppressed pending completion", request: []byte{0x31, 0x81, 0x12, 0x34}, mode: "wait", responses: [][]byte{{0x7f, 0x31, 0x78}, {0x71, 1, 0x12, 0x34}}},
+		{name: "suppressed pending timeout", request: []byte{0x10, 0x83}, mode: "wait", responses: [][]byte{{0x7f, 0x10, 0x78}}, kind: uds.ErrP2StarTimeout},
+		{name: "cancel suppressed wait", request: []byte{0x11, 0x81}, mode: "wait", cancel: true, kind: context.Canceled},
+		{name: "reset after cancellation", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
+		{name: "suppressed Flow Control timeout", request: []byte{0x11, 0x81}, mode: "wait", partial: true, blockFlow: true, kind: gocan.ErrTransmitQueueFull},
+		{name: "unsuppressed Flow Control timeout", request: []byte{0x11, 1}, partial: true, blockFlow: true, kind: gocan.ErrTransmitQueueFull},
+		{name: "reset after Flow Control timeout", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
+		{name: "incomplete suppressed response", request: []byte{0x11, 0x81}, mode: "wait", partial: true, kind: isotp.ErrConsecutiveFrameTimeout},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			testerTransport.block = step.blockFlow
+			callContext, cancelCall := context.WithCancel(ctx)
+			if step.timeout != 0 {
+				cancelCall()
+				callContext, cancelCall = context.WithTimeout(ctx, step.timeout)
+			}
+			defer cancelCall()
+			serverResult := make(chan error, 1)
+			go func() {
+				serverErr := receiveRequest(ctx, ecuLink, step.request)
+				if serverErr == nil && step.mode != "send" && client.RetentionCursor() == capture.End() {
+					t.Error("active exchange did not retain its response boundary")
+				}
+				if step.cancel {
+					cancelCall()
+				}
+				if step.partial && serverErr == nil {
+					serverErr = ecuBus.Send(ctx, gocan.Frame{ID: 0x7e8, DLC: 8, Data: [64]byte{0x10, 8, 0x51, 1}})
+				}
+				for _, reply := range step.responses {
+					if serverErr == nil {
+						serverErr = ecuLink.Send(ctx, reply)
+					}
+				}
+				serverResult <- serverErr
+			}()
+			request := uds.Request{Service: uds.ServiceID(step.request[0]), Data: step.request[1:]}
+			var response uds.Response
+			var err error
+			if step.mode == "" {
+				response, err = client.Do(callContext, request)
+			} else {
+				err = client.Send(callContext, request, step.mode == "wait")
+			}
+			var negative *uds.NegativeResponseError
+			if step.nrc != 0 {
+				if !errors.As(err, &negative) || negative.Service != request.Service || negative.Code != step.nrc {
+					t.Fatalf("negative response = %v", err)
+				}
+			} else if !errors.Is(err, step.kind) {
+				t.Fatalf("error = %v, want %v", err, step.kind)
+			}
+			if step.blockFlow && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Flow Control failure lost its retry deadline: %v", err)
+			}
+			if !bytes.Equal(response.Data, step.want) || step.want != nil && response.Service != request.Service {
+				t.Fatalf("response = %#v, want service %#x data %x", response, request.Service, step.want)
+			}
+			if err := <-serverResult; err != nil {
+				t.Fatalf("ECU: %v", err)
+			}
+			if client.RetentionCursor() != capture.End() {
+				t.Fatal("completed exchange retained history")
+			}
+		})
+	}
+
+	for _, send := range []func() error{
+		func() error { return functional.SendECUReset(ctx, 0x81) },
+		func() error { return functional.SendCommunicationControlWithNode(ctx, 0x03, 1, 0x1234) },
+		func() error { return functional.SendCommunicationControl(ctx, 0x04, 1) },
+	} {
+		if err := send(); err == nil {
+			t.Fatal("functional send accepted an invalid subfunction")
 		}
-		// Reception can precede the sender's cursor update. Either send boundary
-		// must retain history before the ECU's RX record at the capture's end.
-		if client.RetentionCursor() == capture.End() {
-			t.Error("UDS request did not retain its response boundary")
-		}
-		serverResult <- runServerLifecycle(ctx, ecuLink, responseData)
-	}()
-
-	response, err := client.Do(ctx, uds.Request{Service: 0x22, Data: []byte{0xf1, 0x90}})
-	if err != nil {
-		t.Fatalf("Read DID: %v", err)
 	}
-	if response.Service != 0x22 || !bytes.Equal(response.Data, responseData) {
-		t.Fatalf("Read DID response = service %#x data %x", response.Service, response.Data)
-	}
-
-	if client.RetentionCursor() != capture.End() {
-		t.Fatal("completed UDS request retained history")
-	}
-
-	_, err = client.Do(ctx, uds.Request{Service: 0x31, Data: []byte{1, 0x12, 0x34}})
-	var negative *uds.NegativeResponseError
-	if !errors.As(err, &negative) {
-		t.Fatalf("Routine Control = %v, want NegativeResponseError", err)
-	}
-	if negative.Service != 0x31 || negative.Code != 0x22 {
-		t.Fatalf("negative response = service %#x code %#x", negative.Service, negative.Code)
-	}
-
-	if err := client.Send(ctx, uds.Request{Service: 0x3e, Data: []byte{0x80}}); err != nil {
-		t.Fatalf("Send Tester Present: %v", err)
-	}
-
-	_, err = client.Do(ctx, uds.Request{Service: 0x10, Data: []byte{3}})
-	if !errors.Is(err, uds.ErrP2StarTimeout) {
-		t.Fatalf("pending Session Control = %v, want ErrP2StarTimeout", err)
-	}
-
-	response, err = client.Do(ctx, uds.Request{Service: 0x11, Data: []byte{1}})
-	if err != nil {
-		t.Fatalf("ECU Reset after timeout: %v", err)
-	}
-	if response.Service != 0x11 || !bytes.Equal(response.Data, []byte{1}) {
-		t.Fatalf("ECU Reset response = service %#x data %x", response.Service, response.Data)
-	}
-
-	// A pending that echoes a stale service ID still restarts the wait.
-	response, err = client.Do(ctx, uds.Request{Service: 0x36, Data: []byte{1}})
-	if err != nil {
-		t.Fatalf("Transfer Data with mislabeled pending: %v", err)
-	}
-	if response.Service != 0x36 || !bytes.Equal(response.Data, []byte{1}) {
-		t.Fatalf("Transfer Data response = service %#x data %x", response.Service, response.Data)
-	}
-
-	if err := <-serverResult; err != nil {
-		t.Fatalf("ECU: %v", err)
-	}
-
+	// The first broadcast also proves the rejected requests emitted no traffic.
 	broadcasts := []struct {
 		send func() error
 		want []byte
@@ -139,6 +178,22 @@ func TestClientExchangeLifecycle(t *testing.T) {
 				return functional.SendCommunicationControl(ctx, uds.CommunicationDisableRxAndTx, uds.CommunicationTypeNormalAndNetworkManagement)
 			},
 			want: []byte{0x28, 0x83, 0x03},
+		},
+		{
+			send: func() error { return functional.SendECUReset(ctx, uds.ResetHard) },
+			want: []byte{0x11, 0x81},
+		},
+		{
+			send: func() error {
+				return functional.SendCommunicationControlWithNode(ctx, uds.CommunicationEnableRxDisableTxWithNode, uds.CommunicationTypeNormal, 0x1234)
+			},
+			want: []byte{0x28, 0x84, 0x01, 0x12, 0x34},
+		},
+		{
+			send: func() error {
+				return functional.SendCommunicationControlWithNode(ctx, uds.CommunicationEnableRxAndTxWithNode, uds.CommunicationTypeNormal, 0x1234)
+			},
+			want: []byte{0x28, 0x85, 0x01, 0x12, 0x34},
 		},
 		{
 			send: func() error { return functional.SendControlDTCSetting(ctx, uds.DTCSettingOff, nil) },
@@ -159,49 +214,16 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 }
 
-func runServerLifecycle(ctx context.Context, link *isotp.Link, responseData []byte) error {
-	if err := link.Send(ctx, []byte{0x7f, 0x22, 0x78}); err != nil {
-		return fmt.Errorf("send ResponsePending: %w", err)
-	}
-	positive := append([]byte{0x62}, responseData...)
-	if err := link.Send(ctx, positive); err != nil {
-		return fmt.Errorf("send Read DID response: %w", err)
-	}
+type flowControlBus struct {
+	gocan.Bus
+	block bool
+}
 
-	if err := receiveRequest(ctx, link, []byte{0x31, 1, 0x12, 0x34}); err != nil {
-		return err
+func (bus *flowControlBus) Send(ctx context.Context, frame gocan.Frame) error {
+	if bus.block && frame.Data[0]>>4 == 3 {
+		return gocan.ErrTransmitQueueFull
 	}
-	if err := link.Send(ctx, []byte{0x7f, 0x31, 0x22}); err != nil {
-		return fmt.Errorf("send negative response: %w", err)
-	}
-
-	if err := receiveRequest(ctx, link, []byte{0x3e, 0x80}); err != nil {
-		return err
-	}
-	if err := receiveRequest(ctx, link, []byte{0x10, 3}); err != nil {
-		return err
-	}
-	if err := link.Send(ctx, []byte{0x7f, 0x10, 0x78}); err != nil {
-		return fmt.Errorf("send final ResponsePending: %w", err)
-	}
-
-	if err := receiveRequest(ctx, link, []byte{0x11, 1}); err != nil {
-		return err
-	}
-	if err := link.Send(ctx, []byte{0x51, 1}); err != nil {
-		return fmt.Errorf("send ECU Reset response: %w", err)
-	}
-
-	if err := receiveRequest(ctx, link, []byte{0x36, 1}); err != nil {
-		return err
-	}
-	if err := link.Send(ctx, []byte{0x7f, 0x31, 0x78}); err != nil {
-		return fmt.Errorf("send mislabeled ResponsePending: %w", err)
-	}
-	if err := link.Send(ctx, []byte{0x76, 1}); err != nil {
-		return fmt.Errorf("send Transfer Data response: %w", err)
-	}
-	return nil
+	return bus.Bus.Send(ctx, frame)
 }
 
 func receiveRequest(ctx context.Context, link *isotp.Link, want []byte) error {

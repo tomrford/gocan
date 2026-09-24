@@ -19,6 +19,9 @@ func (link *Link) receive(ctx context.Context, firstFrameTimeout time.Duration) 
 	frame, err := link.nextFrame(firstFrameContext)
 	cancel()
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, ErrFirstFrameTimeout
+		}
 		return nil, err
 	}
 	first, err := parseFrame(frame.Frame)

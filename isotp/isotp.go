@@ -32,6 +32,9 @@ var (
 	// ErrExchangeClosed identifies an operation on a closed Exchange, and is the
 	// error reported to a Next call that Close cancelled.
 	ErrExchangeClosed = errors.New("ISO-TP exchange is closed")
+	// ErrFirstFrameTimeout indicates that no Single or First Frame arrived
+	// before the timeout passed to Exchange.Next.
+	ErrFirstFrameTimeout = errors.New("ISO-TP first-frame timeout")
 	// ErrFlowControlTimeout indicates that a sender did not receive Flow Control
 	// before its configured timeout.
 	ErrFlowControlTimeout = errors.New("ISO-TP flow-control timeout")
@@ -286,7 +289,8 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 // exchange. firstFrameTimeout limits only the wait for its Single or First
 // Frame; zero applies no additional limit. The caller's context and the Link's
 // consecutive-frame timeout govern the remainder. Concurrent calls are
-// serialised.
+// serialised. Expiry of firstFrameTimeout returns ErrFirstFrameTimeout;
+// caller cancellation, caller deadlines, and transport errors remain distinct.
 func (exchange *Exchange) Next(ctx context.Context, firstFrameTimeout time.Duration) ([]byte, error) {
 	if firstFrameTimeout < 0 {
 		return nil, errors.New("ISO-TP first-frame timeout must not be negative")
@@ -442,14 +446,14 @@ func watchedContext(parent context.Context, done <-chan struct{}, cause func() e
 	return ctx, func() { cancelCause(context.Canceled) }
 }
 
-// withCause replaces a cancellation error with why the operation context ended,
-// so callers see bus loss or exchange closure instead of context.Canceled.
+// withCause resolves cancellation and first-frame timeout errors against the
+// operation's terminal cause, including bus loss and exchange closure.
 //
-// Only cancellation errors are replaced. A protocol, framing, or provider error
-// reported as a deadline elapses is the more useful of the two, and this
-// package's own timeout sentinels already describe themselves.
+// First-frame expiry can race with cancellation propagation. Other protocol,
+// framing, and transport timeout errors retain their own meaning.
 func withCause(operationContext context.Context, err error) error {
-	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, ErrFirstFrameTimeout) {
 		return err
 	}
 	if cause := context.Cause(operationContext); cause != nil {

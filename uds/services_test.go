@@ -56,6 +56,12 @@ func TestSemanticClientLifecycle(t *testing.T) {
 	if err := client.CommunicationControl(ctx, uds.CommunicationDisableRxAndTx, uds.CommunicationTypeNormalAndNetworkManagement); err != nil {
 		t.Fatalf("CommunicationControl: %v", err)
 	}
+	if err := client.CommunicationControlWithNode(ctx, uds.CommunicationEnableRxDisableTxWithNode, uds.CommunicationTypeNormal, 0x1234); err != nil {
+		t.Fatalf("disable node transmission: %v", err)
+	}
+	if err := client.CommunicationControlWithNode(ctx, uds.CommunicationEnableRxAndTxWithNode, uds.CommunicationTypeNormal, 0x1234); err != nil {
+		t.Fatalf("enable node transmission: %v", err)
+	}
 	if err := client.ControlDTCSetting(ctx, uds.DTCSettingOff, nil); err != nil {
 		t.Fatalf("ControlDTCSetting: %v", err)
 	}
@@ -84,8 +90,11 @@ func TestSemanticClientLifecycle(t *testing.T) {
 	if err := client.TesterPresent(ctx); err != nil {
 		t.Fatalf("TesterPresent: %v", err)
 	}
-	if err := client.SendTesterPresent(ctx); err != nil {
+	if err := client.SendTesterPresent(ctx, false); err != nil {
 		t.Fatalf("SendTesterPresent: %v", err)
+	}
+	if err := client.SendECUReset(ctx, uds.ResetSoft, true); err != nil {
+		t.Fatalf("SendECUReset: %v", err)
 	}
 	resetRecord, err := client.ECUReset(ctx, uds.ResetHard)
 	if err != nil || !bytes.Equal(resetRecord, []byte{0x0a}) {
@@ -192,6 +201,8 @@ func serveSemanticLifecycle(ctx context.Context, link *isotp.Link) error {
 		{[]byte{0x27, 0x05, 0xaa}, []byte{0x67, 0x05, 0x12, 0x34}},
 		{[]byte{0x27, 0x06, 0xab, 0xcd}, []byte{0x67, 0x06}},
 		{[]byte{0x28, 0x03, 0x03}, []byte{0x68, 0x03}},
+		{[]byte{0x28, 0x04, 0x01, 0x12, 0x34}, []byte{0x68, 0x04}},
+		{[]byte{0x28, 0x05, 0x01, 0x12, 0x34}, []byte{0x68, 0x05}},
 		{[]byte{0x85, 0x02}, []byte{0xc5, 0x02}},
 		{[]byte{0x31, 0x01, 0xff, 0x00, 0x01}, []byte{0x71, 0x01, 0xff, 0x00, 0x80}},
 		{[]byte{0x34, 0x00, 0x24, 0x12, 0x34, 0x56, 0x78, 0x01, 0x00}, []byte{0x74, 0x20, 0x04, 0x02}},
@@ -208,6 +219,9 @@ func serveSemanticLifecycle(ctx context.Context, link *isotp.Link) error {
 		}
 	}
 	if err := receiveRequest(ctx, link, []byte{0x3e, 0x80}); err != nil {
+		return err
+	}
+	if err := receiveRequest(ctx, link, []byte{0x11, 0x83}); err != nil {
 		return err
 	}
 	if err := receiveRequest(ctx, link, []byte{0x11, 0x01}); err != nil {
@@ -281,7 +295,7 @@ func serveCDDDataIdentifierLifecycle(ctx context.Context, link *isotp.Link) erro
 }
 
 func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
-	client, _, ctx := newSemanticPair(t)
+	client, server, ctx := newSemanticPair(t)
 	if _, err := client.DiagnosticSessionControl(ctx, 0x83); err == nil || !strings.Contains(err.Error(), "suppressPositiveResponse") {
 		t.Fatalf("suppressed session error = %v", err)
 	}
@@ -303,6 +317,26 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 	}
 	if err := client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x05); err == nil || !strings.Contains(err.Error(), "reserved bits") {
 		t.Fatalf("reserved communication type error = %v", err)
+	}
+	for _, resetType := range []uds.ResetType{0, 0x7f, 0x81} {
+		if err := client.SendECUReset(ctx, resetType, false); err == nil {
+			t.Fatalf("SendECUReset accepted %#x", resetType)
+		}
+	}
+	for _, control := range []struct {
+		typeID uds.CommunicationControlType
+		comm   uds.CommunicationType
+	}{{0x03, 1}, {0x84, 1}, {0x04, 0}, {0x05, 4}} {
+		if err := client.CommunicationControlWithNode(ctx, control.typeID, control.comm, 0x1234); err == nil {
+			t.Fatalf("CommunicationControlWithNode accepted %#v", control)
+		}
+	}
+	// Rejections above must not emit requests or prevent the next valid send.
+	if err := client.SendECUReset(ctx, uds.ResetHard, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveRequest(ctx, server, []byte{0x11, 0x81}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -335,6 +369,15 @@ func TestSemanticClientValidatesResponses(t *testing.T) {
 				return err
 			},
 			kind: uds.ErrUnexpectedResponse,
+		},
+		{
+			name:     "node communication control trailing data",
+			request:  []byte{0x28, 0x05, 0x01, 0x12, 0x34},
+			response: []byte{0x68, 0x05, 0x12, 0x34},
+			call: func(ctx context.Context, client *uds.Client) error {
+				return client.CommunicationControlWithNode(ctx, uds.CommunicationEnableRxAndTxWithNode, uds.CommunicationTypeNormal, 0x1234)
+			},
+			kind: uds.ErrInvalidResponse,
 		},
 		{
 			name:     "download low nibble",

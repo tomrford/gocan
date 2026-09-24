@@ -78,9 +78,10 @@ type Client struct {
 	p2StarTimeout time.Duration
 }
 
-// RetentionCursor returns receive progress during an active Do or segmented
-// Send, and the capture's end otherwise. Pass it with other readers' cursors
-// to Capture.Prune. Queued calls and single-frame sends do not retain history.
+// RetentionCursor returns receive progress during an active Do, response-waiting
+// Send, or segmented Send, and the capture's end otherwise. Pass it with other
+// readers' cursors to Capture.Prune. Queued calls and send-only single frames
+// do not retain history.
 // Unsolicited responses received while idle are not protected.
 func (client *Client) RetentionCursor() gocan.Cursor {
 	return client.link.RetentionCursor()
@@ -109,6 +110,10 @@ func New(link *isotp.Link, config Config) (*Client, error) {
 // Do sends request and waits for its final response. ResponsePending restarts
 // the wait using P2*. The caller's context bounds the complete exchange.
 func (client *Client) Do(ctx context.Context, request Request) (Response, error) {
+	return client.exchange(ctx, request, false)
+}
+
+func (client *Client) exchange(ctx context.Context, request Request, allowSilence bool) (Response, error) {
 	payload, err := request.payload()
 	if err != nil {
 		return Response{}, err
@@ -124,6 +129,9 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 	timeoutError := ErrP2Timeout
 	for {
 		payload, err := nextWithTimeout(ctx, exchange, timeout, timeoutError)
+		if allowSilence && errors.Is(err, ErrP2Timeout) {
+			return Response{}, nil
+		}
 		if err != nil {
 			return Response{}, err
 		}
@@ -142,9 +150,20 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 	}
 }
 
-// Send transmits request without waiting for a response. It is intended for a
-// request whose service data already contains suppressPositiveResponse.
-func (client *Client) Send(ctx context.Context, request Request) error {
+// Send transmits a request whose service data already contains
+// suppressPositiveResponse. The caller owns the raw service and subfunction layout.
+// With waitNRC false, it returns after transmission without collecting responses.
+// With waitNRC true, it holds the exchange through P2, returning nil on silence
+// or a positive response, and NegativeResponseError on a final negative response.
+// ResponsePending requires a final response within P2*. Context and transport
+// errors always propagate. A nil error does not confirm completion of the action.
+// After a send-only call, timeout, or cancellation, callers must allow the server
+// to finish before starting another exchange on the same receive address.
+func (client *Client) Send(ctx context.Context, request Request, waitNRC bool) error {
+	if waitNRC {
+		_, err := client.exchange(ctx, request, true)
+		return err
+	}
 	payload, err := request.payload()
 	if err != nil {
 		return err
@@ -194,7 +213,7 @@ func parseResponse(service ServiceID, payload []byte) (Response, *NegativeRespon
 
 func nextWithTimeout(ctx context.Context, exchange *isotp.Exchange, timeout time.Duration, timeoutError error) ([]byte, error) {
 	payload, err := exchange.Next(ctx, timeout)
-	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+	if errors.Is(err, isotp.ErrFirstFrameTimeout) {
 		return nil, timeoutError
 	}
 	return payload, err

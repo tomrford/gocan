@@ -158,6 +158,20 @@ func TestFailuresReleaseLink(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	waiting, err := link.Begin(ctx, []byte{0x3e, 0})
+	if err != nil {
+		t.Fatalf("Begin before response timeouts: %v", err)
+	}
+	t.Cleanup(waiting.Close)
+	if _, err := waiting.Next(ctx, 5*time.Millisecond); !errors.Is(err, isotp.ErrFirstFrameTimeout) {
+		t.Fatalf("Next without a response = %v, want ErrFirstFrameTimeout", err)
+	}
+	deadlineContext, cancelDeadline := context.WithTimeout(ctx, time.Millisecond)
+	defer cancelDeadline()
+	if _, err := waiting.Next(deadlineContext, time.Second); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Next past caller deadline = %v, want context.DeadlineExceeded", err)
+	}
+	waiting.Close()
 	peer := rawPeer{
 		bus:        ecu,
 		capture:    capture,
@@ -262,34 +276,39 @@ func TestInvalidResponsesDoNotEscapeConfiguredBounds(t *testing.T) {
 }
 
 func TestExchangeStopsWithBus(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network virtual.Network
-	tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
-	if err != nil {
-		t.Fatalf("Open tester: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network virtual.Network
+		tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
+		if err != nil {
+			t.Fatalf("Open tester: %v", err)
+		}
+		t.Cleanup(func() { _ = tester.Close() })
 
-	link, err := isotp.New(tester, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	exchange, err := link.Begin(context.Background(), []byte{0x3e, 0})
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+		link, err := isotp.New(tester, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		exchange, err := link.Begin(context.Background(), []byte{0x3e, 0})
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		t.Cleanup(exchange.Close)
 
-	result := make(chan error, 1)
-	go func() {
-		_, err := exchange.Next(context.Background(), 0)
-		result <- err
-	}()
-	if err := tester.Close(); err != nil {
-		t.Fatalf("Close bus: %v", err)
-	}
-	if err := <-result; !errors.Is(err, gocan.ErrBusClosed) {
-		t.Fatalf("Next after bus close = %v, want ErrBusClosed", err)
-	}
-	exchange.Close()
+		result := make(chan error, 1)
+		go func() {
+			_, err := exchange.Next(context.Background(), time.Minute)
+			result <- err
+		}()
+		synctest.Wait()
+		if err := tester.Close(); err != nil {
+			t.Fatalf("Close bus: %v", err)
+		}
+		if err := <-result; !errors.Is(err, gocan.ErrBusClosed) {
+			t.Fatalf("Next after bus close = %v, want ErrBusClosed", err)
+		}
+		exchange.Close()
+	})
 }
 
 // TestSendAndReceivePairedLinks drives both state machines through the public
@@ -458,110 +477,124 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 // TestCloseCancelsPendingNext asserts that Close does not wait out a protocol
 // timeout, so `defer exchange.Close()` is safe on every path.
 func TestCloseCancelsPendingNext(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network virtual.Network
-	tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
-	if err != nil {
-		t.Fatalf("Open tester: %v", err)
-	}
-	t.Cleanup(func() { _ = tester.Close() })
-	ecu, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ecu"})
-	if err != nil {
-		t.Fatalf("Open ECU: %v", err)
-	}
-	t.Cleanup(func() { _ = ecu.Close() })
+	for _, stage := range []string{"first frame", "segmented response"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				capture := gocan.NewCapture()
+				var network virtual.Network
+				tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
+				if err != nil {
+					t.Fatalf("Open tester: %v", err)
+				}
+				t.Cleanup(func() { _ = tester.Close() })
+				ecu, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ecu"})
+				if err != nil {
+					t.Fatalf("Open ECU: %v", err)
+				}
+				t.Cleanup(func() { _ = ecu.Close() })
 
-	link, err := isotp.New(tester, isotp.Config{
-		TransmitID:              0x7e0,
-		ReceiveID:               0x7e8,
-		ConsecutiveFrameTimeout: time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	peer := rawPeer{
-		bus:        ecu,
-		capture:    capture,
-		cursor:     capture.End(),
-		receiveKey: gocan.FrameKey{Bus: ecu.ID(), ID: 0x7e0, Direction: gocan.DirectionReceive},
-		transmitID: 0x7e8,
-		dataLength: 8,
-	}
-	exchange, err := link.Begin(ctx, []byte{0x3e, 0})
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+				link, err := isotp.New(tester, isotp.Config{
+					TransmitID:              0x7e0,
+					ReceiveID:               0x7e8,
+					ConsecutiveFrameTimeout: time.Minute,
+				})
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				peer := rawPeer{
+					bus:        ecu,
+					capture:    capture,
+					cursor:     capture.End(),
+					receiveKey: gocan.FrameKey{Bus: ecu.ID(), ID: 0x7e0, Direction: gocan.DirectionReceive},
+					transmitID: 0x7e8,
+					dataLength: 8,
+				}
+				exchange, err := link.Begin(ctx, []byte{0x3e, 0})
+				if err != nil {
+					t.Fatalf("Begin: %v", err)
+				}
 
-	pending := make(chan error, 1)
-	t.Cleanup(exchange.Close)
-	go func() {
-		_, err := exchange.Next(context.Background(), 0)
-		pending <- err
-	}()
+				if stage == "first frame" {
+					if _, err := exchange.Next(ctx, time.Millisecond); !errors.Is(err, isotp.ErrFirstFrameTimeout) {
+						t.Fatalf("Next without response = %v, want ErrFirstFrameTimeout", err)
+					}
+				}
+				pending := make(chan error, 1)
+				t.Cleanup(exchange.Close)
+				go func() {
+					_, err := exchange.Next(ctx, time.Minute)
+					pending <- err
+				}()
+				synctest.Wait()
 
-	// Drive Next into reassembly so that it is provably blocked rather than
-	// merely scheduled: it has to answer a First Frame with Flow Control before
-	// it can wait for a Consecutive Frame that never arrives.
-	if _, err := peer.nextFrame(ctx); err != nil {
-		t.Fatalf("peer read request: %v", err)
-	}
-	if err := peer.sendFrame(ctx, []byte{0x10, 20, 1, 2, 3, 4, 5, 6}, true); err != nil {
-		t.Fatalf("peer send First Frame: %v", err)
-	}
-	control, err := peer.nextFrame(ctx)
-	if err != nil {
-		t.Fatalf("peer read Flow Control: %v", err)
-	}
-	if got := control.Frame.Data[0]; got != 0x30 {
-		t.Fatalf("peer read %#x, want a Continue Flow Control", got)
-	}
+				if stage == "segmented response" {
+					// Drive Next into reassembly so that it is provably blocked rather than
+					// merely scheduled: it has to answer a First Frame with Flow Control before
+					// it can wait for a Consecutive Frame that never arrives.
+					if _, err := peer.nextFrame(ctx); err != nil {
+						t.Fatalf("peer read request: %v", err)
+					}
+					if err := peer.sendFrame(ctx, []byte{0x10, 20, 1, 2, 3, 4, 5, 6}, true); err != nil {
+						t.Fatalf("peer send First Frame: %v", err)
+					}
+					control, err := peer.nextFrame(ctx)
+					if err != nil {
+						t.Fatalf("peer read Flow Control: %v", err)
+					}
+					if got := control.Frame.Data[0]; got != 0x30 {
+						t.Fatalf("peer read %#x, want a Continue Flow Control", got)
+					}
 
-	// Retention can inspect progress while Next waits for the rest of a payload.
-	progress := make(chan gocan.Cursor, 1)
-	go func() { progress <- link.RetentionCursor() }()
-	select {
-	case cursor := <-progress:
-		if cursor == (gocan.Cursor{}) {
-			t.Fatal("cursor did not advance past the First Frame")
-		}
-		if cursor != link.Cursor() || cursor == capture.End() {
-			t.Fatal("pending reception did not retain its receive position")
-		}
-		if err := capture.Prune(cursor); err != nil {
-			t.Fatalf("Prune receive progress: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("Cursor blocked behind pending reception")
-	}
+					// Retention can inspect progress while Next waits for the rest of a payload.
+					progress := make(chan gocan.Cursor, 1)
+					go func() { progress <- link.RetentionCursor() }()
+					select {
+					case cursor := <-progress:
+						if cursor == (gocan.Cursor{}) {
+							t.Fatal("cursor did not advance past the First Frame")
+						}
+						if cursor != link.Cursor() || cursor == capture.End() {
+							t.Fatal("pending reception did not retain its receive position")
+						}
+						if err := capture.Prune(cursor); err != nil {
+							t.Fatalf("Prune receive progress: %v", err)
+						}
+					case <-ctx.Done():
+						t.Fatal("Cursor blocked behind pending reception")
+					}
+				}
 
-	closed := make(chan struct{})
-	go func() {
-		exchange.Close()
-		close(closed)
-	}()
-	select {
-	case <-closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close did not return while Next was pending")
-	}
-	if err := <-pending; !errors.Is(err, isotp.ErrExchangeClosed) {
-		t.Fatalf("pending Next = %v, want ErrExchangeClosed", err)
-	}
-	if _, err := exchange.Next(context.Background(), 0); !errors.Is(err, isotp.ErrExchangeClosed) {
-		t.Fatalf("Next after Close = %v, want ErrExchangeClosed", err)
-	}
-	if link.RetentionCursor() != capture.End() {
-		t.Fatal("Close did not release receive history")
-	}
+				closed := make(chan struct{})
+				go func() {
+					exchange.Close()
+					close(closed)
+				}()
+				select {
+				case <-closed:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Close did not return while Next was pending")
+				}
+				if err := <-pending; !errors.Is(err, isotp.ErrExchangeClosed) {
+					t.Fatalf("pending Next = %v, want ErrExchangeClosed", err)
+				}
+				if _, err := exchange.Next(context.Background(), 0); !errors.Is(err, isotp.ErrExchangeClosed) {
+					t.Fatalf("Next after Close = %v, want ErrExchangeClosed", err)
+				}
+				if link.RetentionCursor() != capture.End() {
+					t.Fatal("Close did not release receive history")
+				}
 
-	// The link must be usable again.
-	next, err := link.Begin(ctx, []byte{0x3e, 0})
-	if err != nil {
-		t.Fatalf("Begin after Close: %v", err)
+				// The link must be usable again.
+				next, err := link.Begin(ctx, []byte{0x3e, 0})
+				if err != nil {
+					t.Fatalf("Begin after Close: %v", err)
+				}
+				next.Close()
+			})
+		})
 	}
-	next.Close()
 }
 
 // TestSegmentationConformance covers two ISO 15765-2 rules that pull in opposite
