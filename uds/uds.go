@@ -151,24 +151,28 @@ func (client *Client) exchange(ctx context.Context, request Request, allowSilenc
 }
 
 // Send transmits a request whose service data already contains
-// suppressPositiveResponse. The caller owns the raw service and subfunction layout.
-// With waitNRC false, it returns after transmission without collecting responses.
-// With waitNRC true, it holds the exchange through P2, returning nil on silence
-// or a positive response, and NegativeResponseError on a final negative response.
-// ResponsePending requires a final response within P2*. Context and transport
-// errors always propagate. A nil error does not confirm completion of the action.
-// After a send-only call, timeout, or cancellation, callers must allow the server
-// to finish before starting another exchange on the same receive address.
-func (client *Client) Send(ctx context.Context, request Request, waitNRC bool) error {
-	if waitNRC {
-		_, err := client.exchange(ctx, request, true)
-		return err
-	}
+// suppressPositiveResponse and returns without collecting responses. The caller
+// owns the raw service and subfunction layout. A nil error does not confirm
+// completion of the action. Callers must allow the server to finish before
+// starting another exchange on the same receive address.
+func (client *Client) Send(ctx context.Context, request Request) error {
 	payload, err := request.payload()
 	if err != nil {
 		return err
 	}
 	return client.link.Send(ctx, payload)
+}
+
+// SendAwaitNRC transmits a suppressed request like Send, then holds the exchange
+// through P2. It returns nil on silence or a positive response, and
+// NegativeResponseError on a final negative response. ResponsePending requires a
+// final response within P2*. Context and transport errors always propagate.
+// A nil error does not confirm completion of the action. After a timeout or
+// cancellation, callers must allow the server to finish before starting another
+// exchange on the same receive address.
+func (client *Client) SendAwaitNRC(ctx context.Context, request Request) error {
+	_, err := client.exchange(ctx, request, true)
+	return err
 }
 
 func (request Request) payload() ([]byte, error) {

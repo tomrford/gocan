@@ -90,10 +90,10 @@ func TestSemanticClientLifecycle(t *testing.T) {
 	if err := client.TesterPresent(ctx); err != nil {
 		t.Fatalf("TesterPresent: %v", err)
 	}
-	if err := client.SendTesterPresent(ctx, false); err != nil {
+	if err := client.SendTesterPresent(ctx); err != nil {
 		t.Fatalf("SendTesterPresent: %v", err)
 	}
-	if err := client.SendECUReset(ctx, uds.ResetSoft, true); err != nil {
+	if err := client.SendECUReset(ctx, uds.ResetSoft); err != nil {
 		t.Fatalf("SendECUReset: %v", err)
 	}
 	resetRecord, err := client.ECUReset(ctx, uds.ResetHard)
@@ -319,7 +319,7 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 		t.Fatalf("reserved communication type error = %v", err)
 	}
 	for _, resetType := range []uds.ResetType{0, 0x7f, 0x81} {
-		if err := client.SendECUReset(ctx, resetType, false); err == nil {
+		if err := client.SendECUReset(ctx, resetType); err == nil {
 			t.Fatalf("SendECUReset accepted %#x", resetType)
 		}
 	}
@@ -332,7 +332,7 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 		}
 	}
 	// Rejections above must not emit requests or prevent the next valid send.
-	if err := client.SendECUReset(ctx, uds.ResetHard, false); err != nil {
+	if err := client.SendECUReset(ctx, uds.ResetHard); err != nil {
 		t.Fatal(err)
 	}
 	if err := receiveRequest(ctx, server, []byte{0x11, 0x81}); err != nil {
