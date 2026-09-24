@@ -56,7 +56,9 @@ type Message struct {
 }
 
 // Values maps runtime-loaded signal names to their values. Encoding accepts
-// Go numeric values, bool for one-bit signals, and value-description strings.
+// Go numeric values, json.Number, bool for one-bit signals, and value-description
+// strings. JSON numbers preserve exact integers, including decimal and exponent
+// forms; fractional values round to float64 for scaled and floating-point signals.
 type Values map[string]any
 
 // FrameFormat is the message format declared by VFrameFormat.

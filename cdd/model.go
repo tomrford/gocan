@@ -228,7 +228,9 @@ type Precondition struct {
 }
 
 // Values maps record field names to their physical values. Encoding accepts Go
-// numeric values, strings for ASCII fields, and choice labels.
+// numeric values, json.Number, strings for ASCII fields, and choice labels.
+// JSON numbers preserve exact integers, including decimal and exponent forms;
+// fractional values round to float64 for scaled and floating-point fields.
 type Values map[string]any
 
 // ByteOrder describes the byte order of one coded field.

@@ -2,6 +2,7 @@ package dbc
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -95,6 +96,14 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	if frame.ID != 0x123 || frame.DLC != 8 || frame.Flags != 0 || frame.Data != wantData {
 		t.Fatalf("encoded frame = %#v, want ID 0x123 and data % x", frame, wantData[:8])
 	}
+	decoder := json.NewDecoder(strings.NewReader(`{"Enable":true,"Mode":1,"Temperature":25.5,"BigEndian":43981.0,"SignedCounter":-2e0}`))
+	decoder.UseNumber()
+	if err := decoder.Decode(&values); err != nil {
+		t.Fatal(err)
+	}
+	if jsonFrame, err := command.Encode(values); err != nil || jsonFrame != frame {
+		t.Fatalf("Encode JSON Command = %#v, %v; want %#v", jsonFrame, err, frame)
+	}
 	if payload, err := command.EncodePayload(values); err != nil || !bytes.Equal(payload, frame.Data[:command.Length]) {
 		t.Fatalf("EncodePayload Command = % x, %v; want % x", payload, err, frame.Data[:command.Length])
 	}
@@ -113,7 +122,7 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	assertDecoded(t, command, frame, "Temperature", 50.0)
 
 	// An off-grid physical value is quantized to the nearest raw value.
-	if err := command.Patch(&frame, Values{"Temperature": 50.03}); err != nil {
+	if err := command.Patch(&frame, Values{"Temperature": json.Number("50.03")}); err != nil {
 		t.Fatalf("Patch off-grid Temperature: %v", err)
 	}
 	assertDecoded(t, command, frame, "Temperature", 50.0)
@@ -135,6 +144,11 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	if err := command.Patch(&frame, Values{"Temperature": 300.0}); err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("out-of-range Patch error = %v", err)
 	}
+	for _, value := range []json.Number{"-1", "65536", "1.00000000000000000001", "NaN"} {
+		if err := command.Patch(&frame, Values{"BigEndian": value}); err == nil {
+			t.Fatalf("Patch accepted invalid BigEndian number %q", value)
+		}
+	}
 	if frame != beforeInvalidPatch {
 		t.Fatal("failed Patch modified frame")
 	}
@@ -143,7 +157,7 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("FloatStatus message was not resolved")
 	}
-	floatFrame, err := floatStatus.Encode(Values{"Ratio": 0.25})
+	floatFrame, err := floatStatus.Encode(Values{"Ratio": json.Number("0.25")})
 	if err != nil {
 		t.Fatalf("Encode FloatStatus: %v", err)
 	}
@@ -166,6 +180,12 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	assertDecoded(t, fast, fd, "Payload", payload)
 	if payload, err := fast.EncodePayload(fastValues); err != nil || !bytes.Equal(payload, fd.Data[:fast.Length]) {
 		t.Fatalf("EncodePayload FastStatus = % x, %v; want % x", payload, err, fd.Data[:fast.Length])
+	}
+	if err := fast.Patch(&fd, Values{"Payload": json.Number("1.8446744073709551615e19")}); err != nil {
+		t.Fatalf("Patch JSON uint64 maximum: %v", err)
+	}
+	if !bytes.Equal(fd.Data[:8], []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) || fd.Data[8] != 0x5a {
+		t.Fatalf("Patch JSON uint64 maximum = % x", fd.Data[:9])
 	}
 
 	wide, ok := db.MessageByName("WideData")
