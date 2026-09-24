@@ -37,13 +37,17 @@ func TestGeneratedSchedule(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer task.Stop()
-		if elapsed := time.Since(anchor); elapsed != 250*time.Millisecond {
-			t.Fatalf("StartFunc returned at %s, want 250ms", elapsed)
+		defer func() {
+			task.Stop()
+			<-task.Done()
+		}()
+		if elapsed := time.Since(anchor); elapsed != 0 {
+			t.Fatalf("StartFunc returned at %s, want 0", elapsed)
 		}
-		time.Sleep(600 * time.Millisecond)
+		time.Sleep(850 * time.Millisecond)
 		synctest.Wait()
 		task.Stop()
+		<-task.Done()
 		want := []transmission{{150 * time.Millisecond, 1}, {450 * time.Millisecond, 2}, {750 * time.Millisecond, 3}}
 		if !slices.Equal(sent, want) || calls != 3 {
 			t.Fatalf("sent = %v, calls = %d; want %v, 3", sent, calls, want)
@@ -92,9 +96,14 @@ func TestGeneratedFailures(t *testing.T) {
 				if !errors.Is(task.Err(), test.wantErr) || calls != 2 || sends != wantSends {
 					t.Fatalf("Err = %v, calls/sends = %d/%d; want %v, 2/%d", task.Err(), calls, sends, test.wantErr, wantSends)
 				}
-				// The same failure on the first callback must fail startup.
-				if task, err := cyclic.StartFunc(context.Background(), bus, generate, cyclic.Config{Period: time.Second}); task != nil || !errors.Is(err, test.wantErr) {
-					t.Fatalf("StartFunc = %v, %v; want nil, %v", task, err, test.wantErr)
+				// First-attempt failures use the same completion path.
+				task, err = cyclic.StartFunc(context.Background(), bus, generate, cyclic.Config{Period: time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-task.Done()
+				if !errors.Is(task.Err(), test.wantErr) {
+					t.Fatalf("first attempt: Err = %v, want %v", task.Err(), test.wantErr)
 				}
 			})
 		})
@@ -102,52 +111,60 @@ func TestGeneratedFailures(t *testing.T) {
 }
 
 func TestCallbackShutdown(t *testing.T) {
-	for name, wantErr := range map[string]error{"stop": nil, "cancel": context.Canceled} {
+	for name, wantErr := range map[string]error{"stop": nil, "callback stop": nil, "cancel": context.Canceled, "cancel before start": context.Canceled} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
+				if name == "cancel before start" {
+					cancel()
+				}
 				started, release := make(chan struct{}), make(chan struct{})
 				calls, sends := 0, 0
 				bus := &callbackBus{send: func(context.Context, gocan.Frame) error {
 					sends++
 					return nil
 				}}
-				task, err := cyclic.StartFunc(ctx, bus, func() (gocan.Frame, error) {
+				var task *cyclic.Task
+				var err error
+				task, err = cyclic.StartFunc(ctx, bus, func() (gocan.Frame, error) {
 					calls++
-					if calls == 2 {
-						close(started)
-						<-release
+					close(started)
+					<-release
+					if name == "callback stop" {
+						task.Stop()
 					}
-					return gocan.Frame{}, nil
+					return gocan.Frame{ID: 1}, nil
 				}, cyclic.Config{Period: time.Second})
 				if err != nil {
 					t.Fatal(err)
 				}
-				<-started
-				stopped := make(chan struct{})
-				go func() {
-					if wantErr != nil {
-						cancel()
-						<-task.Done()
-					} else {
-						task.Stop()
+				if name == "cancel before start" {
+					<-task.Done()
+					if !errors.Is(task.Err(), wantErr) || calls != 0 || sends != 0 {
+						t.Fatalf("Err = %v, calls/sends = %d/%d; want %v, 0/0", task.Err(), calls, sends, wantErr)
 					}
-					close(stopped)
-				}()
-				synctest.Wait()
+					return
+				}
+				<-started
+				if task.Frame() != (gocan.Frame{}) {
+					t.Fatal("Frame is nonzero before the first callback returns")
+				}
+				if wantErr != nil {
+					cancel()
+				} else if name == "stop" {
+					task.Stop()
+				}
 				select {
 				case <-task.Done():
 					t.Error("Done closed while callback was active")
-				case <-stopped:
-					t.Error("Stop returned while callback was active")
 				default:
 				}
 				close(release)
-				<-stopped
+				<-task.Done()
 				task.Stop()
-				if !errors.Is(task.Err(), wantErr) || calls != 2 || sends != 1 {
-					t.Fatalf("Err = %v, calls/sends = %d/%d; want %v, 2/1", task.Err(), calls, sends, wantErr)
+				if !errors.Is(task.Err(), wantErr) || calls != 1 || sends != 0 || task.Frame().ID != 1 {
+					t.Fatalf("Err = %v, calls/sends = %d/%d, Frame = %v; want %v, 1/0, ID 1", task.Err(), calls, sends, task.Frame(), wantErr)
 				}
 			})
 		})
@@ -174,7 +191,10 @@ func TestRetryScheduleAndStop(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(9 * time.Millisecond)
+		if elapsed := time.Since(anchor); elapsed != 0 {
+			t.Fatalf("Start returned at %s, want 0", elapsed)
+		}
+		time.Sleep(11 * time.Millisecond)
 		synctest.Wait()
 		// Update must not wait for the rejected occurrence to finish. That
 		// occurrence retains its snapshot; the next observes the new frame.
@@ -190,6 +210,7 @@ func TestRetryScheduleAndStop(t *testing.T) {
 		synctest.Wait()
 		start := time.Now()
 		task.Stop()
+		<-task.Done()
 		if task.Err() != nil || time.Now() != start {
 			t.Fatalf("Stop: %v after %v", task.Err(), time.Since(start))
 		}
@@ -199,12 +220,16 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			config.TransmitRetryTimeout = budget
 			calls := 0
 			start = time.Now()
-			_, err := cyclic.StartFunc(context.Background(), bus, func() (gocan.Frame, error) {
+			task, err := cyclic.StartFunc(context.Background(), bus, func() (gocan.Frame, error) {
 				calls++
 				return gocan.Frame{}, nil
 			}, config)
-			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != min(budget, config.Period) || calls != 1 {
-				t.Fatalf("budget %v: %v after %v, generated %d times", budget, err, time.Since(start), calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-task.Done()
+			if !errors.Is(task.Err(), context.DeadlineExceeded) || time.Since(start) != min(budget, config.Period) || calls != 1 {
+				t.Fatalf("budget %v: %v after %v, generated %d times", budget, task.Err(), time.Since(start), calls)
 			}
 		}
 	})
