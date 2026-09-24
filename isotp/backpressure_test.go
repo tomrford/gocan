@@ -25,6 +25,12 @@ func TestTransmitBackpressure(t *testing.T) {
 			return &backpressureBus{Bus: bus}
 		}
 		senderBus, receiverBus := open(1), open(2)
+		if _, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708, TransmitRetryTimeout: -1}); err == nil {
+			t.Fatal("New accepted a negative retry timeout")
+		}
+		if _, err := isotp.NewFunctional(senderBus, isotp.FunctionalConfig{TransmitID: 0x7df, TransmitRetryTimeout: -1}); err == nil {
+			t.Fatal("NewFunctional accepted a negative retry timeout")
+		}
 		sender, err := isotp.New(senderBus, isotp.Config{TransmitID: 0x700, ReceiveID: 0x708, TransmitRetryTimeout: 20 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)

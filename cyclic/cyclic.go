@@ -235,7 +235,9 @@ func (task *Task) send(anchor time.Time) error {
 	ctx := task.ctx
 	if task.retryTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, nextDeadline(anchor, task.period, time.Now()))
+		// The next occurrence also bounds retries and, like their budget, ends
+		// them with the rejection rather than a deadline.
+		ctx, cancel = context.WithDeadlineCause(ctx, nextDeadline(anchor, task.period, time.Now()), gocan.ErrTransmitQueueFull)
 		defer cancel()
 	}
 	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
