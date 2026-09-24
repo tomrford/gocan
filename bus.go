@@ -110,7 +110,13 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 		} else if cause != nil {
 			return errors.Join(err, cause)
 		}
-		err = bus.Send(ctx, frame)
+		nextErr := bus.Send(ctx, frame)
+		// Expiry while the driver waits for its lock still ends retries with
+		// the last rejection. A definite acceptance or other failure wins.
+		if ctx.Err() != nil && errors.Is(nextErr, ctx.Err()) {
+			continue
+		}
+		err = nextErr
 		if !errors.Is(err, ErrTransmitQueueFull) {
 			return err
 		}
