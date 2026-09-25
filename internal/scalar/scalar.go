@@ -235,14 +235,15 @@ func ExactUnsigned(value any) (uint64, error) {
 	}
 }
 
-// NumericFloat converts a Go numeric value or json.Number to float64 with
-// normal rounding. JSON numbers may underflow to zero but must not overflow.
-func NumericFloat(value any) (float64, error) {
+// NumericFloat rounds a Go numeric value or json.Number directly to bits
+// (32 or 64) of floating-point precision, returning the result as float64.
+// JSON numbers may underflow to zero but must not overflow.
+func NumericFloat(value any, bits int) (float64, error) {
 	if number, ok := value.(json.Number); ok {
 		if !json.Valid([]byte(number)) {
 			return 0, fmt.Errorf("invalid JSON number %q", number)
 		}
-		return number.Float64()
+		return strconv.ParseFloat(string(number), bits)
 	}
 	reflected := reflect.ValueOf(value)
 	if !reflected.IsValid() {
@@ -250,10 +251,19 @@ func NumericFloat(value any) (float64, error) {
 	}
 	switch reflected.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if bits == 32 {
+			return float64(float32(reflected.Int())), nil
+		}
 		return float64(reflected.Int()), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if bits == 32 {
+			return float64(float32(reflected.Uint())), nil
+		}
 		return float64(reflected.Uint()), nil
 	case reflect.Float32, reflect.Float64:
+		if bits == 32 {
+			return float64(float32(reflected.Float())), nil
+		}
 		return reflected.Float(), nil
 	default:
 		return 0, fmt.Errorf("value has type %T, want a number", value)
@@ -282,7 +292,7 @@ func LinearFloat(value any) (float64, error) {
 		}
 		return floating, nil
 	default:
-		return NumericFloat(value)
+		return NumericFloat(value, 64)
 	}
 }
 
@@ -290,7 +300,7 @@ func LinearFloat(value any) (float64, error) {
 // check rejects huge exponents before Rat.SetString can expand them. Rounded
 // boundary values still reach the exact check; float64 never supplies the integer.
 func jsonRational(number json.Number) (*big.Rat, error) {
-	floating, err := NumericFloat(number)
+	floating, err := NumericFloat(number, 64)
 	if err != nil {
 		return nil, err
 	}

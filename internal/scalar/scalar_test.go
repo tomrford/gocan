@@ -103,7 +103,7 @@ func TestJSONFloats(t *testing.T) {
 		{"1e400", 0, false},
 	} {
 		t.Run(string(test.number), func(t *testing.T) {
-			if value, err := NumericFloat(test.number); (err == nil) != test.ok || err == nil && math.Float64bits(value) != math.Float64bits(test.want) {
+			if value, err := NumericFloat(test.number, 64); (err == nil) != test.ok || err == nil && math.Float64bits(value) != math.Float64bits(test.want) {
 				t.Fatalf("NumericFloat = %v, %v; want %v, success %t", value, err, test.want, test.ok)
 			}
 		})
@@ -119,8 +119,10 @@ func TestInvalidJSONNumbers(t *testing.T) {
 			if _, err := ExactUnsigned(number); err == nil {
 				t.Fatal("ExactUnsigned accepted invalid JSON number")
 			}
-			if _, err := NumericFloat(number); err == nil {
-				t.Fatal("NumericFloat accepted invalid JSON number")
+			for _, bits := range []int{32, 64} {
+				if _, err := NumericFloat(number, bits); err == nil {
+					t.Fatalf("NumericFloat accepted invalid JSON number for float%d", bits)
+				}
 			}
 		})
 	}

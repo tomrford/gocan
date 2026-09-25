@@ -275,6 +275,12 @@ func TestSignalNumericConversion(t *testing.T) {
 		{ValueTypeFloat32, uint64(16777217), 0x4b800000},
 		{ValueTypeFloat32, uint64(9007199254740993), 0x5a000000},
 		{ValueTypeFloat32, json.Number("9007199254740993"), 0x5a000000},
+		// These integers sit just beyond a float32 midpoint. Going through
+		// float64 first would round them onto it and choose the wrong float32.
+		{ValueTypeFloat32, uint64(18014399583223809), 0x5a800001},
+		{ValueTypeFloat32, int64(-18014399583223809), 0xda800001},
+		{ValueTypeFloat32, json.Number("18014399583223809"), 0x5a800001},
+		{ValueTypeFloat32, json.Number("1.0000000596046447753906250000000001"), 0x3f800001},
 		{ValueTypeFloat64, uint64(9007199254740993), 0x4340000000000000},
 		{ValueTypeFloat64, json.Number("9007199254740993"), 0x4340000000000000},
 		{ValueTypeFloat64, int64(-9007199254740993), 0xc340000000000000},
@@ -288,6 +294,12 @@ func TestSignalNumericConversion(t *testing.T) {
 		}
 		if raw, err := encodeSignalValue(signal, test.value); err != nil || raw != test.raw {
 			t.Fatalf("kind %v, %T(%v): raw = %#x, %v; want %#x", test.kind, test.value, test.value, raw, err, test.raw)
+		}
+	}
+	for _, value := range []any{math.MaxFloat64, math.NaN(), math.Inf(1), json.Number("1e39")} {
+		signal := Signal{ValueType: ValueTypeFloat32, BitLength: 32, Factor: 1}
+		if _, err := encodeSignalValue(signal, value); err == nil {
+			t.Fatalf("float32 accepted non-finite or overflowing value %v", value)
 		}
 	}
 

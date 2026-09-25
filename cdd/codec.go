@@ -322,7 +322,7 @@ func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) 
 		return scalar.RawForLabel(field.Choices, label, field.BitLength, field.Encoding == EncodingSigned)
 	}
 	if field.Encoding == EncodingFloat || field.Encoding == EncodingDouble {
-		floating, err := scalar.NumericFloat(value)
+		floating, err := scalar.NumericFloat(value, int(field.BitLength))
 		if err != nil {
 			return 0, err
 		}
@@ -330,11 +330,7 @@ func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) 
 			return 0, fmt.Errorf("float value must be finite")
 		}
 		if field.Encoding == EncodingFloat {
-			converted := float32(floating)
-			if math.IsInf(float64(converted), 0) {
-				return 0, fmt.Errorf("value exceeds float32")
-			}
-			return uint64(math.Float32bits(converted)), nil
+			return uint64(math.Float32bits(float32(floating))), nil
 		}
 		return math.Float64bits(floating), nil
 	}
