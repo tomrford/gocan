@@ -57,8 +57,11 @@ type Message struct {
 
 // Values maps runtime-loaded signal names to their values. Encoding accepts
 // Go numeric values, json.Number, bool for one-bit signals, and value-description
-// strings. JSON numbers must be exact integers for unscaled integer signals;
-// scaled and floating-point signals use normal float64 rounding.
+// strings. Unscaled integer signals require exact integers. Floating-point
+// signals use normal rounding, with float64 arithmetic when scaled.
+// Scaled integer signals use float64 arithmetic and round to the nearest raw
+// value; native Go integers must first convert to float64 exactly, while JSON
+// numbers use normal float64 rounding.
 type Values map[string]any
 
 // FrameFormat is the message format declared by VFrameFormat.

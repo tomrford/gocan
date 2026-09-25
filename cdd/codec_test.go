@@ -3,6 +3,7 @@ package cdd_test
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -97,6 +98,32 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if err != nil || !bytes.Equal(jsonPayload, wantNameplate) {
 		t.Fatalf("JSON nameplate payload = %x, %v; want %x", jsonPayload, err, wantNameplate)
 	}
+	// The float32 rounds directly to its precision; the adjacent integer stays exact.
+	wantRounded := bytes.Clone(wantNameplate)
+	for _, test := range []struct {
+		gain any
+		wire []byte
+	}{
+		{uint64(9007199254740993), []byte{0x5a, 0x00, 0x00, 0x00}},
+		{json.Number("9007199254740993"), []byte{0x5a, 0x00, 0x00, 0x00}},
+		{uint64(18014399583223809), []byte{0x5a, 0x80, 0x00, 0x01}},
+		{int64(-18014399583223809), []byte{0xda, 0x80, 0x00, 0x01}},
+		{json.Number("18014399583223809"), []byte{0x5a, 0x80, 0x00, 0x01}},
+	} {
+		copy(wantRounded[16:20], test.wire)
+		nameplateValues["Gain"] = test.gain
+		payload, err = nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues)
+		if err != nil || !bytes.Equal(payload, wantRounded) {
+			t.Fatalf("rounded Gain %T(%v) = %x, %v; want %x", test.gain, test.gain, payload, err, wantRounded)
+		}
+	}
+	for _, gain := range []any{math.MaxFloat64, math.NaN(), math.Inf(1), json.Number("1e39")} {
+		nameplateValues["Gain"] = gain
+		if _, err := nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues); err == nil {
+			t.Fatalf("Gain accepted non-finite or overflowing value %v", gain)
+		}
+	}
+	nameplateValues["Gain"] = 0.25
 	nameplateValues["SerialNumber"] = json.Number("123456789012")
 	if _, err := nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues); err == nil {
 		t.Fatal("ASCII field accepted json.Number as text")

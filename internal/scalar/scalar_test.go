@@ -27,11 +27,13 @@ func TestBoundaries(t *testing.T) {
 	if raw, err := LinearRaw(8, false, -0.4, 1, 0); err != nil || raw != 0 {
 		t.Fatalf("LinearRaw(-0.4) = %#x, %v, want raw 0", raw, err)
 	}
-	if _, err := NumericFloat(uint64(1<<53 + 1)); err == nil {
-		t.Fatal("NumericFloat accepted an integer float64 cannot represent")
+	for _, value := range []any{uint64(1<<53 + 1), int64(-1<<53 - 1), int64(math.MaxInt64), uint64(math.MaxUint64)} {
+		if _, err := LinearFloat(value); err == nil {
+			t.Fatalf("LinearFloat accepted an integer float64 cannot represent: %v", value)
+		}
 	}
-	if value, err := NumericFloat(int64(math.MinInt64)); err != nil || value != -math.Exp2(63) {
-		t.Fatalf("NumericFloat(MinInt64) = %v, %v", value, err)
+	if value, err := LinearFloat(int64(math.MinInt64)); err != nil || value != -math.Exp2(63) {
+		t.Fatalf("LinearFloat(MinInt64) = %v, %v", value, err)
 	}
 }
 
@@ -101,7 +103,7 @@ func TestJSONFloats(t *testing.T) {
 		{"1e400", 0, false},
 	} {
 		t.Run(string(test.number), func(t *testing.T) {
-			if value, err := NumericFloat(test.number); (err == nil) != test.ok || err == nil && math.Float64bits(value) != math.Float64bits(test.want) {
+			if value, err := NumericFloat(test.number, 64); (err == nil) != test.ok || err == nil && math.Float64bits(value) != math.Float64bits(test.want) {
 				t.Fatalf("NumericFloat = %v, %v; want %v, success %t", value, err, test.want, test.ok)
 			}
 		})
@@ -117,8 +119,10 @@ func TestInvalidJSONNumbers(t *testing.T) {
 			if _, err := ExactUnsigned(number); err == nil {
 				t.Fatal("ExactUnsigned accepted invalid JSON number")
 			}
-			if _, err := NumericFloat(number); err == nil {
-				t.Fatal("NumericFloat accepted invalid JSON number")
+			for _, bits := range []int{32, 64} {
+				if _, err := NumericFloat(number, bits); err == nil {
+					t.Fatalf("NumericFloat accepted invalid JSON number for float%d", bits)
+				}
 			}
 		})
 	}

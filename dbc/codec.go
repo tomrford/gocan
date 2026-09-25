@@ -580,7 +580,7 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		return uint64(physical), nil
 	}
 	if signal.ValueType == ValueTypeFloat32 || signal.ValueType == ValueTypeFloat64 {
-		physical, err := scalar.NumericFloat(value)
+		physical, err := scalar.NumericFloat(value, 64)
 		if err != nil {
 			return 0, err
 		}
@@ -592,6 +592,13 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 			return 0, fmt.Errorf("value does not produce a finite raw float")
 		}
 		if signal.ValueType == ValueTypeFloat32 {
+			if signal.Factor == 1 && signal.Offset == 0 {
+				// Convert the original input directly to avoid double rounding.
+				raw, err = scalar.NumericFloat(value, 32)
+				if err != nil {
+					return 0, err
+				}
+			}
 			raw32 := float32(raw)
 			if math.IsInf(float64(raw32), 0) {
 				return 0, fmt.Errorf("value exceeds float32")
@@ -622,7 +629,7 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		return scalar.EncodeUnsigned(signal.BitLength, value)
 	}
 
-	physical, err := scalar.NumericFloat(value)
+	physical, err := scalar.LinearFloat(value)
 	if err != nil {
 		return 0, err
 	}
