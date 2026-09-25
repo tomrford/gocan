@@ -52,7 +52,7 @@ type SessionControlResponse struct {
 
 // ApplySessionTiming uses timing for subsequent exchanges. Callers can clamp
 // values or add transport margin before applying server timing. It must not be
-// called concurrently with Do or SendAwaitNRC. Send never reads the timeouts,
+// called concurrently with Do or DoSuppressed. Send never reads the timeouts,
 // so a send-only background keep-alive remains safe.
 func (client *Client) ApplySessionTiming(timing SessionTiming) error {
 	if timing.P2ServerMax <= 0 {

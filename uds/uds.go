@@ -69,7 +69,7 @@ type Config struct {
 
 // Client exchanges raw UDS requests over one ISO-TP link.
 //
-// A Client logically owns its Link. Do, Send, and SendAwaitNRC may be called
+// A Client logically owns its Link. Do, DoSuppressed, and Send may be called
 // concurrently, but callers must not operate the Link independently or
 // construct another Client around it.
 type Client struct {
@@ -78,7 +78,7 @@ type Client struct {
 	p2StarTimeout time.Duration
 }
 
-// RetentionCursor returns receive progress during an active Do, SendAwaitNRC,
+// RetentionCursor returns receive progress during an active Do, DoSuppressed,
 // or segmented Send, and the capture's end otherwise. Pass it with other
 // readers' cursors to Capture.Prune. Queued calls and send-only single frames
 // do not retain history.
@@ -110,10 +110,6 @@ func New(link *isotp.Link, config Config) (*Client, error) {
 // Do sends request and waits for its final response. ResponsePending restarts
 // the wait using P2*. The caller's context bounds the complete exchange.
 func (client *Client) Do(ctx context.Context, request Request) (Response, error) {
-	return client.exchange(ctx, request, false)
-}
-
-func (client *Client) exchange(ctx context.Context, request Request, allowSilence bool) (Response, error) {
 	payload, err := request.payload()
 	if err != nil {
 		return Response{}, err
@@ -129,9 +125,6 @@ func (client *Client) exchange(ctx context.Context, request Request, allowSilenc
 	timeoutError := ErrP2Timeout
 	for {
 		payload, err := nextWithTimeout(ctx, exchange, timeout, timeoutError)
-		if allowSilence && errors.Is(err, ErrP2Timeout) {
-			return Response{}, nil
-		}
 		if err != nil {
 			return Response{}, err
 		}
@@ -163,16 +156,23 @@ func (client *Client) Send(ctx context.Context, request Request) error {
 	return client.link.Send(ctx, payload)
 }
 
-// SendAwaitNRC transmits a suppressed request like Send, then holds the exchange
-// through P2. It returns nil on silence or a positive response, and
-// NegativeResponseError on a final negative response. ResponsePending requires a
-// final response within P2*. Context and transport errors always propagate.
-// A nil error does not confirm completion of the action. After a timeout or
-// cancellation, callers must allow the server to finish before starting another
-// exchange on the same receive address.
-func (client *Client) SendAwaitNRC(ctx context.Context, request Request) error {
-	_, err := client.exchange(ctx, request, true)
-	return err
+// DoSuppressed transmits a request whose service data already contains
+// suppressPositiveResponse, then waits through P2. The caller owns the raw
+// service and subfunction layout. It returns (nil, nil) on initial silence, the
+// response on a positive reply, and NegativeResponseError on a final negative
+// reply. ResponsePending requires a final response within P2*. Context and
+// transport errors always propagate. Silence does not confirm completion of the
+// action. After a timeout or cancellation, callers must allow the server to
+// finish before starting another exchange on the same receive address.
+func (client *Client) DoSuppressed(ctx context.Context, request Request) (*Response, error) {
+	response, err := client.Do(ctx, request)
+	if errors.Is(err, ErrP2Timeout) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (request Request) payload() ([]byte, error) {
