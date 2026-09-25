@@ -72,7 +72,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		name      string
 		request   []byte
 		responses [][]byte
-		mode      string // Empty for Do, "send" for Send, "wait" for SendAwaitNRC.
+		mode      string // Empty for Do, "send" for Send, "wait" for DoSuppressed.
 		want      []byte
 		kind      error
 		nrc       uds.ResponseCode
@@ -88,10 +88,13 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		{name: "reset after timeout", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
 		{name: "mislabeled pending", request: []byte{0x36, 1}, responses: [][]byte{{0x7f, 0x31, 0x78}, {0x76, 1}}, want: []byte{1}},
 		{name: "suppressed silence", request: []byte{0x11, 0x81}, mode: "wait"},
+		{name: "suppressed positive", request: []byte{0x11, 0x81}, mode: "wait", responses: [][]byte{{0x51, 1}}, want: []byte{1}},
+		{name: "suppressed empty positive", request: []byte{0x11, 0x81}, mode: "wait", responses: [][]byte{{0x51}}, want: []byte{}},
+		{name: "suppressed malformed response", request: []byte{0x11, 0x81}, mode: "wait", responses: [][]byte{{0x7f, 0x11}}, kind: uds.ErrInvalidResponse},
 		{name: "unsuppressed silence", request: []byte{0x11, 1}, kind: uds.ErrP2Timeout},
 		{name: "deadline before P2", request: []byte{0x3e, 0x80}, mode: "wait", timeout: 100 * time.Millisecond, kind: context.DeadlineExceeded},
 		{name: "suppressed rejection", request: []byte{0x11, 0x81}, mode: "wait", responses: [][]byte{{0x7f, 0x11, 0x22}}, nrc: 0x22},
-		{name: "suppressed pending completion", request: []byte{0x31, 0x81, 0x12, 0x34}, mode: "wait", responses: [][]byte{{0x7f, 0x31, 0x78}, {0x71, 1, 0x12, 0x34}}},
+		{name: "suppressed pending completion", request: []byte{0x31, 0x81, 0x12, 0x34}, mode: "wait", responses: [][]byte{{0x7f, 0x31, 0x78}, {0x71, 1, 0x12, 0x34}}, want: []byte{1, 0x12, 0x34}},
 		{name: "suppressed pending timeout", request: []byte{0x10, 0x83}, mode: "wait", responses: [][]byte{{0x7f, 0x10, 0x78}}, kind: uds.ErrP2StarTimeout},
 		{name: "cancel suppressed wait", request: []byte{0x11, 0x81}, mode: "wait", cancel: true, kind: context.Canceled},
 		{name: "reset after cancellation", request: []byte{0x11, 1}, responses: [][]byte{{0x51, 1}}, want: []byte{1}},
@@ -129,13 +132,17 @@ func TestClientExchangeLifecycle(t *testing.T) {
 				serverResult <- serverErr
 			}()
 			request := uds.Request{Service: uds.ServiceID(step.request[0]), Data: step.request[1:]}
-			var response uds.Response
+			var response *uds.Response
 			var err error
 			switch step.mode {
 			case "":
-				response, err = client.Do(callContext, request)
+				var received uds.Response
+				received, err = client.Do(callContext, request)
+				if err == nil {
+					response = &received
+				}
 			case "wait":
-				err = client.SendAwaitNRC(callContext, request)
+				response, err = client.DoSuppressed(callContext, request)
 			default:
 				err = client.Send(callContext, request)
 			}
@@ -150,7 +157,10 @@ func TestClientExchangeLifecycle(t *testing.T) {
 			if step.blockFlow && errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("spent retry budget reported a caller deadline: %v", err)
 			}
-			if !bytes.Equal(response.Data, step.want) || step.want != nil && response.Service != request.Service {
+			if (response == nil) != (step.want == nil) {
+				t.Fatalf("response = %#v, want data %x (nil: %t)", response, step.want, step.want == nil)
+			}
+			if response != nil && (!bytes.Equal(response.Data, step.want) || response.Service != request.Service) {
 				t.Fatalf("response = %#v, want service %#x data %x", response, request.Service, step.want)
 			}
 			if err := <-serverResult; err != nil {
