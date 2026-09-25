@@ -97,6 +97,16 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if err != nil || !bytes.Equal(jsonPayload, wantNameplate) {
 		t.Fatalf("JSON nameplate payload = %x, %v; want %x", jsonPayload, err, wantNameplate)
 	}
+	// The float32 rounds, while the adjacent integer retains the same input exactly.
+	wantRounded := bytes.Clone(wantNameplate)
+	copy(wantRounded[16:20], []byte{0x5a, 0x00, 0x00, 0x00})
+	for _, gain := range []any{uint64(9007199254740993), json.Number("9007199254740993")} {
+		nameplateValues["Gain"] = gain
+		payload, err = nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues)
+		if err != nil || !bytes.Equal(payload, wantRounded) {
+			t.Fatalf("rounded Gain %T = %x, %v; want %x", gain, payload, err, wantRounded)
+		}
+	}
 	nameplateValues["SerialNumber"] = json.Number("123456789012")
 	if _, err := nameplate.Read[0].PositiveResponse.Record.Encode(nameplateValues); err == nil {
 		t.Fatal("ASCII field accepted json.Number as text")

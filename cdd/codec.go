@@ -353,7 +353,7 @@ func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) 
 			}
 			return scalar.EncodeUnsigned(field.BitLength, integer)
 		}
-		physical, err := scalar.NumericFloat(value)
+		physical, err := scalar.LinearFloat(value)
 		if err != nil {
 			return 0, err
 		}

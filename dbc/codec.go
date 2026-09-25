@@ -622,7 +622,7 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		return scalar.EncodeUnsigned(signal.BitLength, value)
 	}
 
-	physical, err := scalar.NumericFloat(value)
+	physical, err := scalar.LinearFloat(value)
 	if err != nil {
 		return 0, err
 	}

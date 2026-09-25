@@ -235,9 +235,8 @@ func ExactUnsigned(value any) (uint64, error) {
 	}
 }
 
-// NumericFloat converts a Go numeric value to float64. Native Go integers that
-// float64 cannot represent exactly are rejected. JSON numbers use normal
-// float64 rounding, including underflow to zero, and reject overflow.
+// NumericFloat converts a Go numeric value or json.Number to float64 with
+// normal rounding. JSON numbers may underflow to zero but must not overflow.
 func NumericFloat(value any) (float64, error) {
 	if number, ok := value.(json.Number); ok {
 		if !json.Valid([]byte(number)) {
@@ -249,6 +248,24 @@ func NumericFloat(value any) (float64, error) {
 	if !reflected.IsValid() {
 		return 0, fmt.Errorf("value is nil")
 	}
+	switch reflected.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(reflected.Int()), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(reflected.Uint()), nil
+	case reflect.Float32, reflect.Float64:
+		return reflected.Float(), nil
+	default:
+		return 0, fmt.Errorf("value has type %T, want a number", value)
+	}
+}
+
+// LinearFloat converts a physical value for linear integer encoding. Native
+// integers must survive the float64 conversion exactly: rounding before an
+// offset or scale is applied can change the raw integer. JSON numbers and
+// floating-point inputs retain their normal float64 rounding behaviour.
+func LinearFloat(value any) (float64, error) {
+	reflected := reflect.ValueOf(value)
 	switch reflected.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		integer := reflected.Int()
@@ -264,10 +281,8 @@ func NumericFloat(value any) (float64, error) {
 			return 0, fmt.Errorf("integer value %d cannot be represented exactly as float64", integer)
 		}
 		return floating, nil
-	case reflect.Float32, reflect.Float64:
-		return reflected.Float(), nil
 	default:
-		return 0, fmt.Errorf("value has type %T, want a number", value)
+		return NumericFloat(value)
 	}
 }
 

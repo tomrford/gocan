@@ -266,6 +266,40 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	}
 }
 
+func TestSignalNumericConversion(t *testing.T) {
+	for _, test := range []struct {
+		kind  ValueType
+		value any
+		raw   uint64
+	}{
+		{ValueTypeFloat32, uint64(16777217), 0x4b800000},
+		{ValueTypeFloat32, uint64(9007199254740993), 0x5a000000},
+		{ValueTypeFloat32, json.Number("9007199254740993"), 0x5a000000},
+		{ValueTypeFloat64, uint64(9007199254740993), 0x4340000000000000},
+		{ValueTypeFloat64, json.Number("9007199254740993"), 0x4340000000000000},
+		{ValueTypeFloat64, int64(-9007199254740993), 0xc340000000000000},
+		{ValueTypeFloat64, int64(math.MaxInt64), 0x43e0000000000000},
+		{ValueTypeFloat64, uint64(math.MaxUint64), 0x43f0000000000000},
+		{ValueTypeInteger, uint64(9007199254740993), 9007199254740993},
+	} {
+		signal := Signal{ValueType: test.kind, BitLength: 64, Factor: 1}
+		if test.kind == ValueTypeFloat32 {
+			signal.BitLength = 32
+		}
+		if raw, err := encodeSignalValue(signal, test.value); err != nil || raw != test.raw {
+			t.Fatalf("kind %v, %T(%v): raw = %#x, %v; want %#x", test.kind, test.value, test.value, raw, err, test.raw)
+		}
+	}
+
+	// Rounding before subtracting this offset would silently turn raw 1 into 0.
+	scaled := Signal{BitLength: 8, Factor: 1, Offset: 9007199254740992}
+	for _, value := range []any{uint64(9007199254740993), int64(9007199254740993)} {
+		if _, err := encodeSignalValue(scaled, value); err == nil {
+			t.Fatalf("scaled integer accepted imprecise %T(%v)", value, value)
+		}
+	}
+}
+
 func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {
 	source := "BU_: ECU\n" +
 		"BO_ 256 Classic: 8 ECU\n" +
