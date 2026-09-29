@@ -48,18 +48,18 @@ type transmission struct {
 // transmitter holds the addressing and framing configuration of one transmit
 // path, shared by physical Links and functional send paths.
 type transmitter struct {
-	transmitID           uint32
-	frameFlags           gocan.FrameFlags
-	transmitDataLength   int
-	padFrames            bool
-	paddingByte          byte
-	maximumPayloadLength uint32
-	transmitRetryTimeout time.Duration
+	transmitID            uint32
+	frameFlags            gocan.FrameFlags
+	transmitDataLength    int
+	transmitMinDataLength int
+	paddingByte           byte
+	maximumPayloadLength  uint32
+	transmitRetryTimeout  time.Duration
 }
 
 // newTransmitter validates the transmit-side configuration common to New and
 // NewFunctional. The caller sets maximumPayloadLength.
-func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength uint8, padFrames bool, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
+func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDataLength uint8, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
 	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
 		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", unsupported)
 	}
@@ -76,16 +76,19 @@ func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength uint8,
 	if err := validateTransmitDataLength(transmitDataLength, flags.Has(gocan.FrameFD)); err != nil {
 		return transmitter{}, err
 	}
+	if int(minDataLength) > transmitDataLength || nearestCANFDLength(int(minDataLength)) != int(minDataLength) {
+		return transmitter{}, fmt.Errorf("ISO-TP minimum transmit data length %d is invalid for maximum %d", minDataLength, transmitDataLength)
+	}
 	if retryTimeout < 0 {
 		return transmitter{}, errors.New("ISO-TP transmit retry timeout must not be negative")
 	}
 	return transmitter{
-		transmitID:           transmitID,
-		frameFlags:           flags,
-		transmitDataLength:   transmitDataLength,
-		padFrames:            padFrames,
-		paddingByte:          paddingByte,
-		transmitRetryTimeout: retryTimeout,
+		transmitID:            transmitID,
+		frameFlags:            flags,
+		transmitDataLength:    transmitDataLength,
+		transmitMinDataLength: int(minDataLength),
+		paddingByte:           paddingByte,
+		transmitRetryTimeout:  retryTimeout,
 	}, nil
 }
 
@@ -107,7 +110,7 @@ func (transmitter *transmitter) prepareTransmission(payload []byte) (transmissio
 		return transmission{}, fmt.Errorf("%w: %d exceeds configured maximum %d", ErrPayloadTooLarge, len(payload), transmitter.maximumPayloadLength)
 	}
 
-	escapeSingleFrame := len(payload) > 7 || transmitter.padFrames && transmitter.transmitDataLength > 8
+	escapeSingleFrame := len(payload) > 7 || transmitter.transmitMinDataLength > 8
 	singleHeaderLength := 1
 	if escapeSingleFrame {
 		singleHeaderLength = 2
@@ -158,8 +161,8 @@ func (transmitter *transmitter) makeFrame(data []byte, fullLength bool) (gocan.F
 	if len(data) > transmitter.transmitDataLength {
 		return gocan.Frame{}, fmt.Errorf("%w: %d-byte transport frame exceeds transmit data length %d", ErrProtocol, len(data), transmitter.transmitDataLength)
 	}
-	targetLength := len(data)
-	if fullLength || transmitter.padFrames {
+	targetLength := max(len(data), transmitter.transmitMinDataLength)
+	if fullLength {
 		targetLength = transmitter.transmitDataLength
 	} else if transmitter.frameFlags.Has(gocan.FrameFD) {
 		targetLength = nearestCANFDLength(targetLength)
