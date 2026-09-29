@@ -60,9 +60,13 @@ type Config struct {
 	// frames. Zero selects 8. CAN FD additionally permits 12, 16, 20, 24, 32,
 	// 48, or 64.
 	TransmitDataLength uint8
-	// PadFrames pads every transmitted frame to TransmitDataLength. CAN FD
-	// frames are always padded as needed to reach a legal CAN FD data length.
-	PadFrames bool
+	// TransmitMinDataLength pads shorter frames to this CAN data length.
+	// Zero disables optional padding. Valid values are 0 through 8 and, for
+	// CAN FD, 12, 16, 20, 24, 32, 48 or 64; the minimum must not exceed
+	// the resolved TransmitDataLength. CAN FD always rounds up to a legal data length.
+	// Use 8 to pad short frames while allowing longer FD frames to use the
+	// smallest fitting length.
+	TransmitMinDataLength uint8
 	// PaddingByte fills both requested padding and the padding required to reach
 	// a legal CAN FD data length.
 	PaddingByte byte
@@ -157,7 +161,7 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if capture == nil {
 		return nil, errors.New("ISO-TP bus requires a capture")
 	}
-	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.PadFrames, config.PaddingByte, config.TransmitRetryTimeout)
+	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.TransmitMinDataLength, config.PaddingByte, config.TransmitRetryTimeout)
 	if err != nil {
 		return nil, err
 	}

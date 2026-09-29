@@ -21,6 +21,8 @@ func TestExchangeRoundTrip(t *testing.T) {
 		receiveID          uint32
 		flags              gocan.FrameFlags
 		dataLength         int
+		lastFrameLength    int
+		lastFrameUsed      int
 		requestLength      int
 		responseLength     int
 		peerBlockSize      byte
@@ -33,6 +35,8 @@ func TestExchangeRoundTrip(t *testing.T) {
 			transmitID:         0x7e0,
 			receiveID:          0x7e8,
 			dataLength:         8,
+			lastFrameLength:    8,
+			lastFrameUsed:      6,
 			requestLength:      130,
 			responseLength:     140,
 			peerBlockSize:      4,
@@ -46,6 +50,8 @@ func TestExchangeRoundTrip(t *testing.T) {
 			receiveID:          0x18daf110,
 			flags:              gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch,
 			dataLength:         64,
+			lastFrameLength:    32,
+			lastFrameUsed:      29,
 			requestLength:      5000,
 			responseLength:     4200,
 			peerBlockSize:      7,
@@ -73,6 +79,8 @@ func TestExchangeRoundTrip(t *testing.T) {
 				ReceiveID:                test.receiveID,
 				FrameFlags:               test.flags,
 				TransmitDataLength:       uint8(test.dataLength),
+				TransmitMinDataLength:    8,
+				PaddingByte:              0xcc,
 				MaximumPayloadLength:     8192,
 				AdvertisedBlockSize:      3,
 				AdvertisedSeparationTime: 100 * time.Microsecond,
@@ -125,6 +133,25 @@ func TestExchangeRoundTrip(t *testing.T) {
 			}
 			if err := <-peerErrors; err != nil {
 				t.Fatalf("ECU: %v", err)
+			}
+			// Inspect actual wire frames, independently of the ISO-TP decoder.
+			var lastConsecutive gocan.Frame
+			flowControls := 0
+			for _, event := range capture.Series(gocan.FrameKey{Bus: tester.ID(), ID: test.transmitID, Direction: gocan.DirectionTransmit, Extended: test.flags.Has(gocan.FrameExtended)}) {
+				frame := event.Frame
+				switch frame.Data[0] >> 4 {
+				case 2:
+					lastConsecutive = frame
+				case 3:
+					flowControls++
+					if frame.DataLength() != 8 || !bytes.Equal(frame.Data[3:8], bytes.Repeat([]byte{0xcc}, 5)) {
+						t.Fatalf("Flow Control padding: %+v", frame)
+					}
+				}
+			}
+			if flowControls == 0 || lastConsecutive.DataLength() != test.lastFrameLength ||
+				!bytes.Equal(lastConsecutive.Data[test.lastFrameUsed:test.lastFrameLength], bytes.Repeat([]byte{0xcc}, test.lastFrameLength-test.lastFrameUsed)) {
+				t.Fatalf("final Consecutive Frame padding: %+v; flow controls: %d", lastConsecutive, flowControls)
 			}
 		})
 	}
@@ -451,11 +478,11 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 		}
 
 		functionalFD, err := isotp.NewFunctional(first, isotp.FunctionalConfig{
-			TransmitID:         0x7df,
-			FrameFlags:         gocan.FrameFD,
-			TransmitDataLength: 64,
-			PadFrames:          true,
-			PaddingByte:        0xcc,
+			TransmitID:            0x7df,
+			FrameFlags:            gocan.FrameFD,
+			TransmitDataLength:    64,
+			TransmitMinDataLength: 8,
+			PaddingByte:           0xcc,
 		})
 		if err != nil {
 			t.Fatalf("NewFunctional FD: %v", err)
