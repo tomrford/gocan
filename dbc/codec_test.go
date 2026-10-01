@@ -3,6 +3,7 @@ package dbc
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -223,8 +224,38 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	if err := multiplexed.Patch(&inactive, Values{"RootA": uint64(1)}); err != nil {
 		t.Fatalf("Patch to inactive branch: %v", err)
 	}
-	if _, err := multiplexed.Decode(inactive, "Leaf"); err == nil || !strings.Contains(err.Error(), "inactive") {
+	if value, err := multiplexed.Decode(inactive, "Leaf"); value != nil || !errors.Is(err, ErrInactiveSignal) || !strings.Contains(err.Error(), "Leaf") {
 		t.Fatalf("inactive Decode error = %v", err)
+	}
+	for _, test := range []struct {
+		payload  []byte
+		signal   string
+		value    any
+		error    string
+		inactive bool
+	}{
+		{[]byte{1}, "Leaf", nil, "Leaf", true},
+		{[]byte{1}, "ChildSelector", nil, "ChildSelector", true},
+		{inactive.Data[:multiplexed.Length], "Leaf", nil, "Leaf", true},
+		{[]byte{2, 2}, "Leaf", nil, "Leaf", true},
+		{[]byte{2, 3, 44}, "Leaf", uint64(44), "", false},
+		{nil, "Leaf", nil, "multiplexor \"RootA\" is not present", false},
+		{[]byte{2}, "Leaf", nil, "multiplexor \"ChildSelector\" is not present", false},
+		{[]byte{2, 3}, "Leaf", nil, "signal \"Leaf\" is not present", false},
+		{[]byte{2}, "ChildSelector", nil, "signal \"ChildSelector\" is not present", false},
+		{[]byte{1}, "Unknown", nil, "has no signal", false},
+		{make([]byte, 9), "Leaf", nil, "exceeds declared length", false},
+	} {
+		value, err := multiplexed.DecodePayload(test.payload, test.signal)
+		if value != test.value || errors.Is(err, ErrInactiveSignal) != test.inactive ||
+			(test.error == "" && err != nil) || (test.error != "" && (err == nil || !strings.Contains(err.Error(), test.error))) {
+			t.Fatalf("DecodePayload(% x, %q) = %v, %v; want %v, %q, inactive %t", test.payload, test.signal, value, err, test.value, test.error, test.inactive)
+		}
+	}
+	short := inactive
+	short.DLC = 1
+	if _, err := multiplexed.Decode(short, "Leaf"); err == nil || errors.Is(err, ErrInactiveSignal) || !strings.Contains(err.Error(), "payload length") {
+		t.Fatalf("short inactive frame Decode error = %v", err)
 	}
 	if err := multiplexed.Patch(&inactive, Values{"RootA": uint64(2)}); err == nil || !strings.Contains(err.Error(), "requires a value") {
 		t.Fatalf("incomplete path change error = %v", err)
