@@ -1,6 +1,7 @@
 package dbc
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -9,6 +10,10 @@ import (
 	"github.com/tomrford/gocan/internal/scalar"
 	"github.com/tomrford/gocan/j1939"
 )
+
+// ErrInactiveSignal means the selected multiplexing path excludes the signal
+// from this frame. It is an expected absence, not a malformed-payload error.
+var ErrInactiveSignal = errors.New("inactive DBC signal")
 
 type messageCodec struct {
 	signalsByName map[string]int
@@ -199,6 +204,7 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 // supported by the codec.
 // J1939 definitions match by canonical PGN, regardless of priority, source or
 // destination. Select the appropriate definition first when a PGN is ambiguous.
+// An inactive signal returns an error wrapping ErrInactiveSignal.
 func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
 	if err := message.validateFrame(frame); err != nil {
 		return nil, err
@@ -207,9 +213,10 @@ func (message *Message) Decode(frame gocan.Frame, name string) (any, error) {
 }
 
 // DecodePayload returns the physical value of one named signal from a payload.
-// The payload may be shorter than the declared message length when the signal
-// and every multiplexor needed to select it are present. It must not be longer
-// than the declared message length.
+// The payload may be shorter than the declared message length. Only multiplexors
+// needed to determine activity and the active signal's bits must be present.
+// An inactive signal returns an error wrapping ErrInactiveSignal, even if its
+// bits are absent. The payload must not exceed the declared message length.
 func (message *Message) DecodePayload(payload []byte, name string) (any, error) {
 	codec, err := message.usableCodec()
 	if err != nil {
@@ -222,19 +229,15 @@ func (message *Message) DecodePayload(payload []byte, name string) (any, error) 
 	if !ok {
 		return nil, fmt.Errorf("DBC message %q has no signal %q", message.Name, name)
 	}
-	if !signalAvailable(message.Signals[index], len(payload)) {
-		return nil, fmt.Errorf("DBC signal %q is not present in the %d-byte payload", name, len(payload))
-	}
-	selectors := make(map[int]uint64)
-	if err := codec.readSelectorPath(message, payload, index, selectors); err != nil {
-		return nil, err
-	}
-	active, err := codec.signalActive(message, index, selectors, make(map[int]bool))
+	active, err := codec.signalActiveInPayload(message, payload, index)
 	if err != nil {
 		return nil, err
 	}
 	if !active {
-		return nil, fmt.Errorf("DBC signal %q is inactive in this frame", name)
+		return nil, fmt.Errorf("%w %q in this frame", ErrInactiveSignal, name)
+	}
+	if !signalAvailable(message.Signals[index], len(payload)) {
+		return nil, fmt.Errorf("DBC signal %q is not present in the %d-byte payload", name, len(payload))
 	}
 	return decodeSignalValue(message.Signals[index], readSignalBits(payload, message.Signals[index])), nil
 }
@@ -453,20 +456,20 @@ func (codec *messageCodec) selectorValues(message *Message, payload []byte) map[
 	return values
 }
 
-func (codec *messageCodec) readSelectorPath(message *Message, payload []byte, index int, values map[int]uint64) error {
+func (codec *messageCodec) signalActiveInPayload(message *Message, payload []byte, index int) (bool, error) {
 	condition := message.Signals[index].Multiplex
 	if condition == nil {
-		return nil
+		return true, nil
 	}
 	selector := codec.signalsByName[condition.Selector]
+	active, err := codec.signalActiveInPayload(message, payload, selector)
+	if err != nil || !active {
+		return false, err
+	}
 	if !signalAvailable(message.Signals[selector], len(payload)) {
-		return fmt.Errorf("DBC multiplexor %q is not present in the %d-byte payload", message.Signals[selector].Name, len(payload))
+		return false, fmt.Errorf("DBC multiplexor %q is not present in the %d-byte payload", message.Signals[selector].Name, len(payload))
 	}
-	if err := codec.readSelectorPath(message, payload, selector, values); err != nil {
-		return err
-	}
-	values[selector] = readSignalBits(payload, message.Signals[selector])
-	return nil
+	return rangesContain(condition.Ranges, readSignalBits(payload, message.Signals[selector])), nil
 }
 
 func (message *Message) newFrame() (gocan.Frame, error) {
