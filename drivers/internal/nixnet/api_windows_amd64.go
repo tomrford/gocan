@@ -17,7 +17,7 @@ import (
 
 // Constants and ABI follow NI's nixnet-python _cconsts.py and _cfuncs.py.
 const (
-	propInterfaces     = 0x06110004
+	propCANInterfaces  = 0x06110004 // NX_PROP_SYS_INTF_REFS_CAN; excludes LIN and FlexRay.
 	propName           = 0x03130002
 	propDevice         = 0x05130001
 	propDeviceName     = 0x03120003
@@ -138,7 +138,7 @@ func Discover() (channels []ChannelInfo, err error) {
 			channels = nil
 		}
 	}()
-	refs, err := a.property(system, propInterfaces)
+	refs, err := a.property(system, propCANInterfaces)
 	if err != nil {
 		return nil, err
 	}
