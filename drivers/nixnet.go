@@ -49,9 +49,6 @@ func nixnetBitTiming(clock uint32, timing BitTiming, data bool) (uint64, error) 
 		// https://knowledge.ni.com/KnowledgeArticleDetails?id=kA0VU0000002kGT0AY
 		if tq*(1+uint64(timing.TSEG1)+uint64(timing.TSEG2)) < 1000 {
 			offset := tq * (1 + uint64(timing.TSEG1)) / 25
-			if offset > 127 {
-				return 0, fmt.Errorf("NI-XNET transmitter delay offset exceeds 127 clock periods")
-			}
 			encoded |= uint64(1)<<55 | offset<<40
 		}
 		return encoded, nil
