@@ -10,13 +10,17 @@ import (
 )
 
 // Discover reports the attached PCAN channels followed by the CAN-capable
-// Vector channels, each in native driver order. A vendor stack that is not
+// Vector and NI-XNET channels, each in native driver order. A vendor stack that is not
 // installed contributes neither channels nor an error; an installed stack
 // that fails to answer contributes no channels and joins its error into the
 // returned error alongside the other driver's channels.
 func Discover() ([]Channel, error) {
 	pcanChannels, pcanErr := pcan.Discover()
 	vectorChannels, vectorErr := discoverVector()
+	nixnetChannels, nixnetErr := discoverNIXNET()
+	if errors.Is(nixnetErr, gocan.ErrDriverUnavailable) {
+		nixnetErr = nil
+	}
 	if errors.Is(pcanErr, gocan.ErrDriverUnavailable) {
 		pcanErr = nil
 	}
@@ -24,7 +28,7 @@ func Discover() ([]Channel, error) {
 		vectorErr = nil
 	}
 
-	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels))
+	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels)+len(nixnetChannels))
 	for _, channel := range pcanChannels {
 		channels = append(channels, Channel{
 			driver:     driverPCAN,
@@ -34,5 +38,6 @@ func Discover() ([]Channel, error) {
 		})
 	}
 	channels = append(channels, vectorChannels...)
-	return channels, errors.Join(pcanErr, vectorErr)
+	channels = append(channels, nixnetChannels...)
+	return channels, errors.Join(pcanErr, vectorErr, nixnetErr)
 }

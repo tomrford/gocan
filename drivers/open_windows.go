@@ -12,6 +12,9 @@ import (
 
 // Open configures and opens a discovered physical CAN channel. Context
 // controls opening only; canceling it after Open returns does not stop the bus.
+// NI-XNET uses ISO FD, rejects classical DLC above 8 and transmit ESI, and
+// cannot report receive ESI. Its FD timing uses multiples of 25 ns; transmitter
+// delay compensation is derived from the sample point above 1 Mbit/s.
 func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config Config) (gocan.Bus, error) {
 	config, err := prepareOpen(capture, channel, config)
 	if err != nil {
@@ -21,6 +24,8 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 	switch channel.driver {
 	case driverPCAN:
 		return pcan.Open(ctx, capture, nativePCANConfig(channel, config, fd))
+	case driverNIXNET:
+		return openNIXNET(ctx, capture, channel, config, fd)
 	case driverVector:
 		return openVector(ctx, capture, channel, config, fd)
 	default:
