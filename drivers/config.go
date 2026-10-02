@@ -20,7 +20,7 @@ type Config struct {
 	// only its predefined rates, with fractional rates rounded to the nearest
 	// bit per second (for example 83_333).
 	Bitrate uint32
-	// DataBitrate selects CAN FD using built-in timing on PCAN and Vector.
+	// DataBitrate selects CAN FD using built-in timing on PCAN, Vector, and NI-XNET.
 	// Channel.FDRatePresets lists the available rate pairs. The presets use
 	// an 80% sample point in both phases.
 	// Zero selects classical CAN when Bitrate is set. Use FDTiming instead
@@ -30,7 +30,22 @@ type Config struct {
 	FDTiming FDTiming
 	// External selects timing already configured by the operating system.
 	External bool
+	// Termination selects switchable bus termination on supported channels.
+	// Default leaves the driver default; unsupported explicit choices are rejected.
+	Termination Termination
 }
+
+// Termination selects the physical bus termination resistor.
+type Termination uint8
+
+const (
+	// TerminationDefault leaves the native driver's default setting.
+	TerminationDefault Termination = iota
+	// TerminationOff disables the termination resistor.
+	TerminationOff
+	// TerminationOn enables the termination resistor.
+	TerminationOn
+)
 
 // FDRatePreset is a gocan-provided nominal/data rate pair in bits per second.
 // Copy its fields to Config to open a channel using the preset's timing.
@@ -83,10 +98,17 @@ func (channel Channel) FDRatePresets() []FDRatePreset {
 }
 
 func (channel Channel) fdPresets() []fdPreset {
-	if !channel.supportsFD || channel.external || (channel.driver != driverPCAN && channel.driver != driverVector) {
+	if !channel.supportsFD || channel.external {
 		return nil
 	}
-	return fdPresets[:]
+	switch channel.driver {
+	case driverPCAN, driverVector:
+		return fdPresets[:]
+	case driverNIXNET:
+		return nixnetFDPresets[:]
+	default:
+		return nil
+	}
 }
 
 // FDTiming defines exact CAN FD arbitration- and data-phase bit timing.
@@ -123,6 +145,13 @@ func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config
 		return Config{}, errors.New("physical CAN bus requires an ID")
 	case config.Name == "":
 		return Config{}, errors.New("physical CAN bus requires a name")
+	}
+
+	if config.Termination > TerminationOn {
+		return Config{}, errors.New("invalid CAN termination choice")
+	}
+	if config.Termination != TerminationDefault && !channel.supportsTermination {
+		return Config{}, fmt.Errorf("%s does not support switchable termination", channel.Identifier())
 	}
 
 	fd := config.FDTiming != (FDTiming{})
