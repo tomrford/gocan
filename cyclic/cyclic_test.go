@@ -91,40 +91,51 @@ func TestTaskLifecycle(t *testing.T) {
 
 func TestStopDuringSend(t *testing.T) {
 	for name, blockedSend := range map[string]int{"first": 1, "later": 2} {
-		t.Run(name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				started, release := make(chan struct{}), make(chan struct{})
-				sends := 0
-				bus := &callbackBus{send: func(context.Context, gocan.Frame) error {
-					sends++
-					if sends == blockedSend {
-						close(started)
-						<-release
+		for outcome, result := range map[string]error{"accepted": nil, "cancelled": context.Canceled, "failed": gocan.ErrBusOff} {
+			t.Run(name+"/"+outcome, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					started, release := make(chan struct{}), make(chan struct{})
+					sends := 0
+					bus := &callbackBus{send: func(ctx context.Context, _ gocan.Frame) error {
+						sends++
+						if sends == blockedSend {
+							close(started)
+							<-release
+							if result == context.Canceled {
+								return ctx.Err()
+							}
+							return result
+						}
+						return nil
+					}}
+					task, err := cyclic.Start(context.Background(), bus, gocan.Frame{ID: 1}, cyclic.Config{Period: time.Millisecond, TransmitRetryTimeout: time.Second, MaxConsecutiveMisses: 2})
+					if err != nil {
+						t.Fatal(err)
 					}
-					return nil
-				}}
-				task, err := cyclic.Start(context.Background(), bus, gocan.Frame{ID: 1}, cyclic.Config{Period: time.Millisecond})
-				if err != nil {
-					t.Fatal(err)
-				}
-				<-started
-				task.Stop()
-				task.Stop()
-				if err := task.Update(gocan.Frame{ID: 2}); !errors.Is(err, cyclic.ErrStopped) {
-					t.Fatalf("Update after Stop = %v, want ErrStopped", err)
-				}
-				select {
-				case <-task.Done():
-					t.Fatal("Done closed while Send was still in progress")
-				default:
-				}
-				close(release)
-				<-task.Done()
-				if task.Err() != nil || sends != blockedSend {
-					t.Fatalf("Err = %v, sends = %d; want nil, %d", task.Err(), sends, blockedSend)
-				}
+					<-started
+					time.Sleep(2 * time.Millisecond)
+					task.Stop()
+					task.Stop()
+					if err := task.Update(gocan.Frame{ID: 2}); !errors.Is(err, cyclic.ErrStopped) {
+						t.Fatalf("Update after Stop = %v, want ErrStopped", err)
+					}
+					select {
+					case <-task.Done():
+						t.Fatal("Done closed while Send was still in progress")
+					default:
+					}
+					close(release)
+					<-task.Done()
+					want := result
+					if result == context.Canceled {
+						want = nil
+					}
+					if !errors.Is(task.Err(), want) || sends != blockedSend {
+						t.Fatalf("Err = %v, sends = %d; want %v, %d", task.Err(), sends, want, blockedSend)
+					}
+				})
 			})
-		})
+		}
 	}
 }
 

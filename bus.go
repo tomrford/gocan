@@ -79,11 +79,16 @@ type Bus interface {
 // This waits for queue acceptance, not delivery on the wire. As with Bus.Send,
 // a native call in progress must finish with a definite result even if its
 // context expires. An accepted frame is never retried.
+// If the first attempt returns the context's cancellation or deadline error,
+// its custom cause is joined to that error, preserving errors.Is matching for both.
 func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration) error {
 	if retryTimeout < 0 {
 		return errors.New("CAN transmit retry timeout must not be negative")
 	}
 	err := bus.Send(ctx, frame)
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) && context.Cause(ctx) != ctx.Err() {
+		err = errors.Join(err, context.Cause(ctx))
+	}
 	if retryTimeout == 0 || !errors.Is(err, ErrTransmitQueueFull) {
 		return err
 	}

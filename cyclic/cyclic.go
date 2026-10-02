@@ -14,6 +14,10 @@ import (
 // ErrStopped indicates an update to a task that has already stopped.
 var ErrStopped = errors.New("cyclic task is stopped")
 
+// ErrOccurrenceMissed indicates that an occurrence's send budget expired.
+// It does not imply that the native transmit queue was full.
+var ErrOccurrenceMissed = errors.New("cyclic occurrence send budget expired")
+
 var errStopRequested = errors.New("cyclic task stop requested")
 
 // Config controls a recurring transmission schedule.
@@ -21,10 +25,16 @@ type Config struct {
 	// Period is the positive interval between scheduled occurrences.
 	Period time.Duration
 	// TransmitRetryTimeout bounds queue-full retries for each occurrence.
-	// Zero disables retries. Retries also end at the next scheduled occurrence
-	// after frame generation; exhaustion stops the task. Native sends already
-	// in progress finish with their definite result even if the deadline elapses.
+	// Zero disables retries and the occurrence deadline. A positive value also
+	// bounds sending by the next scheduled occurrence after frame generation.
+	// Native sends in progress finish with their definite result even if that
+	// deadline elapses.
 	TransmitRetryTimeout time.Duration
+	// MaxConsecutiveMisses permits this many consecutive send failures matching
+	// ErrOccurrenceMissed or gocan.ErrTransmitQueueFull before the next stops the
+	// task. Zero stops on the first failure. Acceptance resets the count.
+	// Cancellation, bus closure, and generation or other send errors always stop.
+	MaxConsecutiveMisses uint
 }
 
 // Task repeatedly sends fixed or generated complete raw CAN frames.
@@ -35,13 +45,16 @@ type Config struct {
 // replaces the complete frame atomically; a send observes either the old frame
 // or the new frame.
 //
-// Any generation, validation, or send error stops the Task, including on the
-// first attempt. Stop requests cancellation; Done closes after all callbacks
-// and sends finish. Err then reports the terminal error, or nil if Stop ended it.
+// Generation, validation, and send errors stop the Task, including on the first
+// attempt, except for send misses permitted by Config.MaxConsecutiveMisses.
+// Stop requests cancellation; Done closes after all callbacks and sends finish.
+// Err then reports the terminal error, or nil if Stop ended it.
 type Task struct {
 	bus          gocan.Bus
 	period       time.Duration
 	retryTimeout time.Duration
+	maxMisses    uint
+	misses       uint // Owned by the send loop.
 	frame        gocan.Frame
 	generate     func() (gocan.Frame, error)
 
@@ -100,6 +113,7 @@ func start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, generate func(
 		bus:          bus,
 		period:       config.Period,
 		retryTimeout: config.TransmitRetryTimeout,
+		maxMisses:    config.MaxConsecutiveMisses,
 		frame:        frame,
 		generate:     generate,
 		ctx:          taskContext,
@@ -235,16 +249,29 @@ func (task *Task) send(anchor time.Time) error {
 	ctx := task.ctx
 	if task.retryTimeout > 0 {
 		var cancel context.CancelFunc
-		// The next occurrence also bounds retries and, like their budget, ends
-		// them with the rejection rather than a deadline.
-		ctx, cancel = context.WithDeadlineCause(ctx, nextDeadline(anchor, task.period, time.Now()), gocan.ErrTransmitQueueFull)
+		// Occurrence expiry alone does not prove queue saturation. If a retry
+		// was rejected, Send also retains that rejection in its returned error.
+		ctx, cancel = context.WithDeadlineCause(ctx, nextDeadline(anchor, task.period, time.Now()), ErrOccurrenceMissed)
 		defer cancel()
 	}
 	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
-	// A driver interrupted by Stop may return a bare context.Canceled. Report
-	// the stop cause instead so Err stays nil after an explicit Stop.
-	if errors.Is(err, context.Canceled) && task.ctx.Err() != nil {
+	// A driver can observe occurrence expiry before Stop or caller cancellation.
+	// Resolve context errors against the task's cause after the send finishes.
+	if task.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return context.Cause(task.ctx)
+	}
+	if err == nil {
+		task.misses = 0
+	} else if task.ctx.Err() == nil && (errors.Is(err, ErrOccurrenceMissed) || errors.Is(err, gocan.ErrTransmitQueueFull)) {
+		select {
+		case <-task.bus.Done():
+			return err
+		default:
+		}
+		if task.misses < task.maxMisses {
+			task.misses++
+			return nil
+		}
 	}
 	return err
 }

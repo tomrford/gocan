@@ -40,29 +40,47 @@ func TestSendRetryLifecycle(t *testing.T) {
 		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusOff) || time.Now() != start {
 			t.Fatalf("fatal Send: %v after %v", err, time.Since(start))
 		}
-		// Expiry during a driver call preserves acceptance or the last rejection.
-		for _, accepted := range []bool{true, false} {
-			calls = 0
-			bus.send = func(ctx context.Context, got gocan.Frame) error {
-				calls++
-				if got != frame {
-					t.Fatalf("retry changed frame: %+v", got)
+		cause := errors.New("caller stopped send")
+		cancelled, cancelCause := context.WithCancelCause(context.Background())
+		cancelCause(cause)
+		bus.send = func(ctx context.Context, _ gocan.Frame) error { return ctx.Err() }
+		if err := gocan.Send(cancelled, bus, frame, 0); !errors.Is(err, cause) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("first-attempt cancellation: %v", err)
+		}
+		// Expiry during first and retry calls preserves definite native results.
+		for _, attempt := range []int{1, 2} {
+			for _, result := range []error{nil, context.DeadlineExceeded, gocan.ErrBusOff} {
+				calls = 0
+				bus.send = func(ctx context.Context, got gocan.Frame) error {
+					calls++
+					if got != frame {
+						t.Fatalf("retry changed frame: %+v", got)
+					}
+					if calls < attempt {
+						return gocan.ErrTransmitQueueFull
+					}
+					time.Sleep(3 * time.Millisecond)
+					if result == context.DeadlineExceeded {
+						return ctx.Err()
+					}
+					return result
 				}
-				if calls == 1 {
-					return gocan.ErrTransmitQueueFull
+				ctx, cancel := context.WithTimeoutCause(context.Background(), 2*time.Millisecond, cause)
+				want := result
+				if attempt == 2 {
+					cancel()
+					ctx = context.Background()
 				}
-				time.Sleep(3 * time.Millisecond)
-				if !accepted {
-					return ctx.Err()
+				if result == context.DeadlineExceeded && attempt == 2 {
+					want = gocan.ErrTransmitQueueFull
+				} else if result == context.DeadlineExceeded {
+					want = cause
 				}
-				return nil
-			}
-			var want error
-			if !accepted {
-				want = gocan.ErrTransmitQueueFull
-			}
-			if err := gocan.Send(context.Background(), bus, frame, 2*time.Millisecond); !errors.Is(err, want) || errors.Is(err, context.DeadlineExceeded) || calls != 2 {
-				t.Fatalf("driver completion (accepted=%v): %v, calls=%d", accepted, err, calls)
+				err := gocan.Send(ctx, bus, frame, 2*time.Millisecond)
+				cancel()
+				if !errors.Is(err, want) || errors.Is(err, context.DeadlineExceeded) != (attempt == 1 && result == context.DeadlineExceeded) || calls != attempt {
+					t.Fatalf("driver completion (attempt=%d, result=%v): %v, calls=%d", attempt, result, err, calls)
+				}
 			}
 		}
 		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrTransmitQueueFull }
