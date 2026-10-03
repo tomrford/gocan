@@ -26,10 +26,10 @@ type Config struct {
 	// Period is the positive interval between scheduled occurrences.
 	Period time.Duration
 	// TransmitRetryTimeout bounds queue-full retries for each occurrence.
-	// Zero disables retries and the occurrence deadline. A positive value also
-	// bounds sending by the next scheduled occurrence after frame generation.
-	// Native sends in progress finish with their definite result even if that
-	// deadline elapses.
+	// Zero disables retries. A positive value also ends retries at the next
+	// scheduled occurrence. The first attempt of each occurrence is bounded
+	// only by cancellation. Native sends in progress finish with their definite
+	// result even if that deadline elapses.
 	TransmitRetryTimeout time.Duration
 	// MaxConsecutiveMisses permits this many consecutive send failures matching
 	// ErrOccurrenceMissed or gocan.ErrTransmitQueueFull before the next stops the
@@ -256,15 +256,17 @@ func (task *Task) send(anchor time.Time) error {
 	if err := context.Cause(task.ctx); err != nil {
 		return err
 	}
-	ctx := task.ctx
-	if task.retryTimeout > 0 {
-		var cancel context.CancelFunc
-		// Occurrence expiry alone does not prove queue saturation. If a retry
-		// was rejected, Send also retains that rejection in its returned error.
-		ctx, cancel = context.WithDeadlineCause(ctx, nextDeadline(anchor, task.period, time.Now()), ErrOccurrenceMissed)
+	// The first attempt is a non-blocking native call, so only cancellation
+	// bounds it: a late wake-up still gets one real attempt instead of a budget
+	// that expired before the frame reached the driver. Retries wait for queue
+	// space, so the next occurrence bounds them. Occurrence expiry alone does
+	// not prove saturation; Send retains any rejection it retried.
+	err := task.bus.Send(task.ctx, frame)
+	if task.retryTimeout > 0 && errors.Is(err, gocan.ErrTransmitQueueFull) {
+		ctx, cancel := context.WithDeadlineCause(task.ctx, nextDeadline(anchor, task.period, time.Now()), ErrOccurrenceMissed)
 		defer cancel()
+		err = gocan.Send(ctx, task.bus, frame, task.retryTimeout)
 	}
-	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
 	// A driver can observe occurrence expiry before Stop or caller cancellation.
 	// Resolve context errors against the task's cause after the send finishes.
 	if task.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {

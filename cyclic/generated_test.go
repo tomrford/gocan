@@ -243,11 +243,13 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			config.MaxConsecutiveMisses = 1
 			start = time.Now()
 			var generatedAt []time.Duration
+			attempts := map[uint32]int{}
 			bus.send = func(ctx context.Context, frame gocan.Frame) error {
 				if frame.ID == 2 || frame.ID == 4 {
 					return nil
 				}
-				if retry == 0 {
+				// A driver rejects without waiting; only retries wait on the budget.
+				if attempts[frame.ID]++; retry == 0 || attempts[frame.ID] == 1 {
 					return gocan.ErrTransmitQueueFull
 				}
 				<-ctx.Done()
