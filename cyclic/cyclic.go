@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -54,7 +55,8 @@ type Task struct {
 	period       time.Duration
 	retryTimeout time.Duration
 	maxMisses    uint
-	misses       uint // Owned by the send loop.
+	misses       uint          // Consecutive misses, owned by the send loop.
+	missed       atomic.Uint64 // Total misses, tolerated or terminal.
 	frame        gocan.Frame
 	generate     func() (gocan.Frame, error)
 
@@ -182,6 +184,14 @@ func (task *Task) Err() error {
 	return task.err
 }
 
+// Missed counts occurrences whose send failed with ErrOccurrenceMissed or
+// gocan.ErrTransmitQueueFull, including a failure that stopped the Task.
+// Callers polling it can report misses that Config.MaxConsecutiveMisses
+// absorbed, which Err never surfaces.
+func (task *Task) Missed() uint64 {
+	return task.missed.Load()
+}
+
 func (task *Task) run(anchor time.Time) {
 	var runErr error
 	defer func() { task.finish(runErr) }()
@@ -268,6 +278,7 @@ func (task *Task) send(anchor time.Time) error {
 			return err
 		default:
 		}
+		task.missed.Add(1)
 		if task.misses < task.maxMisses {
 			task.misses++
 			return nil

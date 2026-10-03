@@ -232,8 +232,8 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			if err := task.Err(); !errors.Is(err, gocan.ErrTransmitQueueFull) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != min(budget, config.Period) || calls != 1 {
 				t.Fatalf("budget %v: %v after %v, generated %d times", budget, task.Err(), time.Since(start), calls)
 			}
-			if errors.Is(task.Err(), cyclic.ErrOccurrenceMissed) != (budget > config.Period) {
-				t.Fatalf("budget %v: occurrence cause = %v", budget, task.Err())
+			if errors.Is(task.Err(), cyclic.ErrOccurrenceMissed) != (budget > config.Period) || task.Missed() != 1 {
+				t.Fatalf("budget %v: occurrence cause = %v, missed %d", budget, task.Err(), task.Missed())
 			}
 		}
 		// A bounded policy tolerates first and later misses, resets on acceptance,
@@ -272,8 +272,8 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			if retry > 0 {
 				kind = cyclic.ErrOccurrenceMissed
 			}
-			if !slices.Equal(generatedAt, want) || !errors.Is(task.Err(), kind) || errors.Is(task.Err(), gocan.ErrTransmitQueueFull) != (retry == 0) {
-				t.Fatalf("retry %v: generated at %v, Err = %v; want %v, %v", retry, generatedAt, task.Err(), want, kind)
+			if !slices.Equal(generatedAt, want) || !errors.Is(task.Err(), kind) || errors.Is(task.Err(), gocan.ErrTransmitQueueFull) != (retry == 0) || task.Missed() != 4 {
+				t.Fatalf("retry %v: generated at %v, Err = %v, missed %d; want %v, %v, 4", retry, generatedAt, task.Err(), task.Missed(), want, kind)
 			}
 		}
 		// A miss allowance never consumes explicit shutdown or bus loss.
