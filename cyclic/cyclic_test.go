@@ -130,8 +130,8 @@ func TestStopDuringSend(t *testing.T) {
 					if result == context.Canceled {
 						want = nil
 					}
-					if !errors.Is(task.Err(), want) || sends != blockedSend {
-						t.Fatalf("Err = %v, sends = %d; want %v, %d", task.Err(), sends, want, blockedSend)
+					if !errors.Is(task.Err(), want) || sends != blockedSend || task.Missed() != 0 {
+						t.Fatalf("Err = %v, sends = %d, missed %d; want %v, %d, 0", task.Err(), sends, task.Missed(), want, blockedSend)
 					}
 				})
 			})
