@@ -63,8 +63,9 @@ func TestGeneratedFailures(t *testing.T) {
 		generateErr, sendErr, wantErr error
 	}{
 		{"generation", gocan.Frame{}, generationErr, nil, generationErr},
+		{"generation queue error", gocan.Frame{}, gocan.ErrTransmitQueueFull, nil, gocan.ErrTransmitQueueFull},
 		{"validation", gocan.Frame{ID: gocan.MaxStandardID + 1}, nil, nil, gocan.ErrInvalidFrame},
-		{"send", gocan.Frame{}, nil, gocan.ErrTransmitQueueFull, gocan.ErrTransmitQueueFull},
+		{"send", gocan.Frame{}, nil, gocan.ErrBusOff, gocan.ErrBusOff},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -83,7 +84,7 @@ func TestGeneratedFailures(t *testing.T) {
 					}
 					return test.sendErr
 				}}
-				task, err := cyclic.StartFunc(context.Background(), bus, generate, cyclic.Config{Period: time.Second})
+				task, err := cyclic.StartFunc(context.Background(), bus, generate, cyclic.Config{Period: time.Second, MaxConsecutiveMisses: 2})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -231,12 +232,122 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			if err := task.Err(); !errors.Is(err, gocan.ErrTransmitQueueFull) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != min(budget, config.Period) || calls != 1 {
 				t.Fatalf("budget %v: %v after %v, generated %d times", budget, task.Err(), time.Since(start), calls)
 			}
+			if errors.Is(task.Err(), cyclic.ErrOccurrenceMissed) != (budget > config.Period) || task.Missed() != 1 {
+				t.Fatalf("budget %v: occurrence cause = %v, missed %d", budget, task.Err(), task.Missed())
+			}
+		}
+		// A bounded policy tolerates first and later misses, resets on acceptance,
+		// and retains the original phase without bursts or regenerating retries.
+		for _, retry := range []time.Duration{0, 50 * time.Millisecond} {
+			config.TransmitRetryTimeout = retry
+			config.MaxConsecutiveMisses = 1
+			start = time.Now()
+			var generatedAt []time.Duration
+			bus.send = func(ctx context.Context, frame gocan.Frame) error {
+				if frame.ID == 2 || frame.ID == 4 {
+					return nil
+				}
+				if retry == 0 {
+					return gocan.ErrTransmitQueueFull
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			task, err := cyclic.StartFunc(context.Background(), bus, func() (gocan.Frame, error) {
+				generatedAt = append(generatedAt, time.Since(start))
+				return gocan.Frame{ID: uint32(len(generatedAt))}, nil
+			}, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(11 * time.Millisecond)
+			synctest.Wait()
+			if task.Missed() != 1 || task.Err() != nil {
+				t.Fatalf("live polling: missed %d, Err = %v; want 1, nil", task.Missed(), task.Err())
+			}
+			<-task.Done()
+			want := []time.Duration{0, 10, 20, 30, 40, 50}
+			if retry > 0 {
+				want = []time.Duration{0, 20, 30, 50, 60, 80}
+			}
+			for i := range want {
+				want[i] *= time.Millisecond
+			}
+			kind := gocan.ErrTransmitQueueFull
+			if retry > 0 {
+				kind = cyclic.ErrOccurrenceMissed
+			}
+			if !slices.Equal(generatedAt, want) || !errors.Is(task.Err(), kind) || errors.Is(task.Err(), gocan.ErrTransmitQueueFull) != (retry == 0) || task.Missed() != 4 {
+				t.Fatalf("retry %v: generated at %v, Err = %v, missed %d; want %v, %v, 4", retry, generatedAt, task.Err(), task.Missed(), want, kind)
+			}
+		}
+		// A miss allowance never consumes explicit shutdown or bus loss.
+		cause := errors.New("caller cancelled")
+		for _, test := range []struct {
+			shutdown        string
+			sendErr, busErr error
+		}{
+			{"stop", nil, nil},
+			{"cancel", nil, nil},
+			{"close", nil, nil},
+			{"close during queue rejection", gocan.ErrTransmitQueueFull, nil},
+			{"fault during queue rejection", gocan.ErrTransmitQueueFull, gocan.ErrHardwareDisconnected},
+			{"close during occurrence expiry", cyclic.ErrOccurrenceMissed, nil},
+			{"fault during occurrence expiry", cyclic.ErrOccurrenceMissed, gocan.ErrHardwareDisconnected},
+		} {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			bus.done = make(chan struct{})
+			bus.err = test.busErr
+			bus.send = func(ctx context.Context, _ gocan.Frame) error {
+				if test.sendErr != nil {
+					if test.sendErr == cyclic.ErrOccurrenceMissed {
+						<-ctx.Done()
+					}
+					close(bus.done)
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+				}
+				return gocan.ErrTransmitQueueFull
+			}
+			sendConfig := config
+			if test.sendErr == gocan.ErrTransmitQueueFull {
+				sendConfig.TransmitRetryTimeout = 0
+			}
+			task, err := cyclic.Start(ctx, bus, gocan.Frame{}, sendConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
+			var want error
+			switch test.shutdown {
+			case "stop":
+				task.Stop()
+			case "cancel":
+				cancel(cause)
+				want = cause
+			case "close":
+				close(bus.done)
+				want = gocan.ErrBusClosed
+			default:
+				want = test.busErr
+				if want == nil {
+					want = gocan.ErrBusClosed
+				}
+			}
+			<-task.Done()
+			cancel(nil)
+			if !errors.Is(task.Err(), want) || task.Missed() != 0 || (test.sendErr != nil && !errors.Is(task.Err(), test.sendErr)) {
+				t.Fatalf("%s with miss allowance: %v, missed %d; want %v, %v, 0", test.shutdown, task.Err(), task.Missed(), want, test.sendErr)
+			}
 		}
 	})
 }
 
 type callbackBus struct {
 	send func(context.Context, gocan.Frame) error
+	done chan struct{}
+	err  error
 }
 
 func (bus *callbackBus) ID() gocan.BusID         { return 1 }
@@ -245,6 +356,6 @@ func (bus *callbackBus) Capture() *gocan.Capture { return nil }
 func (bus *callbackBus) Send(ctx context.Context, frame gocan.Frame) error {
 	return bus.send(ctx, frame)
 }
-func (bus *callbackBus) Done() <-chan struct{} { return nil }
-func (bus *callbackBus) Err() error            { return nil }
+func (bus *callbackBus) Done() <-chan struct{} { return bus.done }
+func (bus *callbackBus) Err() error            { return bus.err }
 func (bus *callbackBus) Close() error          { return nil }
