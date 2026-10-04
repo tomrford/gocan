@@ -275,7 +275,14 @@ func (task *Task) send(anchor time.Time) error {
 	} else if task.ctx.Err() == nil && (errors.Is(err, ErrOccurrenceMissed) || errors.Is(err, gocan.ErrTransmitQueueFull)) {
 		select {
 		case <-task.bus.Done():
-			return err
+			cause := task.bus.Err()
+			if cause == nil {
+				cause = gocan.ErrBusClosed
+			}
+			if errors.Is(err, cause) {
+				return err
+			}
+			return errors.Join(err, cause)
 		default:
 		}
 		task.missed.Add(1)

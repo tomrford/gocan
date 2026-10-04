@@ -283,17 +283,44 @@ func TestRetryScheduleAndStop(t *testing.T) {
 		}
 		// A miss allowance never consumes explicit shutdown or bus loss.
 		cause := errors.New("caller cancelled")
-		for _, shutdown := range []string{"stop", "cancel", "close"} {
+		for _, test := range []struct {
+			shutdown        string
+			sendErr, busErr error
+		}{
+			{"stop", nil, nil},
+			{"cancel", nil, nil},
+			{"close", nil, nil},
+			{"close during queue rejection", gocan.ErrTransmitQueueFull, nil},
+			{"fault during queue rejection", gocan.ErrTransmitQueueFull, gocan.ErrHardwareDisconnected},
+			{"close during occurrence expiry", cyclic.ErrOccurrenceMissed, nil},
+			{"fault during occurrence expiry", cyclic.ErrOccurrenceMissed, gocan.ErrHardwareDisconnected},
+		} {
 			ctx, cancel := context.WithCancelCause(context.Background())
 			bus.done = make(chan struct{})
-			bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-			task, err := cyclic.Start(ctx, bus, gocan.Frame{}, config)
+			bus.err = test.busErr
+			bus.send = func(ctx context.Context, _ gocan.Frame) error {
+				if test.sendErr != nil {
+					if test.sendErr == cyclic.ErrOccurrenceMissed {
+						<-ctx.Done()
+					}
+					close(bus.done)
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+				}
+				return gocan.ErrTransmitQueueFull
+			}
+			sendConfig := config
+			if test.sendErr == gocan.ErrTransmitQueueFull {
+				sendConfig.TransmitRetryTimeout = 0
+			}
+			task, err := cyclic.Start(ctx, bus, gocan.Frame{}, sendConfig)
 			if err != nil {
 				t.Fatal(err)
 			}
 			time.Sleep(time.Millisecond)
 			var want error
-			switch shutdown {
+			switch test.shutdown {
 			case "stop":
 				task.Stop()
 			case "cancel":
@@ -302,11 +329,16 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			case "close":
 				close(bus.done)
 				want = gocan.ErrBusClosed
+			default:
+				want = test.busErr
+				if want == nil {
+					want = gocan.ErrBusClosed
+				}
 			}
 			<-task.Done()
 			cancel(nil)
-			if !errors.Is(task.Err(), want) || task.Missed() != 0 {
-				t.Fatalf("%s with miss allowance: %v, missed %d; want %v, 0", shutdown, task.Err(), task.Missed(), want)
+			if !errors.Is(task.Err(), want) || task.Missed() != 0 || (test.sendErr != nil && !errors.Is(task.Err(), test.sendErr)) {
+				t.Fatalf("%s with miss allowance: %v, missed %d; want %v, %v, 0", test.shutdown, task.Err(), task.Missed(), want, test.sendErr)
 			}
 		}
 	})
@@ -315,6 +347,7 @@ func TestRetryScheduleAndStop(t *testing.T) {
 type callbackBus struct {
 	send func(context.Context, gocan.Frame) error
 	done chan struct{}
+	err  error
 }
 
 func (bus *callbackBus) ID() gocan.BusID         { return 1 }
@@ -324,5 +357,5 @@ func (bus *callbackBus) Send(ctx context.Context, frame gocan.Frame) error {
 	return bus.send(ctx, frame)
 }
 func (bus *callbackBus) Done() <-chan struct{} { return bus.done }
-func (bus *callbackBus) Err() error            { return nil }
+func (bus *callbackBus) Err() error            { return bus.err }
 func (bus *callbackBus) Close() error          { return nil }
