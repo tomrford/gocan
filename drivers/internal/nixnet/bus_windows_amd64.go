@@ -179,7 +179,14 @@ const receiveBatchFrames = 16
 
 // receiveBatch bounds each read to 16 maximum-length records in this mode. The
 // variable-width FD ABI can also return several shorter complete records.
+// By default the lock covers the native read too, so already-fetched replies
+// cannot cross a later transmission. Concurrent mode only locks publication;
+// in either mode a transmission cannot split the batch's capture records.
 func (bus *Bus) receiveBatch() (bool, error) {
+	if !bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	var data [frameMaxSize * receiveBatchFrames]byte
 	size := frameClassicSize * receiveBatchFrames
 	if bus.config.FD {
@@ -187,11 +194,13 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	}
 	var returned uint32
 	result, _, _ := bus.api.read.Call(uintptr(bus.rx), uintptr(unsafe.Pointer(&data[0])), uintptr(size), 0, uintptr(unsafe.Pointer(&returned)))
+	if bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	if err := bus.api.check("read NI-XNET frame", result); err != nil {
 		if errors.Is(err, gocan.ErrReceiveOverrun) {
-			bus.ioMu.Lock()
 			_ = bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun})
-			bus.ioMu.Unlock()
 		}
 		return false, err
 	}
@@ -215,11 +224,8 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	return returned != 0, nil
 }
 
-// recordReceived keeps a reply behind the write and capture append of its request.
-// The receive loop owns the RX session; native reads need not block TX.
+// recordReceived appends one record from a batch while the caller holds ioMu.
 func (bus *Bus) recordReceived(record []byte) error {
-	bus.ioMu.Lock()
-	defer bus.ioMu.Unlock()
 	if record[13]&echoFlag != 0 {
 		return errors.New("NI-XNET returned an unexpected transmit echo")
 	}
@@ -240,8 +246,16 @@ func (bus *Bus) recordReceived(record []byte) error {
 }
 
 func (bus *Bus) checkState() error {
+	if !bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	var state, fault uint32
 	result, _, _ := bus.api.state.Call(uintptr(bus.rx), stateCAN, 4, uintptr(unsafe.Pointer(&state)), uintptr(unsafe.Pointer(&fault)))
+	if bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	if err := bus.api.check("read NI-XNET controller state", result); err != nil {
 		return err
 	}
@@ -252,8 +266,6 @@ func (bus *Bus) checkState() error {
 	if state&15 == 3 {
 		return nil
 	}
-	bus.ioMu.Lock()
-	defer bus.ioMu.Unlock()
 	return bus.recordState(byte(state&15), byte(state>>16), byte(state>>24))
 }
 func (bus *Bus) recordState(state, tx, rx byte) error {

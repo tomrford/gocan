@@ -20,6 +20,7 @@ type Config struct {
 	Baud, FDBaud    uint64
 	FD              bool
 	Termination     uint8
+	ConcurrentIO    bool
 }
 
 const (

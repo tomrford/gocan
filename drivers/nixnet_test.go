@@ -10,6 +10,25 @@ func TestNIXNETConfiguration(t *testing.T) {
 	if channel.Identifier() != "nixnet:CAN5" || channel.Driver() != "nixnet" || !channel.SupportsTermination() {
 		t.Fatalf("wrong channel metadata: %+v", channel)
 	}
+	for _, concurrent := range []bool{false, true} {
+		config := Config{ID: 1, Name: "NI", Bitrate: 500000, NIXNETConcurrentIO: concurrent}
+		got, err := prepareOpen(gocan.NewCapture(), channel, config)
+		if err != nil || got != config {
+			t.Fatalf("NI concurrent mode %t: got %+v, %v", concurrent, got, err)
+		}
+		for _, driver := range []driverKind{driverPCAN, driverVector, driverSocketCAN} {
+			other := Channel{driver: driver, external: driver == driverSocketCAN}
+			config.External = other.external
+			config.Bitrate = 500000
+			if config.External {
+				config.Bitrate = 0
+			}
+			_, err := prepareOpen(gocan.NewCapture(), other, config)
+			if (err != nil) != concurrent {
+				t.Fatalf("%s concurrent mode %t: %v", other.Driver(), concurrent, err)
+			}
+		}
+	}
 	for _, preset := range channel.fdPresets() {
 		cfg, err := prepareOpen(gocan.NewCapture(), channel, Config{ID: 1, Name: "NI", Bitrate: preset.rate.Bitrate, DataBitrate: preset.rate.DataBitrate, Termination: TerminationOn})
 		if err != nil {

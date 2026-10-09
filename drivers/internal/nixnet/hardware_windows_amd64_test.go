@@ -70,7 +70,8 @@ func TestQueueContractsHardware(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	frame, _ := gocan.NewFrame(0x321, make([]byte, 8), 0)
-	// Blocking capture appends stalls reception after at most one native batch,
+	// Holding the I/O lock stalls reception before the read in serialized mode,
+	// or after at most one native batch in concurrent mode,
 	// without stopping the controller from acknowledging the peer's frames.
 	// This exercises the real native overflow status and terminal capture event.
 	b.ioMu.Lock()

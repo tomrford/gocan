@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func nixnetPair(t testing.TB, capture *gocan.Capture, dataRate uint32) (gocan.Bus, gocan.Bus) {
+func nixnetPair(t testing.TB, capture *gocan.Capture, dataRate uint32, concurrent bool) (gocan.Bus, gocan.Bus) {
 	t.Helper()
 	a, b := os.Getenv("GOCAN_NIXNET_CHANNEL_A"), os.Getenv("GOCAN_NIXNET_CHANNEL_B")
 	if a == "" || b == "" {
@@ -34,7 +34,7 @@ func nixnetPair(t testing.TB, capture *gocan.Capture, dataRate uint32) (gocan.Bu
 			}
 			found = true
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			bus, err := Open(ctx, capture, channel, Config{ID: gocan.BusID(index + 1), Name: name, Bitrate: 500000, DataBitrate: dataRate, Termination: TerminationOn})
+			bus, err := Open(ctx, capture, channel, Config{ID: gocan.BusID(index + 1), Name: name, Bitrate: 500000, DataBitrate: dataRate, Termination: TerminationOn, NIXNETConcurrentIO: concurrent})
 			cancel()
 			if err != nil {
 				t.Fatal(err)
@@ -55,9 +55,15 @@ func nixnetPair(t testing.TB, capture *gocan.Capture, dataRate uint32) (gocan.Bu
 }
 
 func TestNIXNETConformanceHardware(t *testing.T) {
-	for _, rate := range []uint32{0, 2000000, 4000000} {
-		t.Run(fmt.Sprintf("data_%d", rate), func(t *testing.T) {
-			conformance.Run(t, func(t *testing.T, capture *gocan.Capture) (gocan.Bus, gocan.Bus) { return nixnetPair(t, capture, rate) }, conformance.Capabilities{FD: rate != 0, RemoteFrames: true})
+	for _, concurrent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("concurrent_%t", concurrent), func(t *testing.T) {
+			for _, rate := range []uint32{0, 2000000, 4000000} {
+				t.Run(fmt.Sprintf("data_%d", rate), func(t *testing.T) {
+					conformance.Run(t, func(t *testing.T, capture *gocan.Capture) (gocan.Bus, gocan.Bus) {
+						return nixnetPair(t, capture, rate, concurrent)
+					}, conformance.Capabilities{FD: rate != 0, RemoteFrames: true})
+				})
+			}
 		})
 	}
 }
@@ -66,7 +72,7 @@ func TestNIXNETFDLengthsHardware(t *testing.T) {
 	for _, rate := range []uint32{2000000, 4000000} {
 		t.Run(fmt.Sprint(rate), func(t *testing.T) {
 			capture := gocan.NewCapture()
-			a, b := nixnetPair(t, capture, rate)
+			a, b := nixnetPair(t, capture, rate, false)
 			for _, flags := range []gocan.FrameFlags{gocan.FrameFD, gocan.FrameFD | gocan.FrameBitRateSwitch, gocan.FrameFD | gocan.FrameExtended | gocan.FrameBitRateSwitch} {
 				for dlc := uint8(0); dlc <= 15; dlc++ {
 					frame := gocan.Frame{ID: 0x500 + uint32(dlc), DLC: dlc, Flags: flags}
@@ -96,7 +102,7 @@ func BenchmarkNIXNETHardware(b *testing.B) {
 	for _, rate := range []uint32{0, 2000000} {
 		b.Run(fmt.Sprintf("data_%d", rate), func(b *testing.B) {
 			capture := gocan.NewCapture()
-			a, peer := nixnetPair(b, capture, rate)
+			a, peer := nixnetPair(b, capture, rate, false)
 			flags := gocan.FrameFlags(0)
 			length := 8
 			if rate != 0 {
@@ -116,7 +122,7 @@ func BenchmarkNIXNETSaturatedHardware(b *testing.B) {
 	for _, rate := range []uint32{0, 2000000} {
 		b.Run(fmt.Sprintf("data_%d", rate), func(b *testing.B) {
 			capture := gocan.NewCapture()
-			a, peer := nixnetPair(b, capture, rate)
+			a, peer := nixnetPair(b, capture, rate, false)
 			flags := gocan.FrameFlags(0)
 			length := 8
 			if rate != 0 {

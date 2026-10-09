@@ -33,6 +33,15 @@ type Config struct {
 	// Termination selects switchable bus termination on supported channels.
 	// Default leaves the driver default; unsupported explicit choices are rejected.
 	Termination Termination
+	// NIXNETConcurrentIO lets NI-XNET read frames and controller state without
+	// holding the transmit lock. False (the default) serializes native reads
+	// and capture appends with transmission; slow reads may delay Send.
+	// True reduces that delay, but a reply fetched before a new request may be
+	// captured after it. Use concurrent mode for fully awaited exchanges with
+	// no stale or unsolicited replies on the receive address; after a timeout
+	// or cancellation, finish or recover the old exchange before reusing it.
+	// This option is fixed at Open and is rejected for other drivers.
+	NIXNETConcurrentIO bool
 }
 
 // Termination selects the physical bus termination resistor.
@@ -152,6 +161,9 @@ func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config
 	}
 	if config.Termination != TerminationDefault && !channel.supportsTermination {
 		return Config{}, fmt.Errorf("%s does not support switchable termination", channel.Identifier())
+	}
+	if config.NIXNETConcurrentIO && channel.driver != driverNIXNET {
+		return Config{}, errors.New("NIXNETConcurrentIO requires an NI-XNET channel")
 	}
 
 	fd := config.FDTiming != (FDTiming{})
