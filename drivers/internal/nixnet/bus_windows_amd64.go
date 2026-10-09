@@ -230,19 +230,13 @@ func (bus *Bus) recordReceived(record []byte) error {
 		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
 			return err
 		}
-		if err := bus.recordState(record[16], record[17], record[18]); err != nil {
-			return err
-		}
-	} else {
-		frame, err := decodeFrame(record)
-		if err != nil {
-			return err
-		}
-		if err := bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
-			return err
-		}
+		return bus.recordState(record[16], record[17], record[18])
 	}
-	return nil
+	frame, err := decodeFrame(record)
+	if err != nil {
+		return err
+	}
+	return bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame})
 }
 
 func (bus *Bus) checkState() error {

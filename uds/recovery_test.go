@@ -71,10 +71,6 @@ func TestResponseRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				config.ResponseRecoveryTimeout = -1
-				if _, err := uds.New(link, config); err == nil {
-					t.Fatal("negative recovery accepted")
-				}
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				if test.cancelBuffered {

@@ -52,6 +52,9 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New client: %v", err)
 	}
+	if _, err := uds.New(testerLink, uds.Config{ResponseRecoveryTimeout: -1}); err == nil {
+		t.Fatal("negative recovery accepted")
+	}
 	functionalPath, err := isotp.NewFunctional(testerBus, isotp.FunctionalConfig{TransmitID: 0x7df})
 	if err != nil {
 		t.Fatalf("New functional path: %v", err)
