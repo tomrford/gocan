@@ -154,13 +154,11 @@ func (bus *Bus) receiveLoop() {
 			return
 		default:
 		}
-		bus.ioMu.Lock()
-		more, err := bus.receiveOne()
+		more, err := bus.receiveBatch()
 		if err == nil && !time.Now().Before(nextState) {
 			err = bus.checkState()
 			nextState = time.Now().Add(100 * time.Millisecond)
 		}
-		bus.ioMu.Unlock()
 		if err != nil {
 			bus.lifecycle.Stop(err)
 			return
@@ -177,16 +175,29 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-// readOne uses the smallest buffer that can hold a frame in this mode. The
+const receiveBatchFrames = 16
+
+// receiveBatch bounds each read to 16 maximum-length records in this mode. The
 // variable-width FD ABI can also return several shorter complete records.
-func (bus *Bus) receiveOne() (bool, error) {
-	var data [frameMaxSize]byte
-	size := frameClassicSize
+// By default the lock covers the native read too, so already-fetched replies
+// cannot cross a later transmission. Concurrent mode only locks publication;
+// in either mode a transmission cannot split the batch's capture records.
+func (bus *Bus) receiveBatch() (bool, error) {
+	if !bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
+	var data [frameMaxSize * receiveBatchFrames]byte
+	size := frameClassicSize * receiveBatchFrames
 	if bus.config.FD {
-		size = frameMaxSize
+		size = frameMaxSize * receiveBatchFrames
 	}
 	var returned uint32
 	result, _, _ := bus.api.read.Call(uintptr(bus.rx), uintptr(unsafe.Pointer(&data[0])), uintptr(size), 0, uintptr(unsafe.Pointer(&returned)))
+	if bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	if err := bus.api.check("read NI-XNET frame", result); err != nil {
 		if errors.Is(err, gocan.ErrReceiveOverrun) {
 			_ = bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun})
@@ -205,36 +216,46 @@ func (bus *Bus) receiveOne() (bool, error) {
 		if length > len(record) {
 			return false, errors.New("NI-XNET returned a truncated payload")
 		}
-		if record[13]&echoFlag != 0 {
-			return false, errors.New("NI-XNET returned an unexpected transmit echo")
-		}
-		if record[12] == frameError {
-			if record[15] < 5 {
-				return false, errors.New("NI-XNET returned a short bus error")
-			}
-			if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
-				return false, err
-			}
-			if err := bus.recordState(record[16], record[17], record[18]); err != nil {
-				return false, err
-			}
-		} else {
-			frame, err := decodeFrame(record[:length])
-			if err != nil {
-				return false, err
-			}
-			if err := bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
-				return false, err
-			}
+		if err := bus.recordReceived(record[:length]); err != nil {
+			return false, err
 		}
 		offset += length
 	}
 	return returned != 0, nil
 }
 
+// recordReceived appends one record from a batch while the caller holds ioMu.
+func (bus *Bus) recordReceived(record []byte) error {
+	if record[13]&echoFlag != 0 {
+		return errors.New("NI-XNET returned an unexpected transmit echo")
+	}
+	if record[12] == frameError {
+		if record[15] < 5 {
+			return errors.New("NI-XNET returned a short bus error")
+		}
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
+			return err
+		}
+		return bus.recordState(record[16], record[17], record[18])
+	}
+	frame, err := decodeFrame(record)
+	if err != nil {
+		return err
+	}
+	return bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame})
+}
+
 func (bus *Bus) checkState() error {
+	if !bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	var state, fault uint32
 	result, _, _ := bus.api.state.Call(uintptr(bus.rx), stateCAN, 4, uintptr(unsafe.Pointer(&state)), uintptr(unsafe.Pointer(&fault)))
+	if bus.config.ConcurrentIO {
+		bus.ioMu.Lock()
+		defer bus.ioMu.Unlock()
+	}
 	if err := bus.api.check("read NI-XNET controller state", result); err != nil {
 		return err
 	}

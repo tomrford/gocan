@@ -17,7 +17,7 @@ func discoverNIXNET() ([]Channel, error) {
 	return channels, err
 }
 func openNIXNET(ctx context.Context, capture *gocan.Capture, channel Channel, config Config, fd bool) (gocan.Bus, error) {
-	native := nixnet.Config{ID: config.ID, Name: config.Name, Interface: channel.nativeName, Baud: uint64(config.Bitrate), FD: fd, Termination: uint8(config.Termination)}
+	native := nixnet.Config{ID: config.ID, Name: config.Name, Interface: channel.nativeName, Baud: uint64(config.Bitrate), FD: fd, Termination: uint8(config.Termination), ConcurrentIO: config.NIXNETConcurrentIO}
 	if fd {
 		nominal, data, err := nixnetFDTiming(config.FDTiming)
 		if err != nil {

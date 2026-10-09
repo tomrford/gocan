@@ -61,10 +61,17 @@ func (err *NegativeResponseError) Error() string {
 }
 
 // Config sets the UDS application-response timeouts. Zero values select 100
-// milliseconds for P2 and five seconds for P2*.
+// milliseconds for P2 and five seconds for P2*, with recovery disabled.
 type Config struct {
 	P2Timeout     time.Duration
 	P2StarTimeout time.Duration
+
+	// ResponseRecoveryTimeout allows one additional first-frame wait after each
+	// P2 or P2* expiry, starting when that expiry is handled. It keeps the same
+	// exchange open without retransmitting. This tolerates host stalls but also
+	// accepts late ECU replies and delays silence detection. Zero disables it.
+	// Caller deadlines and ISO-TP transport timeouts remain authoritative.
+	ResponseRecoveryTimeout time.Duration
 }
 
 // Client exchanges raw UDS requests over one ISO-TP link.
@@ -73,9 +80,10 @@ type Config struct {
 // concurrently, but callers must not operate the Link independently or
 // construct another Client around it.
 type Client struct {
-	link          *isotp.Link
-	p2Timeout     time.Duration
-	p2StarTimeout time.Duration
+	link                    *isotp.Link
+	p2Timeout               time.Duration
+	p2StarTimeout           time.Duration
+	responseRecoveryTimeout time.Duration
 }
 
 // RetentionCursor returns receive progress during an active Do, DoSuppressed,
@@ -100,10 +108,14 @@ func New(link *isotp.Link, config Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.ResponseRecoveryTimeout < 0 {
+		return nil, errors.New("UDS response recovery timeout must not be negative")
+	}
 	return &Client{
-		link:          link,
-		p2Timeout:     p2Timeout,
-		p2StarTimeout: p2StarTimeout,
+		link:                    link,
+		p2Timeout:               p2Timeout,
+		p2StarTimeout:           p2StarTimeout,
+		responseRecoveryTimeout: config.ResponseRecoveryTimeout,
 	}, nil
 }
 
@@ -124,7 +136,7 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 	timeout := client.p2Timeout
 	timeoutError := ErrP2Timeout
 	for {
-		payload, err := nextWithTimeout(ctx, exchange, timeout, timeoutError)
+		payload, err := client.nextWithTimeout(ctx, exchange, timeout, timeoutError)
 		if err != nil {
 			return Response{}, err
 		}
@@ -157,10 +169,11 @@ func (client *Client) Send(ctx context.Context, request Request) error {
 }
 
 // DoSuppressed transmits a request whose service data already contains
-// suppressPositiveResponse, then waits through P2. The caller owns the raw
-// service and subfunction layout. It returns (nil, nil) on initial silence, the
-// response on a positive reply, and NegativeResponseError on a final negative
-// reply. ResponsePending requires a final response within P2*. Context and
+// suppressPositiveResponse, then waits through P2 and any configured recovery.
+// The caller owns the raw service and subfunction layout. It returns (nil, nil)
+// on initial silence, the response on a positive reply, and NegativeResponseError
+// on a final negative reply. ResponsePending switches to P2*, with recovery
+// available after each expiry. Context and
 // transport errors always propagate. Silence does not confirm completion of the
 // action. After a timeout or cancellation, callers must allow the server to
 // finish before starting another exchange on the same receive address.
@@ -215,8 +228,19 @@ func parseResponse(service ServiceID, payload []byte) (Response, *NegativeRespon
 	return Response{Service: service, Data: payload[1:]}, nil, nil
 }
 
-func nextWithTimeout(ctx context.Context, exchange *isotp.Exchange, timeout time.Duration, timeoutError error) ([]byte, error) {
+func (client *Client) nextWithTimeout(ctx context.Context, exchange *isotp.Exchange, timeout time.Duration, timeoutError error) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, context.Cause(ctx)
+	}
 	payload, err := exchange.Next(ctx, timeout)
+	if errors.Is(err, isotp.ErrFirstFrameTimeout) && client.responseRecoveryTimeout > 0 && ctx.Err() == nil {
+		payload, err = exchange.Next(ctx, client.responseRecoveryTimeout)
+	}
+	// Capture may return buffered traffic even after cancellation. The caller's
+	// deadline still wins over a reply or an application timeout.
+	if (err == nil || errors.Is(err, isotp.ErrFirstFrameTimeout)) && ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 	if errors.Is(err, isotp.ErrFirstFrameTimeout) {
 		return nil, timeoutError
 	}

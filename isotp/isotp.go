@@ -94,10 +94,11 @@ type Config struct {
 // Link binds one ISO-TP transmit and receive identifier to a raw CAN bus.
 //
 // A Link has exactly one receive position, established at New and advanced by
-// Receive and Exchange.Next. Begin repositions it to the present, discarding
-// unread payloads, because ISO-TP has no transaction identifier and a request
-// must not be answered by traffic that predates it. A multi-frame Send
-// repositions it for the same reason: it has to recognise its own Flow Control.
+// Receive and Exchange.Next. Begin discards unread payloads captured before its
+// accepted first frame. ISO-TP has no transaction identifier: callers must finish
+// or recover earlier exchanges before reusing the receive address, including
+// replies still buffered in a driver or arriving late. A multi-frame Send
+// repositions the cursor too, to recognise its own Flow Control.
 // Clearing or pruning the underlying capture during an operation may discard
 // that position, so the operation fails with gocan.ErrCursorOutOfRange rather
 // than hiding the loss. The next operation starts from the oldest records the
@@ -254,12 +255,14 @@ func (link *Link) Receive(ctx context.Context) ([]byte, error) {
 }
 
 // Begin transmits one complete ISO-TP payload and returns an Exchange scoped to
-// the payloads that arrive after it. The caller must Close the Exchange.
+// the payloads captured after its accepted first frame. The caller must Close
+// the Exchange.
 //
 // ISO-TP has no transaction identifier, so Begin repositions the link's receive
 // position to the accepted first frame's capture record and discards earlier
-// unread payloads. For the life of the Exchange the endpoint must not carry
-// unrelated traffic on its receive address.
+// unread captured payloads. It does not flush the driver's receive queue or
+// distinguish late replies to earlier requests. For the life of the Exchange
+// the endpoint must not carry unrelated traffic on its receive address.
 func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) {
 	transmission, err := link.prepareTransmission(payload)
 	if err != nil {
