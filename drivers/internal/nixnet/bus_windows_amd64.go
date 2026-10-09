@@ -154,13 +154,11 @@ func (bus *Bus) receiveLoop() {
 			return
 		default:
 		}
-		bus.ioMu.Lock()
-		more, err := bus.receiveOne()
+		more, err := bus.receiveBatch()
 		if err == nil && !time.Now().Before(nextState) {
 			err = bus.checkState()
 			nextState = time.Now().Add(100 * time.Millisecond)
 		}
-		bus.ioMu.Unlock()
 		if err != nil {
 			bus.lifecycle.Stop(err)
 			return
@@ -177,19 +175,23 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-// readOne uses the smallest buffer that can hold a frame in this mode. The
+const receiveBatchFrames = 16
+
+// receiveBatch bounds each read to 16 maximum-length records in this mode. The
 // variable-width FD ABI can also return several shorter complete records.
-func (bus *Bus) receiveOne() (bool, error) {
-	var data [frameMaxSize]byte
-	size := frameClassicSize
+func (bus *Bus) receiveBatch() (bool, error) {
+	var data [frameMaxSize * receiveBatchFrames]byte
+	size := frameClassicSize * receiveBatchFrames
 	if bus.config.FD {
-		size = frameMaxSize
+		size = frameMaxSize * receiveBatchFrames
 	}
 	var returned uint32
 	result, _, _ := bus.api.read.Call(uintptr(bus.rx), uintptr(unsafe.Pointer(&data[0])), uintptr(size), 0, uintptr(unsafe.Pointer(&returned)))
 	if err := bus.api.check("read NI-XNET frame", result); err != nil {
 		if errors.Is(err, gocan.ErrReceiveOverrun) {
+			bus.ioMu.Lock()
 			_ = bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun})
+			bus.ioMu.Unlock()
 		}
 		return false, err
 	}
@@ -205,31 +207,42 @@ func (bus *Bus) receiveOne() (bool, error) {
 		if length > len(record) {
 			return false, errors.New("NI-XNET returned a truncated payload")
 		}
-		if record[13]&echoFlag != 0 {
-			return false, errors.New("NI-XNET returned an unexpected transmit echo")
-		}
-		if record[12] == frameError {
-			if record[15] < 5 {
-				return false, errors.New("NI-XNET returned a short bus error")
-			}
-			if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
-				return false, err
-			}
-			if err := bus.recordState(record[16], record[17], record[18]); err != nil {
-				return false, err
-			}
-		} else {
-			frame, err := decodeFrame(record[:length])
-			if err != nil {
-				return false, err
-			}
-			if err := bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
-				return false, err
-			}
+		if err := bus.recordReceived(record[:length]); err != nil {
+			return false, err
 		}
 		offset += length
 	}
 	return returned != 0, nil
+}
+
+// recordReceived keeps a reply behind the write and capture append of its request.
+// The receive loop owns the RX session; native reads need not block TX.
+func (bus *Bus) recordReceived(record []byte) error {
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
+	if record[13]&echoFlag != 0 {
+		return errors.New("NI-XNET returned an unexpected transmit echo")
+	}
+	if record[12] == frameError {
+		if record[15] < 5 {
+			return errors.New("NI-XNET returned a short bus error")
+		}
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
+			return err
+		}
+		if err := bus.recordState(record[16], record[17], record[18]); err != nil {
+			return err
+		}
+	} else {
+		frame, err := decodeFrame(record)
+		if err != nil {
+			return err
+		}
+		if err := bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (bus *Bus) checkState() error {
@@ -245,6 +258,8 @@ func (bus *Bus) checkState() error {
 	if state&15 == 3 {
 		return nil
 	}
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
 	return bus.recordState(byte(state&15), byte(state>>16), byte(state>>24))
 }
 func (bus *Bus) recordState(state, tx, rx byte) error {
