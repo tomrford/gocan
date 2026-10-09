@@ -230,7 +230,7 @@ func parseResponse(service ServiceID, payload []byte) (Response, *NegativeRespon
 
 func (client *Client) nextWithTimeout(ctx context.Context, exchange *isotp.Exchange, timeout time.Duration, timeoutError error) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, context.Cause(ctx)
 	}
 	payload, err := exchange.Next(ctx, timeout)
 	if errors.Is(err, isotp.ErrFirstFrameTimeout) && client.responseRecoveryTimeout > 0 && ctx.Err() == nil {
@@ -239,7 +239,7 @@ func (client *Client) nextWithTimeout(ctx context.Context, exchange *isotp.Excha
 	// Capture may return buffered traffic even after cancellation. The caller's
 	// deadline still wins over a reply or an application timeout.
 	if (err == nil || errors.Is(err, isotp.ErrFirstFrameTimeout)) && ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, context.Cause(ctx)
 	}
 	if errors.Is(err, isotp.ErrFirstFrameTimeout) {
 		return nil, timeoutError

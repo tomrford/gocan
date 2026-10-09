@@ -15,21 +15,24 @@ import (
 
 func TestResponseRecovery(t *testing.T) {
 	const ms = time.Millisecond
+	cancelCause := errors.New("diagnostic operation stopped")
 	type reply struct {
 		after time.Duration
 		data  []byte
 	}
 	for _, test := range []struct {
-		name           string
-		recovery       time.Duration
-		replies        []reply
-		deadline       time.Duration
-		cancelAt       time.Duration
-		closeAt        time.Duration
-		suppressed     bool
-		cancelBuffered bool
-		want           error
-		elapsed        time.Duration
+		name             string
+		recovery         time.Duration
+		replies          []reply
+		deadline         time.Duration
+		cancelAt         time.Duration
+		closeAt          time.Duration
+		suppressed       bool
+		cancelBuffered   bool
+		cancelBeforeWait bool
+		cause            error
+		want             error
+		elapsed          time.Duration
 	}{
 		{name: "timely", recovery: 100 * ms, replies: []reply{{200 * ms, []byte{2, 0x76, 1}}}, elapsed: 200 * ms},
 		{name: "late", recovery: 100 * ms, replies: []reply{{585 * ms, []byte{2, 0x76, 1}}}, elapsed: 585 * ms},
@@ -41,7 +44,10 @@ func TestResponseRecovery(t *testing.T) {
 		{name: "pending silence", recovery: 100 * ms, replies: []reply{{550 * ms, []byte{3, 0x7f, 0x36, 0x78}}}, want: uds.ErrP2StarTimeout, elapsed: 850 * ms},
 		{name: "caller deadline", recovery: 100 * ms, deadline: 575 * ms, want: context.DeadlineExceeded, elapsed: 575 * ms},
 		{name: "caller cancellation", recovery: 100 * ms, cancelAt: 550 * ms, want: context.Canceled, elapsed: 550 * ms},
+		{name: "custom cause before response wait", recovery: 100 * ms, cancelBeforeWait: true, cause: cancelCause, want: cancelCause},
+		{name: "custom cause during recovery", recovery: 100 * ms, cancelAt: 550 * ms, cause: cancelCause, want: cancelCause, elapsed: 550 * ms},
 		{name: "buffered response after cancellation", recovery: 100 * ms, cancelBuffered: true, replies: []reply{{550 * ms, []byte{0x10, 8, 0x76, 1, 2, 3, 4, 5}}}, want: context.Canceled, elapsed: 550 * ms},
+		{name: "buffered response after custom cancellation", recovery: 100 * ms, cancelBuffered: true, cause: cancelCause, replies: []reply{{550 * ms, []byte{0x10, 8, 0x76, 1, 2, 3, 4, 5}}}, want: cancelCause, elapsed: 550 * ms},
 		{name: "bus closes", recovery: 100 * ms, closeAt: 550 * ms, want: gocan.ErrBusClosed, elapsed: 550 * ms},
 		{name: "malformed reply", recovery: 100 * ms, replies: []reply{{550 * ms, []byte{2, 0x7f, 0x36}}}, want: uds.ErrInvalidResponse, elapsed: 550 * ms},
 		{name: "incomplete response", recovery: 100 * ms, replies: []reply{{550 * ms, []byte{0x10, 8, 0x76, 1, 2, 3, 4, 5}}}, want: isotp.ErrConsecutiveFrameTimeout, elapsed: 575 * ms},
@@ -71,8 +77,12 @@ func TestResponseRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancelWithCause := context.WithCancelCause(context.Background())
+				cancel := func() { cancelWithCause(test.cause) }
 				defer cancel()
+				if test.cancelBeforeWait {
+					bus.cancelOnRequest = cancel
+				}
 				if test.cancelBuffered {
 					bus.cancelOnFlow = cancel
 				}
@@ -136,8 +146,9 @@ func TestResponseRecovery(t *testing.T) {
 
 type requestCountingBus struct {
 	gocan.Bus
-	requests     int
-	cancelOnFlow context.CancelFunc
+	requests        int
+	cancelOnFlow    context.CancelFunc
+	cancelOnRequest context.CancelFunc
 }
 
 func (bus *requestCountingBus) Send(ctx context.Context, frame gocan.Frame) error {
@@ -146,6 +157,9 @@ func (bus *requestCountingBus) Send(ctx context.Context, frame gocan.Frame) erro
 	}
 	if err := bus.Bus.Send(ctx, frame); err != nil {
 		return err
+	}
+	if frame.Data[0]>>4 != 3 && bus.cancelOnRequest != nil {
+		bus.cancelOnRequest()
 	}
 	if frame.Data[0]>>4 == 3 && bus.cancelOnFlow != nil {
 		// Queue the final segment before cancelling. Capture reads buffered frames
