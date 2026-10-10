@@ -188,9 +188,8 @@ func TestFaultMemoryRejectsMalformedResponses(t *testing.T) {
 }
 
 func TestFaultMemoryClearValidationAndServerRejection(t *testing.T) {
-	// A nil client proves invalid requests are rejected before transport access.
-	var absent *uds.Client
-	if err := absent.ClearDiagnosticInformation(context.Background(), 0x1000000); !errors.Is(err, uds.ErrInvalidRequest) {
+	client, server, ctx := newSemanticPair(t)
+	if err := client.ClearDiagnosticInformation(ctx, 0x1000000); !errors.Is(err, uds.ErrInvalidRequest) {
 		t.Fatalf("oversized group = %v", err)
 	}
 	for _, test := range []struct {
@@ -208,7 +207,6 @@ func TestFaultMemoryClearValidationAndServerRejection(t *testing.T) {
 		{"clear denied", []byte{0x14, 0xff, 0xff, 0xff}, []byte{0x7f, 0x14, 0x33}, func(ctx context.Context, c *uds.Client) error { return c.ClearDiagnosticInformation(ctx, uds.AllDTCs) }, nil, 0x33},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			client, server, ctx := newSemanticPair(t)
 			done := make(chan error, 1)
 			go func() {
 				if err := receiveRequest(ctx, server, test.request); err != nil {

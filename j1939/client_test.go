@@ -647,7 +647,7 @@ func TestActiveClientsOverVirtualBus(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		for _, capture := range captures {
+		for i, capture := range captures {
 			var decoder j1939.Decoder
 			messages, diagnostics := decoder.PushBatch(capture.Frames())
 			if len(diagnostics) != 0 {
@@ -656,6 +656,13 @@ func TestActiveClientsOverVirtualBus(t *testing.T) {
 			var received, sent int
 			for _, message := range messages {
 				if message.PGN == 0xfeca {
+					source, destination := j1939.Address(0x80), j1939.Address(0x22)
+					if (i == 0) == (message.Direction == gocan.DirectionReceive) {
+						source, destination = destination, source
+					}
+					if message.Source != source || message.Destination != destination {
+						t.Fatalf("virtual message identity = %#v", message)
+					}
 					if !bytes.Equal(message.Payload, activePayload) {
 						t.Fatal("corrupted virtual payload")
 					}

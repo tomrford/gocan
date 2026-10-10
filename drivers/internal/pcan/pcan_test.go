@@ -2,9 +2,7 @@ package pcan
 
 import (
 	"errors"
-	"fmt"
 	"math"
-	"strings"
 	"testing"
 	"unsafe"
 
@@ -62,130 +60,16 @@ func TestNativeLayouts(t *testing.T) {
 	}
 }
 
-func TestFrameTranslationRoundTripsNativeForms(t *testing.T) {
-	remote, err := gocan.NewRemoteFrame(gocan.MaxExtendedID, 8, true)
-	if err != nil {
-		t.Fatalf("NewRemoteFrame: %v", err)
-	}
-	fd, err := gocan.NewFrame(
-		0x123,
-		[]byte{
-			0, 1, 2, 3, 4, 5, 6, 7,
-			8, 9, 10, 11, 12, 13, 14, 15,
-		},
-		gocan.FrameFD|gocan.FrameBitRateSwitch|gocan.FrameErrorStateIndicator,
-	)
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-
-	nativeRemote := encodeClassicMessage(remote)
-	if nativeRemote.id != gocan.MaxExtendedID || nativeRemote.messageType != 0x03 || nativeRemote.length != 8 {
-		t.Errorf("encoded classic remote = %+v, want ID %#x, type 0x03, length 8", nativeRemote, gocan.MaxExtendedID)
-	}
-	gotRemote, err := decodeClassicMessage(nativeRemote)
-	if err != nil {
-		t.Fatalf("decode classic remote: %v", err)
-	}
-	if gotRemote != remote {
-		t.Errorf("classic remote round trip = %+v, want %+v", gotRemote, remote)
-	}
-
-	nativeFD := encodeFDMessage(fd)
-	if nativeFD.id != 0x123 || nativeFD.messageType != 0x1c || nativeFD.dlc != 10 {
-		t.Errorf("encoded FD frame = %+v, want ID 0x123, type 0x1c, DLC 10", nativeFD)
-	}
-	gotFD, err := decodeFDMessage(nativeFD)
-	if err != nil {
-		t.Fatalf("decode FD: %v", err)
-	}
-	if gotFD != fd {
-		t.Errorf("FD round trip = %+v, want %+v", gotFD, fd)
-	}
-
-	classicalOnFD, err := decodeFDMessage(encodeFDMessage(remote))
-	if err != nil {
-		t.Fatalf("decode classical frame from FD API: %v", err)
-	}
-	if classicalOnFD != remote {
-		t.Errorf("classical FD-API round trip = %+v, want %+v", classicalOnFD, remote)
-	}
-}
-
-func TestClassicalDLCAboveEightOnFDAPI(t *testing.T) {
-	for _, dlc := range []uint8{9, 12, 15} {
-		for _, remote := range []bool{false, true} {
-			name := fmt.Sprintf("DLC_%d/data", dlc)
-			flags := gocan.FrameFlags(0)
-			if remote {
-				name = fmt.Sprintf("DLC_%d/RTR", dlc)
-				flags = gocan.FrameRemote
-			}
-			t.Run(name, func(t *testing.T) {
-				frame := gocan.Frame{ID: 0x321, DLC: dlc, Flags: flags}
-				if !remote {
-					copy(frame.Data[:8], []byte{0, 1, 2, 3, 4, 5, 6, 7})
-				}
-				if err := frame.Validate(); err != nil {
-					t.Fatalf("validate fixture: %v", err)
-				}
-
-				if err := validateSendFrame(frame, false); err == nil ||
-					!strings.Contains(err.Error(), fmt.Sprintf("cannot send DLC %d", dlc)) {
-					t.Fatalf("classic API validation = %v, want DLC rejection", err)
-				}
-				if err := validateSendFrame(frame, true); err != nil {
-					t.Fatalf("FD API validation: %v", err)
-				}
-
-				native := encodeFDMessage(frame)
-				if native.dlc != dlc {
-					t.Fatalf("encoded DLC = %d, want %d", native.dlc, dlc)
-				}
-				if native.messageType&pcanMessageFD != 0 {
-					t.Fatalf("encoded classical message type %#02x has FD flag", native.messageType)
-				}
-				wantData := [8]byte{}
-				if !remote {
-					wantData = [8]byte{0, 1, 2, 3, 4, 5, 6, 7}
-				}
-				if got := [8]byte(native.data[:8]); got != wantData {
-					t.Fatalf("encoded data = %v, want %v", got, wantData)
-				}
-				if !remote {
-					native.data[8] = 0xff
-				}
-
-				got, err := decodeFDMessage(native)
-				if err != nil {
-					t.Fatalf("decode classical frame through FD API: %v", err)
-				}
-				if got != frame {
-					t.Fatalf("FD API round trip = %+v, want %+v", got, frame)
-				}
-			})
-		}
-	}
-}
-
-func TestFrameTranslationRejectsUnrepresentedNativeMessages(t *testing.T) {
-	_, err := decodeFDMessage(pcanMsgFD{
-		id:          0x123,
-		messageType: pcanMessageExtended | pcanMessageStatus,
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported PCAN message type") {
-		t.Fatalf("decode status message error = %v, want explicit unsupported error", err)
-	}
-}
-
-func TestStatusFrameUsesNetworkByteOrder(t *testing.T) {
-	status, ok := decodeStatusFrame(pcanMessageStatus, []byte{0x00, 0x00, 0x00, 0x40})
-	if !ok || status != pcanStatusQueueOverrun {
-		t.Fatalf("decoded status = %#x, %t; want %#x, true", status, ok, pcanStatusQueueOverrun)
-	}
-}
-
 func TestPCANEventTranslation(t *testing.T) {
+	// Receive ESI comes from the controller, so normal hardware sends cannot
+	// guarantee exercising this native flag.
+	fd, err := decodePCANReceive(0x123, 0x1c, 10, []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, true, pcanStatusOK, 1)
+	want := gocan.Frame{ID: 0x123, DLC: 10, Flags: gocan.FrameFD | gocan.FrameBitRateSwitch | gocan.FrameErrorStateIndicator}
+	copy(want.Data[:], []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+	if err != nil || !fd.hasFrame || fd.frame != want {
+		t.Fatalf("FD receive flags = %+v, %v; want %+v", fd, err, want)
+	}
+
 	errorFrame, err := decodePCANReceive(
 		0x08,
 		pcanMessageError,

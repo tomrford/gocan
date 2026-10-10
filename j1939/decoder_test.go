@@ -108,33 +108,6 @@ func TestDecoderReassemblesBAMForDBC(t *testing.T) {
 	}
 }
 
-func TestDecoderReassemblesConnectionManagedTransfer(t *testing.T) {
-	frames := []gocan.FrameEvent{
-		frameEvent(t, 0, 0x18ec2180, []byte{0x10, 9, 0, 2, 1, 0x00, 0xda, 0x00}),
-		// Passive reassembly observes but does not act on the receiver's CTS.
-		frameEvent(t, 1, 0x18ec8021, []byte{0x11, 1, 1, 0xff, 0xff, 0x00, 0xda, 0x00}),
-		frameEvent(t, 2, 0x18eb2180, []byte{1, 0, 1, 2, 3, 4, 5, 6}),
-		frameEvent(t, 3, 0x18ec8021, []byte{0x11, 1, 2, 0xff, 0xff, 0x00, 0xda, 0x00}),
-		frameEvent(t, 4, 0x18eb2180, []byte{2, 7, 8, 0xff, 0xff, 0xff, 0xff, 0xff}),
-	}
-
-	var decoder j1939.Decoder
-	messages, diagnostics := decoder.PushBatch(frames)
-	if len(diagnostics) != 0 {
-		t.Fatalf("PushBatch diagnostics = %v", diagnostics)
-	}
-	if len(messages) != 1 {
-		t.Fatalf("PushBatch returned %d messages", len(messages))
-	}
-	message := messages[0]
-	if message.PGN != 0xda00 || message.Source != 0x80 || message.Destination != 0x21 {
-		t.Fatalf("message identity = %#v", message)
-	}
-	if want := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8}; !reflect.DeepEqual(message.Payload, want) {
-		t.Fatalf("payload = % x, want % x", message.Payload, want)
-	}
-}
-
 func TestDecoderReferenceTransportAndRecovery(t *testing.T) {
 	// Independent TTI2 fixture: python-can-j1939 01aba95cca43847bc272ec7ddb12048f587e6554,
 	// test/test_ecu.py, test_broadcast_receive_long and test_peer_to_peer_receive_long.

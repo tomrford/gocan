@@ -13,19 +13,6 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-func TestInventoryHardware(t *testing.T) {
-	if os.Getenv("GOCAN_NIXNET_CHANNEL_A") == "" {
-		t.Skip("NI-XNET hardware not selected")
-	}
-	channels, err := Discover()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range channels {
-		t.Logf("%+v", c)
-	}
-}
-
 func TestQueueContractsHardware(t *testing.T) {
 	aName, bName := os.Getenv("GOCAN_NIXNET_CHANNEL_A"), os.Getenv("GOCAN_NIXNET_CHANNEL_B")
 	if aName == "" || bName == "" {

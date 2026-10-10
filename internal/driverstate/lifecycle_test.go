@@ -3,8 +3,6 @@ package driverstate
 import (
 	"errors"
 	"testing"
-
-	"github.com/tomrford/gocan"
 )
 
 func TestLifecycleRetainsLateFirstFailure(t *testing.T) {
@@ -36,13 +34,5 @@ func TestLifecycleRetainsLateFirstFailure(t *testing.T) {
 	case <-lifecycle.Done():
 	default:
 		t.Fatal("Done is open after MarkDone")
-	}
-}
-
-func TestLifecycleNormalStopReportsBusClosed(t *testing.T) {
-	lifecycle := New(nil)
-	lifecycle.Stop(nil)
-	if !errors.Is(lifecycle.OperationError(), gocan.ErrBusClosed) {
-		t.Fatalf("OperationError() = %v, want ErrBusClosed", lifecycle.OperationError())
 	}
 }

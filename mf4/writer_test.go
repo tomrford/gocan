@@ -325,7 +325,9 @@ func TestCaptureEvents(t *testing.T) {
 	if addr != 0 {
 		t.Fatal("extra event marker")
 	}
-	if err := w.WriteEvent(events[0].event); err == nil {
+	closedEvent := events[0].event
+	closedEvent.Timestamp = start.Add(500 * time.Millisecond)
+	if err := w.WriteEvent(closedEvent); err == nil {
 		t.Fatal("accepted event after Close")
 	}
 }

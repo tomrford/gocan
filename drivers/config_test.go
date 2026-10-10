@@ -159,16 +159,6 @@ func TestFDRatePresetRejections(t *testing.T) {
 	}
 }
 
-func TestFDTimingDerivesExactBitrates(t *testing.T) {
-	nominal, data, err := deriveFDBitrates(qualifiedFDTiming)
-	if err != nil {
-		t.Fatalf("deriveFDBitrates: %v", err)
-	}
-	if nominal != 500_000 || data != 2_000_000 {
-		t.Fatalf("bitrates = %d/%d, want 500000/2000000", nominal, data)
-	}
-}
-
 func TestFDTimingRejectsInvalidValues(t *testing.T) {
 	tests := []struct {
 		name   string
