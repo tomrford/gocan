@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// receive reassembles one complete payload. Callers must hold the receiving
-// token, so one reassembly is never interleaved with another.
+// Callers must hold the receiving token.
 func (link *Link) receive(ctx context.Context, firstFrameTimeout time.Duration) ([]byte, error) {
 	firstFrameContext := ctx
 	cancel := func() {}

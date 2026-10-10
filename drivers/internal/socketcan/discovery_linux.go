@@ -11,7 +11,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Interface is one Linux CAN network interface.
 type Interface struct {
 	Name string
 	// Up reports whether the interface has the Linux IFF_UP flag.

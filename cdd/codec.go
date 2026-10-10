@@ -186,8 +186,6 @@ func (record *Record) validatePayloadLength(length int) error {
 	if record.Length == record.MaxLength {
 		return nil
 	}
-	// resolveFields guarantees that the lengths differ only when the record
-	// ends in a variable-length field, so last.Variable is non-nil here.
 	last := record.Fields[len(record.Fields)-1]
 	elementBytes := int(last.BitLength / 8)
 	start := int(last.BitOffset / 8)
@@ -369,9 +367,6 @@ func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) 
 	return scalar.EncodeUnsigned(field.BitLength, integer)
 }
 
-// decodeScalar decodes one raw element. Labels mirror encodeScalar: only a
-// scalar field decodes to its choice label, so array elements keep the numeric
-// type their slice declares.
 func decodeScalar(field Field, raw uint64, allowLabel bool) any {
 	if field.Encoding == EncodingFloat {
 		return float64(math.Float32frombits(uint32(raw)))

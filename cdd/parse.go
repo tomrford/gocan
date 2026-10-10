@@ -70,9 +70,6 @@ func (resolver *resolver) dataProxy(classTemplate *element, componentID string) 
 	return matched, nil
 }
 
-// resolveFields returns the record layout with the bit lengths of its smallest
-// and largest payload. The two differ only when the record ends in a
-// variable-length field.
 func (resolver *resolver) resolveFields(container *element) ([]Field, uint32, uint32, error) {
 	var fields []Field
 	var offset uint64
@@ -90,9 +87,6 @@ func (resolver *resolver) resolveFields(container *element) ([]Field, uint32, ui
 	return fields, uint32(offset), uint32(maximum), nil
 }
 
-// appendFields walks one record in document order. Element order is the only
-// statement of layout a CDD record makes, so every item either contributes a
-// field or advances the offset.
 func (resolver *resolver) appendFields(
 	record *element,
 	fields *[]Field,
@@ -104,7 +98,6 @@ func (resolver *resolver) appendFields(
 		return sourceError(resolver.name, "data record exceeds the supported nesting depth of %d", maxRecordNesting)
 	}
 	for _, item := range record.children {
-		// A variable-length field has no fixed end, so nothing can follow it.
 		if length := len(*fields); length > 0 && (*fields)[length-1].Variable != nil {
 			switch item.name {
 			case "NAME", "QUAL", "DESC":
@@ -114,7 +107,6 @@ func (resolver *resolver) appendFields(
 		}
 		switch item.name {
 		case "NAME", "QUAL", "DESC":
-			// Presentation, not layout.
 		case "DATAOBJ":
 			field, err := resolver.resolveField(item, uint32(*offset))
 			if err != nil {
@@ -123,7 +115,6 @@ func (resolver *resolver) appendFields(
 			*fields = append(*fields, field)
 			*offset += uint64(field.BitSize())
 		case "GAPDATAOBJ":
-			// Explicit padding between fields, named only by its width.
 			gap, err := strconv.ParseUint(item.attr("bl"), 10, 32)
 			if err != nil {
 				return sourceError(resolver.name, "GAPDATAOBJ has invalid bit length %q", item.attr("bl"))
@@ -159,9 +150,6 @@ func (resolver *resolver) appendFields(
 			prependGroup((*fields)[start:], metadata(shared))
 			prependGroup((*fields)[start:], metadata(item))
 		default:
-			// UNION selects between alternative layouts, and MUX and the record
-			// data types describe payloads whose shape depends on the response.
-			// Neither is a fixed record.
 			return sourceError(resolver.name, "data record contains unsupported %s", item.name)
 		}
 		if *offset > math.MaxUint32 {

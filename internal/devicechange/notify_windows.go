@@ -1,7 +1,5 @@
 //go:build windows
 
-// Package devicechange reports Windows Plug and Play device-instance changes
-// and fans matching removals out to open buses; see Monitor.
 package devicechange
 
 import (
@@ -14,7 +12,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Action identifies a Windows device-instance transition.
 type Action uint32
 
 const (
@@ -36,8 +33,6 @@ var (
 	cmUnregisterNotification = cfgMgr32.NewProc("CM_Unregister_Notification")
 )
 
-// Event is one observed removal of a device instance matching the watcher's
-// prefix.
 type Event struct {
 	InstanceID string
 }
@@ -118,7 +113,6 @@ func WatchRemovals(prefix string) (*Watcher, error) {
 	return watcher, nil
 }
 
-// Events returns the stream of observed matching removals.
 func (watcher *Watcher) Events() <-chan Event { return watcher.events }
 
 // Lost reports and clears whether the callback dropped an event because the

@@ -127,7 +127,6 @@ func TestLINCOMPRawLimitsAndRepresentability(t *testing.T) {
 	if _, err := record.Encode(cdd.Values{"Value": 1e16}); err == nil {
 		t.Fatal("accepted imprecise converted integer")
 	}
-	// Input rounding must not turn raw 1 into 0 before subtracting the offset.
 	record = conversionRecord(t, `f="1" o="9007199254740992"`, "uns", 8)
 	for _, physical := range []any{uint64(9007199254740993), int64(9007199254740993)} {
 		if _, err := record.Encode(cdd.Values{"Value": physical}); err == nil {

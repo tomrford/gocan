@@ -26,9 +26,9 @@ func TestSingleFramePadding(t *testing.T) {
 		maximum, minimum           uint8
 		payloadLength, frameLength int
 	}{
-		{0, 0, 2, 3}, // Default classical framing stays unpadded.
+		{0, 0, 2, 3},
 		{8, 8, 2, 8},
-		{64, 0, 2, 3}, // FD without optional padding.
+		{64, 0, 2, 3},
 		{64, 1, 2, 3},
 		{64, 0, 8, 12},
 		{12, 8, 10, 12},
@@ -57,7 +57,6 @@ func TestSingleFramePadding(t *testing.T) {
 				t.Fatal(err)
 			}
 			payload := patternedPayload(test.payloadLength, 0xa5)
-			// Explicit wire layout avoids validating one gocan encoder with another.
 			header := []byte{byte(test.payloadLength)}
 			if test.frameLength > 8 {
 				header = []byte{0, byte(test.payloadLength)}

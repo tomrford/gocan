@@ -71,7 +71,6 @@ func TestRecording(t *testing.T) {
 
 func testRecording(t *testing.T, compression bool) []byte {
 	f := newFile(t)
-	// Preserve legacy encoding and comments that are absent from the model.
 	db, err := dbc.Parse("", "BU_: ECU\nBO_ 291 Status: 8 ECU\n SG_ Value : 0|8@1+ (0.5,-10) [-10|117.5] \"V\" ECU\nCM_ \"Gr\xf6\xdfe\";\n")
 	if err != nil {
 		t.Fatal(err)
@@ -126,9 +125,6 @@ func testRecording(t *testing.T, compression bool) []byte {
 		t.Fatal(err)
 	}
 	appendFrame(gocan.FrameEvent{Bus: 1, Timestamp: start.Add(2 * time.Millisecond), Direction: gocan.DirectionTransmit, Frame: remote})
-	// Repeated coarse-clock timestamps, including the initial timestamp already
-	// flushed by Start, must survive recording and cross the buffer boundary.
-	// The final short payload cannot leak FD data from another bus.
 	for i := 0; i < 800; i++ {
 		appendFrame(frame(1, time.Duration(i/2)*time.Millisecond, 0x123, 0, 42))
 	}
@@ -152,7 +148,6 @@ func testRecording(t *testing.T, compression bool) []byte {
 		t.Fatal("Close did not finalise the measurement")
 	}
 	checkGroups(t, f, []uint64{802, 1, 1, 1})
-	// Follow the MDF header's attachment list and compare the stored source bytes.
 	var link [8]byte
 	if _, err := f.ReadAt(link[:], 112); err != nil {
 		t.Fatal(err)
@@ -175,8 +170,6 @@ func testRecording(t *testing.T, compression bool) []byte {
 	if readImage(t, f).u64(136) != uint64(start.UnixNano()) || binary.LittleEndian.Uint64(records[4:]) != 0 {
 		t.Fatal("first frame did not establish the header start and zero offset")
 	}
-	// Skip the initial classical, FD and remote records. Each pair must retain
-	// its shared timestamp without adjustment, including across data chunks.
 	for i := 0; i < 800; i++ {
 		offset := 89 + 89 + 22 + i*89
 		seconds := math.Float64frombits(binary.LittleEndian.Uint64(records[offset+4:]))
@@ -293,7 +286,7 @@ func TestCaptureEvents(t *testing.T) {
 	if r.Err() != nil || r.Accepted() != capture.End() || r.Flushed() != capture.End() {
 		t.Fatal("recorder stopped at an event", r.Err())
 	}
-	checkGroups(t, f, []uint64{2}) // Event-only buses must not fabricate frame groups.
+	checkGroups(t, f, []uint64{2})
 	file := readImage(t, f)
 	addr := file.u64(120)
 	for _, want := range events {

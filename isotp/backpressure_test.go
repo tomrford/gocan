@@ -46,7 +46,6 @@ func TestTransmitBackpressure(t *testing.T) {
 			}
 		}
 
-		// Every frame in both directions is rejected once before acceptance.
 		rejectOnce := func(bus *backpressureBus) {
 			rejected := false
 			bus.reject = func(gocan.Frame) error {
@@ -69,14 +68,10 @@ func TestTransmitBackpressure(t *testing.T) {
 		if err := <-sent; err != nil {
 			t.Fatal(err)
 		}
-		// 4002 bytes at DLC 8: a First Frame of 6 bytes, then 571 Consecutive
-		// Frames of 7. The receiver answers with one Flow Control.
 		if senderBus.accepted != 572 || receiverBus.accepted != 1 {
 			t.Fatalf("accepted frames: sender=%d receiver=%d", senderBus.accepted, receiverBus.accepted)
 		}
 
-		// A reply captured during rejection predates the request and is skipped;
-		// one captured before the accepted Send returns is kept.
 		senderBus.reject = func(gocan.Frame) error {
 			inject(1, 0x99)
 			senderBus.reject = nil

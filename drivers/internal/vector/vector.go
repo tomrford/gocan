@@ -10,25 +10,17 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-// ChannelIndex is a global channel index reported by the XL Driver Library.
 type ChannelIndex uint8
 
-// Config selects and configures one Vector CAN channel. Package drivers
-// constructs and validates it.
 type Config struct {
-	// ID is the one-based trace channel assigned to the bus.
-	ID gocan.BusID
-	// Name is the human-readable name of the bus.
-	Name string
-	// ChannelIndex is the global XL Driver Library channel index.
+	ID           gocan.BusID
+	Name         string
 	ChannelIndex ChannelIndex
-	// Bitrate selects classical CAN in bits per second.
-	Bitrate uint32
+	Bitrate      uint32
 	// FDTiming selects ISO CAN FD with exact native timing.
 	FDTiming FDTiming
 }
 
-// FDTiming is the validated CAN FD configuration passed by package drivers.
 type FDTiming struct {
 	ArbitrationBitrate uint32
 	DataBitrate        uint32
@@ -36,7 +28,6 @@ type FDTiming struct {
 	Data               BitTiming
 }
 
-// BitTiming is one phase of validated native Vector timing.
 type BitTiming struct {
 	SJW   uint32
 	TSEG1 uint32
@@ -120,9 +111,6 @@ func (event *xlEvent) chipState() *xlChipState {
 	return (*xlChipState)(unsafe.Pointer(&event.tagData[0]))
 }
 
-// receiveObservation is the Vector-specific result of one native receive
-// event. A native record may represent a frame, one or more bus events, or a
-// terminal condition that must be appended before the bus stops.
 type receiveObservation struct {
 	frame            gocan.Frame
 	hasFrame         bool

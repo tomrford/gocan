@@ -32,9 +32,8 @@ import (
 
 const bufferSize = 64 << 10
 
-// Database associates a DBC description with one logical bus. Data can come
-// from []byte(db.Source()) or an original DBC file. The writer embeds these
-// bytes without interpreting or converting their encoding.
+// Database associates original DBC bytes with one logical bus.
+// The writer embeds Data without interpreting or converting its encoding.
 type Database struct {
 	Bus  gocan.BusID
 	Name string
@@ -60,16 +59,14 @@ type Options struct {
 }
 
 // Writer streams frames and event markers to an initially empty seekable file.
-// It buffers at most 64 KiB of frame records, plus compression workspace when
-// enabled. Retained metadata grows with buses, not frames or event markers.
-// Buses need not be declared in advance. Writer is not safe for concurrent use.
+// It buffers at most 64 KiB of frame records, plus compression workspace.
+// Retained metadata grows with buses, which need not be declared in advance.
+// Writer is not safe for concurrent use.
 //
-// Flush delivers accepted frames, but the file remains marked unfinished until
-// Close writes the final counters and clears that marker. Neither operation
-// closes or syncs the underlying file. Successful finalisation is distinct from
-// durable storage and from independent conformance validation. Recovery after
-// an interrupted write or failed Close is unsupported, including after Flush.
-// Output/seek failures are sticky; validation errors leave prior frames usable.
+// Flush delivers frames; Close finalises counters and clears the unfinished
+// marker. Neither closes or syncs the file. Recovery after interrupted writes
+// or failed Close is unsupported. Output/seek failures are sticky; validation
+// errors leave prior frames usable.
 type Writer struct {
 	output      io.WriteSeeker
 	start       time.Time
@@ -293,7 +290,6 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	title := w.text(busName + " " + name)
 	var comment uint64
 	if details != "" {
-		// Only validated numbers and fixed labels enter this XML text.
 		comment = w.textBlock("##MD", fmt.Sprintf(`<EVcomment xmlns="http://www.asam.net/mdf/v4"><TX>Bus=%d; %s</TX></EVcomment>`, event.Bus, details))
 	}
 	data := make([]byte, 32)
@@ -321,7 +317,6 @@ func (w *Writer) Flush() error {
 		w.compressed.Reset()
 		w.compressed.Write(make([]byte, 24)) // DZ parameters precede the zlib stream.
 		w.compressor.Reset(&w.compressed)
-		// The compressor writes to a bytes.Buffer, which cannot return an error.
 		w.compressor.Write(w.buffer)
 		w.compressor.Close()
 		data := w.compressed.Bytes()

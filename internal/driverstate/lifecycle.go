@@ -1,4 +1,3 @@
-// Package driverstate contains lifecycle state shared by native CAN drivers.
 package driverstate
 
 import (
@@ -30,7 +29,6 @@ func New(wake func()) *Lifecycle {
 	}
 }
 
-// Stop records the first failure, closes StopSignal, and wakes native receive.
 func (lifecycle *Lifecycle) Stop(err error) {
 	if err != nil {
 		lifecycle.errMu.Lock()
@@ -47,17 +45,14 @@ func (lifecycle *Lifecycle) Stop(err error) {
 	})
 }
 
-// StopSignal is closed when acquisition should stop.
 func (lifecycle *Lifecycle) StopSignal() <-chan struct{} { return lifecycle.stop }
 
-// Done is closed after the driver finishes native cleanup.
 func (lifecycle *Lifecycle) Done() <-chan struct{} { return lifecycle.done }
 
 // MarkDone reports that native cleanup is complete. The receive goroutine must
 // call it exactly once.
 func (lifecycle *Lifecycle) MarkDone() { close(lifecycle.done) }
 
-// Err returns the first background failure, if any.
 func (lifecycle *Lifecycle) Err() error {
 	lifecycle.errMu.RLock()
 	defer lifecycle.errMu.RUnlock()

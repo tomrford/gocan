@@ -108,8 +108,6 @@ func TestSemanticClientLifecycle(t *testing.T) {
 
 func TestInputOutputControlLifecycle(t *testing.T) {
 	client, server, ctx := newSemanticPair(t)
-	// Invalid controls must fail before sending: the server below expects the
-	// first valid adjustment, with no earlier request queued on the link.
 	for _, parameter := range []uds.IOControlParameter{0x04, 0x80, 0xff} {
 		if _, err := client.InputOutputControlByIdentifier(ctx, 0x1234, parameter, nil, nil); err == nil || !strings.Contains(err.Error(), "IO control parameter") {
 			t.Fatalf("control %#x error = %v", parameter, err)
@@ -331,7 +329,6 @@ func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 			t.Fatalf("CommunicationControlWithNode accepted %#v", control)
 		}
 	}
-	// Rejections above must not emit requests or prevent the next valid send.
 	if err := client.SendECUReset(ctx, uds.ResetHard); err != nil {
 		t.Fatal(err)
 	}

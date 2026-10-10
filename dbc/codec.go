@@ -171,8 +171,6 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 		return err
 	}
 
-	// A selector which has just become active must be supplied before its
-	// retained, previously inactive bits can select a child path.
 	for index, signal := range message.Signals {
 		if codec.selectors[index] && newActive[index] && !oldActive[index] {
 			if _, ok := changed[index]; !ok {

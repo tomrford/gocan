@@ -11,8 +11,6 @@ import (
 	"github.com/tomrford/gocan/drivers/internal/pcan"
 )
 
-// benchVectorToPCAN opens one Vector classic channel as sender and one PCAN
-// channel as receiver on the shared 500 kbit/s network.
 func benchVectorToPCAN(b *testing.B, frameID uint32) (*gocan.Capture, gocan.Bus, gocan.Bus, gocan.Frame) {
 	b.Helper()
 	vectorIndex := vectorChannelIndex(b, "GOCAN_VECTOR_CHANNEL_INDEX")

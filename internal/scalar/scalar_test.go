@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// TestBoundaries pins the edges the dbc and cdd fixtures cannot reach: 64-bit
-// sign handling, the 2^53 linear-conversion guard, and integer exactness.
 func TestBoundaries(t *testing.T) {
 	if raw, err := EncodeSigned(64, math.MinInt64); err != nil || DecodeSigned(64, raw) != math.MinInt64 {
 		t.Fatalf("64-bit MinInt64 round trip = %#x, %v", raw, err)

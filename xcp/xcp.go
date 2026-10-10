@@ -219,8 +219,6 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 		finish()
 		return nil, nil, err
 	}
-	// Acquiring the gate can win the race with the bus watcher. Observe an
-	// already-closed bus before inspecting the previous command's state.
 	select {
 	case <-client.bus.Done():
 		cancelBus()
@@ -246,8 +244,6 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		return Response{}, err
 	}
 	defer finish()
-	// A public SYNCH must not strand a possibly disconnected bootstrap. The
-	// private CONNECT recovery can send its barrier after observing a reply.
 	if request.Command == CommandSynch && !client.connected && (client.pending == 0 || client.pending == CommandConnect || client.pending == CommandDisconnect) {
 		return Response{}, ErrNotConnected
 	}

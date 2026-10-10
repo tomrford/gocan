@@ -34,8 +34,6 @@ func TestObservedNameLifecycle(t *testing.T) {
 	otherBus := claim
 	otherBus.Bus = 2
 	decoder.Push(otherBus)
-	// Two claims for the same address stay visible until the losing NAME moves
-	// or announces Cannot Claim. Observing a lower NAME alone is not proof.
 	challenger := frameEvent(t, 1, 0x18eeff80, []byte{135, 214, 82, 83, 130, 111, 254, 82})
 	messages, diagnostics := decoder.PushBatch([]gocan.FrameEvent{challenger})
 	if len(messages) != 1 || len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrAmbiguous) {
@@ -55,8 +53,6 @@ func TestObservedNameLifecycle(t *testing.T) {
 	if got := decoder.Names(2, 0x80); !reflect.DeepEqual(got, []j1939.Name{name}) {
 		t.Fatalf("other bus=%v", got)
 	}
-	// Moving the known sender invalidates its partial payload, while a transfer
-	// from an unrelated sender on the same bus remains usable.
 	for _, source := range []uint32{0x80, 0x82} {
 		_, diagnostics := decoder.PushBatch([]gocan.FrameEvent{
 			frameEvent(t, 2, 0x18ecff00|source, []byte{32, 9, 0, 2, 255, 202, 254, 0}),

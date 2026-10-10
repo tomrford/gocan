@@ -78,7 +78,6 @@ func TestCatalogSelectionAndPresentation(t *testing.T) {
 		t.Fatalf("Decode = %#v, %v", values, err)
 	}
 
-	// Select reuses immutable XML, not a mutable resolver state or catalog.
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
@@ -196,8 +195,6 @@ func TestInvalidRecordsAndAmbiguousDIDsRemainVisible(t *testing.T) {
 			t.Fatalf("unsupported record/rule disappeared: %s", name)
 		}
 	}
-	// Repeated qualifiers make name lookup ambiguous as well, without dropping
-	// either instance. Their different identifiers still select each one.
 	source = bytes.Replace(source, []byte("<QUAL>UploadBuffer</QUAL>"), []byte("<QUAL>Nameplate</QUAL>"), 1)
 	database, err = parseCatalog("duplicate-qualifier.cdd", source)
 	if err != nil {

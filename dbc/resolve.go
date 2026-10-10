@@ -380,10 +380,6 @@ func (r *resolver) resolveMultiplexing() error {
 	return nil
 }
 
-// resolveFrameFormats stamps each message's frame format from VFrameFormat,
-// the database ProtocolType, or the identifier and length. The format guards
-// the length and identifier validation; further attribute interpretation
-// belongs to the layers above.
 func (r *resolver) resolveFrameFormats() error {
 	protocol := effectiveAttribute(r.db.Attributes, r.definition("ProtocolType"))
 	for index := range r.db.Messages {
@@ -472,9 +468,6 @@ func (r *resolver) attributeTarget(raw rawAttributeAssignment) (*map[string]Attr
 	}
 }
 
-// message resolves a message reference. A dangling reference reports a
-// diagnostic and returns false so the caller can drop its record; references
-// to dropped pseudo-messages are skipped silently.
 func (r *resolver) message(rawID uint32, pos Position, keyword string) (*Message, int, bool) {
 	index, exists := r.messagesByRawID[rawID]
 	if !exists {

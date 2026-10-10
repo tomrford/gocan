@@ -71,8 +71,6 @@ type Client struct {
 	peers    [254]Name
 	tx       *transmission
 	rx       *reception
-	// Ordinals establish actual flow-control boundaries in Capture append
-	// order, including identical CTS frames from successive sessions.
 	sent     uint64
 	observed uint64
 }
@@ -174,7 +172,6 @@ func (c *Client) send(ctx context.Context, priority uint8, pgn PGN, destination 
 		return c.Err()
 	case c.requests <- r:
 	}
-	// Once accepted, wait for cancellation cleanup and the definite native result.
 	select {
 	case err := <-r.result:
 		return err
@@ -205,8 +202,6 @@ func (c *Client) run() {
 		return
 	}
 	c.claimAt = time.Now().Add(250 * time.Millisecond)
-	// Capture has no wildcard waiter. A small poll interval bounds handshake
-	// latency without adding a second receive contract or a driver goroutine.
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	immediate := make(chan struct{})
@@ -233,8 +228,6 @@ func (c *Client) run() {
 		case <-ticker.C:
 		case <-due:
 		}
-		// Recheck capture and cancellation between DT packets without imposing
-		// the receive polling interval on a directed transfer's throughput.
 		if err := c.poll(); err != nil {
 			c.cancel(err)
 			return

@@ -123,9 +123,6 @@ func TestTerminalFailureRejectsLaterSend(t *testing.T) {
 	}
 }
 
-// TestBroadcastDetectsOverrun proves the queue-full branch deterministically:
-// a victim whose receive queue can never drain must be failed with
-// ErrReceiveOverrun instead of blocking the network.
 func TestBroadcastDetectsOverrun(t *testing.T) {
 	capture := gocan.NewCapture()
 	var network Network

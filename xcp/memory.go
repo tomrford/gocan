@@ -66,8 +66,6 @@ func (client *Client) read(ctx context.Context, address Address, length int, sho
 	if _, err := client.command(ctx, Request{Command: CommandSetMTA, Data: parameters}); err != nil {
 		return nil, err
 	}
-	// Grow only as replies arrive: a large requested range does not allocate
-	// memory before the ECU has supplied it.
 	var result []byte
 	for len(result) < length {
 		count := min(maximum, length-len(result))

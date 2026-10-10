@@ -28,8 +28,8 @@ func TestConfigRequiresExactlyOneTimingMode(t *testing.T) {
 		{name: "FD", config: Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, wantFD: true},
 		{name: "custom FD rates", config: Config{ID: 1, Name: "can", FDTiming: FDTiming{
 			ClockHz: 80_000_000,
-			Nominal: BitTiming{BRP: 1, TSEG1: 63, TSEG2: 16, SJW: 16}, // 1 Mbit/s
-			Data:    BitTiming{BRP: 1, TSEG1: 7, TSEG2: 2, SJW: 2},    // 8 Mbit/s
+			Nominal: BitTiming{BRP: 1, TSEG1: 63, TSEG2: 16, SJW: 16},
+			Data:    BitTiming{BRP: 1, TSEG1: 7, TSEG2: 2, SJW: 2},
 		}}, wantFD: true},
 		{name: "external", config: Config{ID: 1, Name: "can", External: true}},
 	}
@@ -85,8 +85,6 @@ func TestFDRatePresets(t *testing.T) {
 			if !slices.Equal(presets, want) {
 				t.Fatalf("FDRatePresets = %v; want %v", presets, want)
 			}
-			// A consumer editing its dropdown options must not change future
-			// listings or the timing selected by Open.
 			presets[0] = FDRatePreset{Bitrate: 1, DataBitrate: 2}
 			presets = channel.FDRatePresets()
 			if !slices.Equal(presets, want) {
@@ -112,7 +110,6 @@ func TestFDRatePresets(t *testing.T) {
 						t.Fatalf("unexpected sample point or SJW: %+v", phase)
 					}
 				}
-				// The resolved configuration must remain valid as explicit timing.
 				if again, err := prepareOpen(capture, channel, got); err != nil || again != got {
 					t.Fatalf("explicit timing = %+v, %v; want %+v", again, err, got)
 				}

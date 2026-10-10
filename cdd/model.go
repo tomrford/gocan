@@ -264,8 +264,6 @@ type LinearConversion struct {
 	Scale  float64
 	Offset float64
 
-	// Raw limits use ordered integer keys, preserving all 64 bits even for
-	// identity conversions. They are independent of physical scaling.
 	minimum, maximum *uint64
 }
 

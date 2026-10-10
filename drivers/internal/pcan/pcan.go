@@ -10,13 +10,10 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-// Channel is a PCAN-Basic hardware channel handle.
 type Channel uint16
 
 const (
-	// ChannelUSB1 is the first PCAN-USB channel.
 	ChannelUSB1 Channel = 0x51
-	// ChannelUSB2 is the second PCAN-USB channel.
 	ChannelUSB2 Channel = 0x52
 )
 
@@ -42,14 +39,9 @@ var classicalBitrates = map[uint32]uint16{
 	1_000_000: 0x0014,
 }
 
-// Config selects and configures one PCAN-Basic channel. Package drivers
-// constructs and validates it.
 type Config struct {
-	// ID is the one-based trace channel assigned to the bus.
-	ID gocan.BusID
-	// Name is the human-readable name of the bus.
-	Name string
-	// Channel is the PCAN-Basic hardware channel handle.
+	ID      gocan.BusID
+	Name    string
 	Channel Channel
 	// Bitrate selects one of the PCAN-Basic predefined classical rates in
 	// bits per second. Set exactly one of Bitrate and FDBitrate.

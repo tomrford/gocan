@@ -30,22 +30,17 @@ const channelSettleDelay = 25 * time.Millisecond
 // to one Windows device instance.
 var processPCANDevices = devicechange.NewMonitor(`USB\VID_0C72&`, "PEAK USB")
 
-// ChannelCondition reports the native availability state of a PCAN channel.
 type ChannelCondition uint32
 
 const (
-	// ChannelConditionUnavailable means that the channel is not available.
 	ChannelConditionUnavailable ChannelCondition = iota
-	// ChannelConditionAvailable means that the channel is available for use.
 	ChannelConditionAvailable
-	// ChannelConditionOccupied means that the channel is already in use.
 	ChannelConditionOccupied
 	// ChannelConditionPCANView means that the channel is in use by PCAN-View
 	// but remains available to initialize.
 	ChannelConditionPCANView
 )
 
-// ChannelInfo describes one channel reported by PCAN-Basic.
 type ChannelInfo struct {
 	Channel          Channel
 	Name             string
@@ -135,7 +130,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		return nil, initializationError
 	}
 
-	// Count subsequent setup toward the settle window.
 	initialized := time.Now()
 
 	uninitialize := func() {
@@ -224,7 +218,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	bus.deviceSubscription = subscription
 	go bus.receiveLoop()
 
-	// Setup performed since CAN_Initialize counts toward the settle.
 	settle := time.NewTimer(time.Until(initialized.Add(channelSettleDelay)))
 	defer settle.Stop()
 	select {
@@ -371,7 +364,6 @@ func missingPCANChannelError(channel Channel) error {
 	)
 }
 
-// Bus is one open PCAN-Basic channel.
 type Bus struct {
 	id      gocan.BusID
 	name    string
@@ -392,22 +384,18 @@ type Bus struct {
 
 var _ gocan.Bus = (*Bus)(nil)
 
-// ID returns the one-based trace channel assigned to this bus.
 func (bus *Bus) ID() gocan.BusID {
 	return bus.id
 }
 
-// Name returns the human-readable name of this bus.
 func (bus *Bus) Name() string {
 	return bus.name
 }
 
-// Capture returns the capture that records this bus's traffic.
 func (bus *Bus) Capture() *gocan.Capture {
 	return bus.capture
 }
 
-// Send hands frame to PCAN-Basic and records an accepted transmission.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := validateSendFrame(frame, bus.fd); err != nil {
 		return err
@@ -470,17 +458,14 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	return nil
 }
 
-// Done is closed when this bus stops.
 func (bus *Bus) Done() <-chan struct{} {
 	return bus.lifecycle.Done()
 }
 
-// Err returns the background failure that stopped this bus, if any.
 func (bus *Bus) Err() error {
 	return bus.lifecycle.Err()
 }
 
-// Close stops acquisition and releases the native channel and event handles.
 func (bus *Bus) Close() error {
 	bus.stopWithError(nil)
 	<-bus.lifecycle.Done()
@@ -545,8 +530,6 @@ func (bus *Bus) receiveOne() (bool, error) {
 	default:
 	}
 
-	// The device timestamp buffers stay NULL by design; received frames
-	// are stamped by the capture clock when recorded. See the package comment.
 	var (
 		observation pcanReceiveObservation
 		status      pcanStatus

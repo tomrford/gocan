@@ -89,7 +89,6 @@ func TestVCanReplyDuringSend(t *testing.T) {
 	if frames[1].Timestamp.Before(frames[0].Timestamp) {
 		t.Fatal("reply timestamp precedes request timestamp")
 	}
-	// Close after the reply leaves acquisition waiting on an idle socket.
 	closeBus(target)
 	if err := target.Send(ctx, request); !errors.Is(err, gocan.ErrBusClosed) {
 		t.Fatalf("Send after Close = %v", err)

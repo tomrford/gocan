@@ -97,7 +97,6 @@ func TestGeneratedFailures(t *testing.T) {
 				if !errors.Is(task.Err(), test.wantErr) || calls != 2 || sends != wantSends {
 					t.Fatalf("Err = %v, calls/sends = %d/%d; want %v, 2/%d", task.Err(), calls, sends, test.wantErr, wantSends)
 				}
-				// First-attempt failures use the same completion path.
 				task, err = cyclic.StartFunc(context.Background(), bus, generate, cyclic.Config{Period: time.Second})
 				if err != nil {
 					t.Fatal(err)
@@ -197,8 +196,6 @@ func TestRetryScheduleAndStop(t *testing.T) {
 		}
 		time.Sleep(11 * time.Millisecond)
 		synctest.Wait()
-		// Update must not wait for the rejected occurrence to finish. That
-		// occurrence retains its snapshot; the next observes the new frame.
 		if err := task.Update(gocan.Frame{ID: 2}); err != nil {
 			t.Fatal(err)
 		}
@@ -215,8 +212,6 @@ func TestRetryScheduleAndStop(t *testing.T) {
 		if task.Err() != nil || time.Now() != start {
 			t.Fatalf("Stop: %v after %v", task.Err(), time.Since(start))
 		}
-		// A shorter retry budget and the next scheduled occurrence each bound
-		// a generated send. Retries must not invoke the generator again.
 		for _, budget := range []time.Duration{3 * time.Millisecond, 50 * time.Millisecond} {
 			config.TransmitRetryTimeout = budget
 			calls := 0
@@ -236,8 +231,6 @@ func TestRetryScheduleAndStop(t *testing.T) {
 				t.Fatalf("budget %v: occurrence cause = %v, missed %d", budget, task.Err(), task.Missed())
 			}
 		}
-		// A bounded policy tolerates first and later misses, resets on acceptance,
-		// and retains the original phase without bursts or regenerating retries.
 		for _, retry := range []time.Duration{0, 50 * time.Millisecond} {
 			config.TransmitRetryTimeout = retry
 			config.MaxConsecutiveMisses = 1
@@ -281,7 +274,6 @@ func TestRetryScheduleAndStop(t *testing.T) {
 				t.Fatalf("retry %v: generated at %v, Err = %v, missed %d; want %v, %v, 4", retry, generatedAt, task.Err(), task.Missed(), want, kind)
 			}
 		}
-		// A miss allowance never consumes explicit shutdown or bus loss.
 		cause := errors.New("caller cancelled")
 		for _, test := range []struct {
 			shutdown        string

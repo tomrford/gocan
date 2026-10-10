@@ -1,4 +1,3 @@
-// Package transport contains shared protocol exchange helpers.
 package transport
 
 import (

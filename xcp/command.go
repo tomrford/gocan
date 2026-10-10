@@ -53,8 +53,6 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		client.retaining = true
 		client.mu.Unlock()
 		if err := gocan.Send(ctx, client.bus, frame, client.config.TransmitRetryTimeout); err != nil {
-			// Bus.Send reports a definite native result. A rejected send has created
-			// no outstanding command, so it must not poison a synchronised session.
 			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return Response{}, context.Cause(ctx)
 			}
@@ -244,7 +242,6 @@ func (client *Client) receive(ctx context.Context, command Command, minimum int)
 				client.pending = 0 // Explicit ECU disconnect; SYNCH requires a live session.
 				return Response{}, ErrSessionTerminated
 			}
-			// SERV (0xfc), DAQ (0x00..0xfb), and other events remain in Capture.
 		}
 	}
 }

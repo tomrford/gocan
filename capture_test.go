@@ -121,7 +121,6 @@ func TestCaptureLiveClock(t *testing.T) {
 		for bus := BusID(1); bus <= 4; bus++ {
 			writers.Go(func() {
 				for range 1024 {
-					// Supplied old times are ignored by live recording.
 					if err := capture.RecordFrame(FrameEvent{Bus: bus, Timestamp: captureTestBase, Direction: DirectionReceive}); err != nil {
 						t.Error(err)
 						return
@@ -152,9 +151,6 @@ func TestCaptureLiveClock(t *testing.T) {
 	}
 }
 
-// newTestCapture builds a capture whose first chunk is small enough for tests
-// to seal, without the prepared successor so rotation exercises the
-// synchronous fallback path.
 func newTestCapture(recordCapacity, payloadCapacity int) *Capture {
 	active := newCaptureChunk(recordCapacity, payloadCapacity)
 	return &Capture{
@@ -196,7 +192,6 @@ func TestCaptureLifecycle(t *testing.T) {
 	}
 	requireEvents(t, "Frames", capture.Frames(), events)
 
-	// The same identifier forms independent series per bus and direction.
 	requireEvents(t, "Series bus0/0x100 RX",
 		capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}),
 		[]FrameEvent{events[0]})
@@ -219,7 +214,6 @@ func TestCaptureLifecycle(t *testing.T) {
 		t.Fatalf("Latest TX = %+v (ok=%t), want %+v", latest, ok, events[2])
 	}
 
-	// Invalid events must be rejected without mutating the capture.
 	if err := capture.Append(FrameEvent{}); err == nil {
 		t.Fatal("Append accepted an invalid event")
 	}
@@ -241,7 +235,6 @@ func TestCaptureLifecycle(t *testing.T) {
 		t.Fatalf("Series after Clear returned %d events", len(got))
 	}
 
-	// The capture must remain fully usable after Clear.
 	revived := testDataEvent(t, testBus0, 0x100, 0, []byte{9}, 6, DirectionReceive)
 	if err := capture.Append(revived); err != nil {
 		t.Fatalf("Append after Clear: %v", err)
@@ -378,15 +371,11 @@ func TestCaptureBetween(t *testing.T) {
 	}
 	requireEvents(t, "FramesBetween", between, frames[1:2])
 
-	// An empty interval is not an error: a follower that has already consumed
-	// everything up to the capture end must be able to ask again.
 	if got, err := capture.FramesBetween(end, end); err != nil || len(got) != 0 {
 		t.Fatalf("FramesBetween over an empty interval = %d frames, %v", len(got), err)
 	}
 }
 
-// TestCaptureCursorErrors covers the distinct cursor failures together with a
-// valid bounded read across a chunk seam.
 func TestCaptureCursorErrors(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
@@ -438,8 +427,6 @@ func TestCaptureCursorErrors(t *testing.T) {
 
 	capture.Clear()
 	appendFrame(6)
-	// A cursor from another capture and a cursor invalidated by Clear both
-	// identify the rejected argument, including through range wrappers.
 	for _, cursor := range []Cursor{foreign, early} {
 		writer := &captureWriterProbe{failAt: -1}
 		since := []struct {
@@ -603,8 +590,6 @@ func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
 }
 
 func TestCaptureCursorIncremental(t *testing.T) {
-	// Three 8-byte payloads seal the first chunk, so the increments below
-	// cross a chunk seam.
 	capture := newTestCapture(4, 24)
 
 	keyA := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
@@ -656,12 +641,10 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	frames, cursorAll := readFrames("initial", Cursor{})
 	requireEvents(t, "initial FramesSince", frames, initialAll)
 
-	// Cursors are global positions: both reads observed the same tail.
 	if cursorA != cursorAll {
 		t.Fatalf("SeriesSince cursor %+v differs from FramesSince cursor %+v at the same tail", cursorA, cursorAll)
 	}
 
-	// At the tail: no frames, cursor unchanged.
 	if frames, cursor := readSeries("tail", cursorA); len(frames) != 0 || cursor != cursorA {
 		t.Fatalf("SeriesSince at tail returned %d frames (cursor changed: %t)", len(frames), cursor != cursorA)
 	}
@@ -679,9 +662,6 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	frames, _ = readFrames("incremental", cursorAll)
 	requireEvents(t, "incremental FramesSince across seam", frames, freshAll)
 
-	// A series read that gained nothing must still advance the cursor to the
-	// global tail, so a cursor passed between read methods never replays
-	// frames another read already delivered.
 	appendSeq(50, 0x200)
 	quiet, cursorA := readSeries("quiet", cursorA)
 	if len(quiet) != 0 {
@@ -691,9 +671,6 @@ func TestCaptureCursorIncremental(t *testing.T) {
 		t.Fatalf("cursor regressed: FramesSince replayed %d frames", len(replayed))
 	}
 
-	// A cursor whose history was discarded by Clear fails the read instead of
-	// replaying the surviving records, and resynchronising from the zero Cursor
-	// everything the capture still holds.
 	capture.Clear()
 	revived := appendSeq(100, 0x100)
 	stale, returned, err := capture.SeriesSince(keyA, cursorA)
@@ -707,20 +684,11 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	requireEvents(t, "resynchronised after Clear", seriesA, []FrameEvent{revived})
 }
 
-// TestCapturePrune covers the pruning lifecycle: a discard that keeps whole
-// chunks, cursors that keep naming the same records across it, the cursors it
-// rejects, and the release of the discarded storage, which no read can see.
 func TestCapturePrune(t *testing.T) {
-	// Three 8-byte payloads seal the first chunk, so the appends that follow
-	// fill an active chunk that pruning must not touch.
 	capture := newTestCapture(4, 24)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 	var appended []FrameEvent
 	var cursors []Cursor
-	// The first frame carries a different ID and is never sent again, so its
-	// latest entry lives in the chunk that gets discarded: the release check
-	// below only holds if that index owns its frames instead of pointing at
-	// chunk storage.
 	quiet := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
 	for seq := range 12 {
 		data := make([]byte, 8)
@@ -752,8 +720,6 @@ func TestCapturePrune(t *testing.T) {
 			len(capture.chunks), sealed)
 	}
 
-	// A cursor inside a chunk discards nothing: pruning never compacts inside
-	// one.
 	if err := capture.Prune(cursors[sealed-2]); err != nil || capture.Len() != len(appended) {
 		t.Fatalf("Prune inside the first chunk = %v, retaining %d records", err, capture.Len())
 	}
@@ -765,9 +731,6 @@ func TestCapturePrune(t *testing.T) {
 		t.Fatalf("capture retains %d records, want %d", capture.Len(), len(appended)-sealed)
 	}
 
-	// Cursors keep their identity across the discard: the retained one still
-	// names the same record, the prune-point cursor still starts the rest, and
-	// each starting point reads the retained history.
 	for _, from := range []struct {
 		label  string
 		cursor Cursor
@@ -784,8 +747,6 @@ func TestCapturePrune(t *testing.T) {
 		requireEvents(t, "FramesSince "+from.label+" after pruning", frames, from.want)
 	}
 
-	// A follow-and-prune loop continues from the prune point: Next and a
-	// bounded read both see the first retained record.
 	event, _, err := capture.Next(context.Background(), key, cursors[sealed-1])
 	if err != nil || !eventsEqual(event, appended[sealed]) {
 		t.Fatalf("Next from the prune-point cursor = (%+v, %v), want %+v", event, err, appended[sealed])
@@ -796,7 +757,6 @@ func TestCapturePrune(t *testing.T) {
 	}
 	requireEvents(t, "FramesBetween from the prune-point cursor", between, appended[sealed:])
 
-	// A cursor into the discarded chunk is rejected, never quietly replaced.
 	stale, returned, err := capture.FramesSince(cursors[0])
 	if !errors.Is(err, ErrCursorOutOfRange) || len(stale) != 0 || returned != cursors[0] {
 		t.Fatalf("FramesSince a discarded cursor = %d frames, cursor %+v, %v", len(stale), returned, err)
@@ -805,8 +765,6 @@ func TestCapturePrune(t *testing.T) {
 		t.Fatalf("Prune with a discarded cursor = %v, want ErrCursorOutOfRange", err)
 	}
 
-	// Latest owns its frames, so pruning cannot take the newest frame away,
-	// nor the last frame of an ID whose records were discarded entirely.
 	if latest, ok := capture.Latest(key); !ok || !eventsEqual(latest, appended[len(appended)-1]) {
 		t.Fatalf("Latest after pruning = %+v (ok=%t), want the newest appended frame", latest, ok)
 	}
@@ -814,8 +772,6 @@ func TestCapturePrune(t *testing.T) {
 		t.Fatalf("Latest of a discarded ID = %+v (ok=%t), want its last frame", latest, ok)
 	}
 
-	// The chunk being appended to is never discarded, so pruning at the
-	// frontier still keeps the newest records.
 	if err := capture.Prune(capture.End()); err != nil || capture.Len() != len(appended)-sealed {
 		t.Fatalf("Prune at the capture end = %v, retaining %d records", err, capture.Len())
 	}
@@ -838,9 +794,6 @@ func TestCapturePrune(t *testing.T) {
 	runtime.KeepAlive(capture)
 }
 
-// TestCapturePruneFollowsSlowestCursor covers a retention owner coordinating
-// several consumers: the slowest cursor holds pruning back, advancing it
-// releases history, and a lost consumer stops pruning until it recovers.
 func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	var cursors []Cursor
@@ -864,8 +817,6 @@ func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 		t.Fatalf("Prune with a zero cursor = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
 
-	// One consumer is still inside the first chunk, so the later consumer must
-	// not cause that chunk to be discarded. Argument order is not policy.
 	if err := capture.Prune(cursors[5], cursors[1]); err != nil || capture.Len() != retained {
 		t.Fatalf("Prune behind the slowest consumer = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
@@ -879,14 +830,10 @@ func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 		t.Fatalf("Prune after both consumers advanced retained %d records, want %d", capture.Len(), retained)
 	}
 
-	// Repeating the same positions is safe. The slow cursor is now the prune
-	// seam and still names the boundary before the retained history.
 	if err := capture.Prune(cursors[5], cursors[sealed-1]); err != nil || capture.Len() != retained {
 		t.Fatalf("repeated Prune = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
 
-	// A consumer behind the prune seam has lost history. It stops the whole
-	// operation, so the retention owner can recover that consumer explicitly.
 	if err := capture.Prune(cursors[5], cursors[0]); !errors.Is(err, ErrCursorOutOfRange) || capture.Len() != retained {
 		t.Fatalf("Prune with a stale consumer = %v, retaining %d records, want ErrCursorOutOfRange and %d",
 			err, capture.Len(), retained)
@@ -894,8 +841,6 @@ func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 		requireRejectedCursor(t, err, cursors[0])
 	}
 
-	// Resetting that consumer to zero is explicit recovery and holds pruning
-	// back until it catches up again.
 	if err := capture.Prune(cursors[5], Cursor{}); err != nil || capture.Len() != retained {
 		t.Fatalf("Prune with a recovered consumer = %v, retaining %d records, want %d", err, capture.Len(), retained)
 	}
@@ -981,7 +926,6 @@ func TestCaptureNext(t *testing.T) {
 	}
 }
 
-// waitForCaptureWaiter blocks until one Next has parked on key.
 func waitForCaptureWaiter(t *testing.T, capture *Capture, key FrameKey) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -997,9 +941,6 @@ func waitForCaptureWaiter(t *testing.T, capture *Capture, key FrameKey) {
 	t.Fatal("no Next parked on the key")
 }
 
-// TestCaptureNextAcrossClear covers the registration boundary: a Next that has
-// parked no longer depends on its input cursor and survives Clear, while a new
-// call carrying that old-generation cursor still fails.
 func TestCaptureNextAcrossClear(t *testing.T) {
 	capture := newTestCapture(8, 64)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
@@ -1057,14 +998,7 @@ func TestCaptureNextAcrossClear(t *testing.T) {
 	}
 }
 
-// TestCaptureNextAcrossPrune covers Next already parked when Prune discards a
-// sealed chunk. Both calls have exhausted a valid snapshot, so their input
-// cursors are no longer needed and the next matching append wakes them. A new
-// call from the earlier discarded cursor still fails.
 func TestCaptureNextAcrossPrune(t *testing.T) {
-	// Three 8-byte payloads seal the first chunk. Only the first record matches
-	// the followed key, so both Next calls wait: one from that record, one from
-	// the prune point at the sealed tail.
 	capture := newTestCapture(4, 24)
 	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 	other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
@@ -1166,9 +1100,6 @@ func TestCaptureNextAcrossPrune(t *testing.T) {
 
 }
 
-// TestCaptureConcurrentClear hammers appends, reads, and Clear together. Run
-// with -race: readers copy without the lock, so this validates that Clear
-// replaces storage instead of mutating what a reader may still hold.
 func TestCaptureConcurrentClear(t *testing.T) {
 	capture := newTestCapture(8, 64)
 
@@ -1258,9 +1189,6 @@ func TestCaptureConcurrentClear(t *testing.T) {
 			capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive})
 			capture.Latest(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive})
 
-			// Clear invalidates both cursors, so the reader resynchronises the
-			// way a follower does: it reports nothing and starts again from the
-			// oldest retained record.
 			_, next, err := capture.EventsSince(eventsCursor)
 			if err != nil && !errors.Is(err, ErrCursorOutOfRange) {
 				t.Errorf("EventsSince: %v", err)
@@ -1282,9 +1210,6 @@ func TestCaptureConcurrentClear(t *testing.T) {
 		}
 	}()
 
-	// A follower on the blocking path meets Clear at every point of the walk,
-	// including the window between the walk and the waiter registration, and
-	// must never leave a waiter behind.
 	go func() {
 		defer churning.Done()
 		key := FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive}
@@ -1313,8 +1238,6 @@ func TestCaptureConcurrentClear(t *testing.T) {
 	<-done
 	churning.Wait()
 
-	// Whatever survived the final Clear must be, per bus, a consecutive run of
-	// the most recently appended sequence numbers, and the total must agree.
 	total := 0
 	for w := range writers {
 		key := FrameKey{Bus: BusID(w + 1), ID: 0x100, Direction: DirectionReceive}
@@ -1352,8 +1275,6 @@ func TestCaptureConcurrentClear(t *testing.T) {
 	}
 }
 
-// TestCaptureConcurrent hammers concurrent appends and reads across a chunk
-// rotation. Run with -race.
 func TestCaptureConcurrent(t *testing.T) {
 	capture := newTestCapture(8, 64)
 
@@ -1447,7 +1368,6 @@ func TestCaptureConcurrent(t *testing.T) {
 		}()
 	}
 
-	// A live tailer must observe every frame of its series exactly once.
 	var tailed []FrameEvent
 	tailerDone := make(chan struct{})
 	go func() {
@@ -1482,8 +1402,6 @@ func TestCaptureConcurrent(t *testing.T) {
 		}
 	}()
 
-	// A blocking tailer must observe every frame of its series exactly once,
-	// in order, sleeping on the waiter path whenever it outruns its writer.
 	var nextTailed []FrameEvent
 	nextTailerDone := make(chan struct{})
 	go func() {

@@ -85,7 +85,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (_ *Bus, e
 			return nil, err
 		}
 	}
-	// Start input first so Open returns ready to capture the first transmission.
 	for _, ref := range []uint32{bus.rx, bus.tx} {
 		result, _, _ := a.start.Call(uintptr(ref), 0)
 		if err = a.check("start NI-XNET stream", result); err != nil {
@@ -177,11 +176,9 @@ func (bus *Bus) receiveLoop() {
 
 const receiveBatchFrames = 16
 
-// receiveBatch bounds each read to 16 maximum-length records in this mode. The
-// variable-width FD ABI can also return several shorter complete records.
-// By default the lock covers the native read too, so already-fetched replies
-// cannot cross a later transmission. Concurrent mode only locks publication;
-// in either mode a transmission cannot split the batch's capture records.
+// The read buffer holds 16 maximum-length records or more shorter records.
+// Serialised mode locks reading and publication; concurrent mode locks only
+// publication. A send cannot split a batch's capture records.
 func (bus *Bus) receiveBatch() (bool, error) {
 	if !bus.config.ConcurrentIO {
 		bus.ioMu.Lock()
@@ -224,7 +221,6 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	return returned != 0, nil
 }
 
-// recordReceived appends one record from a batch while the caller holds ioMu.
 func (bus *Bus) recordReceived(record []byte) error {
 	if record[13]&echoFlag != 0 {
 		return errors.New("NI-XNET returned an unexpected transmit echo")

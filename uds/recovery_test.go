@@ -107,7 +107,7 @@ func TestResponseRecovery(t *testing.T) {
 					}
 					result <- err
 				}()
-				synctest.Wait() // The request is sent and its first response wait has started.
+				synctest.Wait()
 				go func() {
 					for _, reply := range test.replies {
 						time.Sleep(reply.after)
@@ -137,7 +137,6 @@ func TestResponseRecovery(t *testing.T) {
 				if bus.requests != 1 {
 					t.Fatalf("sent %d requests, want one", bus.requests)
 				}
-				// Let scheduled late replies finish before closing either bus.
 				time.Sleep(time.Second)
 			})
 		})
@@ -162,8 +161,6 @@ func (bus *requestCountingBus) Send(ctx context.Context, frame gocan.Frame) erro
 		bus.cancelOnRequest()
 	}
 	if frame.Data[0]>>4 == 3 && bus.cancelOnFlow != nil {
-		// Queue the final segment before cancelling. Capture reads buffered frames
-		// first, so the UDS caller must still reject this completed response.
 		final, err := gocan.NewFrame(0x7e8, []byte{0x21, 6, 7}, 0)
 		if err != nil {
 			return err

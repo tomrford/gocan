@@ -26,11 +26,9 @@ const (
 )
 
 type pdu struct {
-	kind    frameType
-	payload []byte
-	length  uint32
-	// dataLength is the CAN data length the frame arrived with, used to reject a
-	// Consecutive Frame that is short without being the last one.
+	kind           frameType
+	payload        []byte
+	length         uint32
 	dataLength     int
 	sequence       uint8
 	flowStatus     flowStatus
@@ -45,8 +43,6 @@ type transmission struct {
 	multiFrame bool
 }
 
-// transmitter holds the addressing and framing configuration of one transmit
-// path, shared by physical Links and functional send paths.
 type transmitter struct {
 	transmitID            uint32
 	frameFlags            gocan.FrameFlags
@@ -57,8 +53,6 @@ type transmitter struct {
 	transmitRetryTimeout  time.Duration
 }
 
-// newTransmitter validates the transmit-side configuration common to New and
-// NewFunctional. The caller sets maximumPayloadLength.
 func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDataLength uint8, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
 	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
 		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", unsupported)
@@ -92,9 +86,6 @@ func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDa
 	}, nil
 }
 
-// singleFrameCapacity is the largest payload one Single Frame carries with
-// this configuration. Classical CAN uses the one-byte header; every larger
-// CAN FD data length must accommodate the two-byte escape form.
 func (transmitter *transmitter) singleFrameCapacity() uint32 {
 	if transmitter.transmitDataLength <= 8 {
 		return uint32(transmitter.transmitDataLength) - 1

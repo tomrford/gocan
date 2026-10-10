@@ -39,12 +39,8 @@ const (
 		unix.CAN_ERR_BUSERROR
 )
 
-// Config selects one Linux SocketCAN interface. Package drivers constructs
-// and validates it.
 type Config struct {
-	// ID is the one-based trace channel assigned to the bus.
-	ID gocan.BusID
-	// Name is the human-readable name of the bus.
+	ID   gocan.BusID
 	Name string
 	// Interface is the Linux network interface name, such as can0 or vcan0.
 	Interface string
@@ -139,7 +135,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 	return bus, nil
 }
 
-// Bus is one open Linux SocketCAN interface.
 type Bus struct {
 	id      gocan.BusID
 	name    string
@@ -168,23 +163,18 @@ type Bus struct {
 
 var _ gocan.Bus = (*Bus)(nil)
 
-// ID returns the one-based trace channel assigned to this bus.
 func (bus *Bus) ID() gocan.BusID {
 	return bus.id
 }
 
-// Name returns the human-readable name of this bus.
 func (bus *Bus) Name() string {
 	return bus.name
 }
 
-// Capture returns the capture that records this bus's traffic.
 func (bus *Bus) Capture() *gocan.Capture {
 	return bus.capture
 }
 
-// Send hands frame to the Linux CAN socket and records the accepted
-// transmission before returning.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {
 		return err
@@ -247,17 +237,14 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	return nil
 }
 
-// Done is closed when this bus stops.
 func (bus *Bus) Done() <-chan struct{} {
 	return bus.lifecycle.Done()
 }
 
-// Err returns the background failure that stopped this bus, if any.
 func (bus *Bus) Err() error {
 	return bus.lifecycle.Err()
 }
 
-// Close stops acquisition. It is safe to call more than once.
 func (bus *Bus) Close() error {
 	bus.ioMu.Lock()
 	bus.stopWithError(nil)

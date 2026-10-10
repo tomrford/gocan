@@ -99,8 +99,6 @@ func (decoder *Decoder) observeClaim(event gocan.FrameEvent, header Header) erro
 		decoder.names[key] = header.Source
 	}
 	competing := len(decoder.Names(event.Bus, header.Source)) > 1
-	// Address changes and competing claims make an in-flight payload's source
-	// or destination identity uncertain. Do not join bytes across that boundary.
 	if competing || known && previous != header.Source {
 		for sessionKey := range decoder.sessions {
 			if sessionKey.bus == event.Bus && (sessionKey.source == header.Source || sessionKey.destination == header.Source ||

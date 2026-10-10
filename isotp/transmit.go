@@ -10,11 +10,7 @@ import (
 	"github.com/tomrford/gocan/internal/transport"
 )
 
-// transmit sends one complete payload. Callers must hold the sending token, and
-// the receiving token as well when the transmission is segmented, because
-// waitFlowControl advances the link's receive position. repositionCursor moves
-// that position to the accepted first frame so only later traffic can answer
-// it; it also requires the receiving token.
+// Callers hold sending, and receiving for segmented sends or cursor repositioning.
 func (link *Link) transmit(ctx context.Context, transmission transmission, repositionCursor bool) error {
 	if err := link.sendFrame(ctx, transmission.firstFrame); err != nil {
 		return err
@@ -67,8 +63,6 @@ func (link *Link) transmit(ctx context.Context, transmission transmission, repos
 }
 
 func (link *Link) waitFlowControl(ctx context.Context) (pdu, error) {
-	// Counted as an int: a uint8 cannot exceed a limit of 255 and would silently
-	// let a peer stall the transfer for ever.
 	waitFrames := 0
 	for {
 		control, err := link.nextPDUWithTimeout(ctx, link.flowControlTimeout, ErrFlowControlTimeout)

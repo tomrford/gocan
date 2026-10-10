@@ -92,28 +92,19 @@ type Config struct {
 }
 
 // Link binds one ISO-TP transmit and receive identifier to a raw CAN bus.
+// Use one Link per endpoint, exclusively owning its transmit ID during operations.
+// Links with overlapping bus and receive addresses cannot distinguish traffic.
 //
-// A Link has exactly one receive position, established at New and advanced by
-// Receive and Exchange.Next. Begin discards unread payloads captured before its
-// accepted first frame. ISO-TP has no transaction identifier: callers must finish
-// or recover earlier exchanges before reusing the receive address, including
-// replies still buffered in a driver or arriving late. A multi-frame Send
-// repositions the cursor too, to recognise its own Flow Control.
-// Clearing or pruning the underlying capture during an operation may discard
-// that position, so the operation fails with gocan.ErrCursorOutOfRange rather
-// than hiding the loss. The next operation starts from the oldest records the
-// capture still holds.
+// Link maintains one receive position. Begin and segmented Send reposition it
+// to the accepted first frame. ISO-TP has no transaction identifier: finish or
+// recover earlier exchanges before reusing the receive address, including late
+// replies and traffic buffered in the driver. Capture loss fails the operation
+// with gocan.ErrCursorOutOfRange; the next starts at the oldest retained record.
 //
-// Link serialises Send calls and Receive calls independently. Begin owns both
-// paths until its Exchange closes. A server must finish Receive before calling
-// Send on the same Link because segmented reception can transmit Flow Control
-// without taking the independent send path. Use one Link as a client (Begin) or
-// as a server (alternating Receive and Send), not as both at once. Mixing roles
-// makes it unpredictable which caller consumes an incoming payload.
-//
-// Reuse one Link for each logical endpoint: separately constructed Links with
-// an overlapping bus and receive address cannot distinguish their traffic.
-// The Link must exclusively own its transmit ID during each operation.
+// Send and Receive calls are serialised independently. Begin owns both paths
+// until its Exchange closes. Use Link as a client (Begin) or a server
+// (alternating Receive and Send). A server must finish Receive before Send:
+// segmented reception sends Flow Control without taking the sending token.
 type Link struct {
 	bus     gocan.Bus
 	capture *gocan.Capture
@@ -127,10 +118,7 @@ type Link struct {
 	consecutiveFrameTimeout time.Duration
 	waitFrameLimit          uint8
 
-	// sending and receiving are one-token channels. Holding sending grants
-	// exclusive transmission; holding receiving grants exclusive receive progress.
-	// Begin takes sending before receiving, and nothing takes them in the other
-	// order.
+	// Take sending before receiving when both tokens are needed.
 	sending   chan struct{}
 	receiving chan struct{}
 	cursorMu  sync.Mutex
@@ -138,12 +126,8 @@ type Link struct {
 	retaining bool
 }
 
-// Exchange is one payload sent by Begin together with the payloads that arrive
-// after it. It owns its Link until Close.
-//
-// Next may be called repeatedly; each call returns one complete ISO-TP payload
-// and does not interpret its application-level meaning. A protocol above this
-// one decides how many payloads an exchange contains.
+// Exchange owns its Link from Begin until Close. Each Next returns one complete
+// payload; the application protocol determines how many replies to receive.
 type Exchange struct {
 	link   *Link
 	ctx    context.Context
@@ -277,7 +261,6 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 	}
 
 	exchange := link.newExchange()
-	// Retain the send interval until transmit locates the accepted first frame.
 	link.startReception(true)
 	operationContext, cancel := exchange.operationContext(ctx)
 	defer cancel()
@@ -329,8 +312,6 @@ func (exchange *Exchange) Close() {
 	exchange.link.release(exchange.link.sending)
 }
 
-// newExchange wires bus loss into one context that lives as long as the
-// exchange, so an operation only has to watch that single context.
 func (link *Link) newExchange() *Exchange {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	go func() {
@@ -398,15 +379,11 @@ func (link *Link) setCursor(cursor gocan.Cursor) {
 	link.cursorMu.Unlock()
 }
 
-// nextFrame reads the next matching frame and advances the link's receive
-// position. Callers must hold the receiving token.
+// Callers must hold the receiving token.
 func (link *Link) nextFrame(ctx context.Context) (gocan.FrameEvent, error) {
 	frame, cursor, err := link.capture.Next(ctx, link.receiveKey, link.Cursor())
 	if err != nil {
 		if errors.Is(err, gocan.ErrCursorOutOfRange) {
-			// The capture discarded the position this link was reading from.
-			// The operation still fails, but the next one can consume records
-			// retained after the discard.
 			link.setCursor(gocan.Cursor{})
 		}
 		return gocan.FrameEvent{}, err
@@ -438,8 +415,6 @@ func (exchange *Exchange) operationContext(parent context.Context) (context.Cont
 	return watchedContext(parent, exchange.ctx.Done(), func() error { return context.Cause(exchange.ctx) })
 }
 
-// watchedContext derives a cancellable child of parent that also ends when done
-// is closed, reporting cause as the cancellation cause.
 func watchedContext(parent context.Context, done <-chan struct{}, cause func() error) (context.Context, context.CancelFunc) {
 	ctx, cancelCause := context.WithCancelCause(parent)
 	go func() {
@@ -452,11 +427,6 @@ func watchedContext(parent context.Context, done <-chan struct{}, cause func() e
 	return ctx, func() { cancelCause(context.Canceled) }
 }
 
-// withCause resolves cancellation and first-frame timeout errors against the
-// operation's terminal cause, including bus loss and exchange closure.
-//
-// First-frame expiry can race with cancellation propagation. Other protocol,
-// framing, and transport timeout errors retain their own meaning.
 func withCause(operationContext context.Context, err error) error {
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
 		!errors.Is(err, ErrFirstFrameTimeout) {

@@ -19,8 +19,6 @@ func parseHardwareUint(tb testing.TB, name, value string, bits int) uint64 {
 	return parsed
 }
 
-// vectorChannelIndex returns the Vector channel index selected by the named
-// environment variable, skipping the test when the variable is not set.
 func vectorChannelIndex(tb testing.TB, name string) ChannelIndex {
 	tb.Helper()
 	value := os.Getenv(name)
@@ -34,8 +32,6 @@ func vectorChannelIndex(tb testing.TB, name string) ChannelIndex {
 	return ChannelIndex(index)
 }
 
-// vectorPairIndexes returns the two distinct Vector channel indexes selected
-// by GOCAN_VECTOR_CHANNEL_INDEX and GOCAN_VECTOR_CHANNEL_INDEX_B.
 func vectorPairIndexes(tb testing.TB) (ChannelIndex, ChannelIndex) {
 	tb.Helper()
 	vectorA := vectorChannelIndex(tb, "GOCAN_VECTOR_CHANNEL_INDEX")
@@ -46,8 +42,6 @@ func vectorPairIndexes(tb testing.TB) (ChannelIndex, ChannelIndex) {
 	return vectorA, vectorB
 }
 
-// pcanPeerChannel returns the PCAN channel handle selected by the named
-// environment variable, skipping the test when the variable is not set.
 func pcanPeerChannel(tb testing.TB, name string) pcan.Channel {
 	tb.Helper()
 	value := os.Getenv(name)
@@ -61,8 +55,6 @@ func pcanPeerChannel(tb testing.TB, name string) pcan.Channel {
 	return pcan.Channel(channel)
 }
 
-// pcanFDBitrate returns the PCAN-Basic CAN FD timing string selected by
-// GOCAN_PCAN_FD_BITRATE, skipping the test when it is not set.
 func pcanFDBitrate(tb testing.TB) string {
 	tb.Helper()
 	value := os.Getenv("GOCAN_PCAN_FD_BITRATE")
@@ -72,8 +64,6 @@ func pcanFDBitrate(tb testing.TB) string {
 	return value
 }
 
-// vectorFDDataBitrate returns the CAN FD data bitrate selected by
-// GOCAN_VECTOR_FD_DATA_BITRATE, skipping the test when it is not set.
 func vectorFDDataBitrate(tb testing.TB) uint32 {
 	tb.Helper()
 	value := os.Getenv("GOCAN_VECTOR_FD_DATA_BITRATE")
