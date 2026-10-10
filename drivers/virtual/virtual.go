@@ -141,8 +141,6 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 
 	select {
 	case bus.sends <- request:
-		// The bus owner now has the request. Cancellation can no longer
-		// pretend that the frame was not handed to the driver.
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-bus.done:

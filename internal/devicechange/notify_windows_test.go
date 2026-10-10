@@ -19,8 +19,6 @@ func TestNotifyFilterNativeLayout(t *testing.T) {
 	}
 }
 
-// encodeInstanceEventData builds a synthetic CM_NOTIFY_EVENT_DATA buffer for
-// one device-instance identifier.
 func encodeInstanceEventData(t *testing.T, identifier string) []byte {
 	t.Helper()
 	encoded, err := windows.UTF16FromString(identifier)
@@ -98,8 +96,6 @@ func TestNotifyFiltersBeforeQueue(t *testing.T) {
 		)
 	}
 
-	// Far more churn than the queue holds: unrelated removals and matching
-	// non-removal transitions must never occupy a slot.
 	for range 4 * watcherBuffer {
 		dispatch(ActionInstanceRemoved, unrelated)
 		dispatch(ActionInstanceEnumerated, peak)
@@ -119,8 +115,6 @@ func TestNotifyFiltersBeforeQueue(t *testing.T) {
 		t.Fatal("unrelated churn consumed queue slots")
 	}
 
-	// Only matching removals can overrun the queue, and overrun sets Lost
-	// exactly until it is read.
 	for range watcherBuffer + 1 {
 		dispatch(ActionInstanceRemoved, peak)
 	}
@@ -163,7 +157,6 @@ func TestDispatchNotificationRoutesByContext(t *testing.T) {
 	default:
 	}
 
-	// A zero context and an issued-but-never-registered context drop silently.
 	dispatch(0)
 	dispatch(nextWatcherContext.Add(1))
 

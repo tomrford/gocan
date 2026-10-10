@@ -46,7 +46,6 @@ func TestDIDCodecLifecycle(t *testing.T) {
 		t.Fatalf("JSON thermal payload = %x, %v; want %x", jsonPayload, err, payload)
 	}
 
-	// An off-grid physical value is quantized to the nearest raw value.
 	payload, err = thermal.Read[0].PositiveResponse.Record.Encode(cdd.Values{
 		"Heater":  "On",
 		"Coolant": 25.3,
@@ -98,7 +97,6 @@ func TestDIDCodecLifecycle(t *testing.T) {
 	if err != nil || !bytes.Equal(jsonPayload, wantNameplate) {
 		t.Fatalf("JSON nameplate payload = %x, %v; want %x", jsonPayload, err, wantNameplate)
 	}
-	// The float32 rounds directly to its precision; the adjacent integer stays exact.
 	wantRounded := bytes.Clone(wantNameplate)
 	for _, test := range []struct {
 		gain any

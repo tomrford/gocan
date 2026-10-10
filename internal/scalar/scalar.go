@@ -1,7 +1,3 @@
-// Package scalar converts physical Go values to and from raw coded scalars.
-// It carries the numeric layer shared by the dbc and cdd codecs: exact integer
-// conversion, sign handling within an arbitrary bit width, rounding linear
-// conversions, and label lookup.
 package scalar
 
 import (
@@ -14,7 +10,6 @@ import (
 	"strings"
 )
 
-// Choice assigns a label to one exact raw integer value.
 type Choice struct {
 	Value int64
 	Label string
@@ -62,7 +57,6 @@ func DecodeLinear(bits uint32, signed bool, raw uint64, scale, offset float64, c
 	return float64(raw)*scale + offset
 }
 
-// Label returns the label of the first choice with value.
 func Label(choices []Choice, value int64) (string, bool) {
 	for _, choice := range choices {
 		if choice.Value == value {
@@ -121,7 +115,6 @@ func LinearRaw(bits uint32, signed bool, physical, scale, offset float64) (uint6
 	return EncodeUnsigned(bits, uint64(rounded))
 }
 
-// EncodeSigned encodes value into the low bits as two's complement.
 func EncodeSigned(bits uint32, value int64) (uint64, error) {
 	if bits == 64 {
 		return uint64(value), nil
@@ -134,7 +127,6 @@ func EncodeSigned(bits uint32, value int64) (uint64, error) {
 	return uint64(value) & (uint64(1)<<bits - 1), nil
 }
 
-// EncodeUnsigned validates that value fits bits.
 func EncodeUnsigned(bits uint32, value uint64) (uint64, error) {
 	if bits < 64 && value >= uint64(1)<<bits {
 		return 0, fmt.Errorf("unsigned value %d does not fit %d bits", value, bits)
@@ -142,7 +134,6 @@ func EncodeUnsigned(bits uint32, value uint64) (uint64, error) {
 	return value, nil
 }
 
-// DecodeSigned sign-extends the low bits of raw.
 func DecodeSigned(bits uint32, raw uint64) int64 {
 	if bits == 64 {
 		return int64(raw)
@@ -155,7 +146,6 @@ func DecodeSigned(bits uint32, raw uint64) int64 {
 	return int64(raw)
 }
 
-// ExactSigned converts a Go numeric value to int64 without loss.
 func ExactSigned(value any) (int64, error) {
 	if number, ok := value.(json.Number); ok {
 		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
@@ -195,7 +185,6 @@ func ExactSigned(value any) (int64, error) {
 	}
 }
 
-// ExactUnsigned converts a Go numeric value to uint64 without loss.
 func ExactUnsigned(value any) (uint64, error) {
 	if number, ok := value.(json.Number); ok {
 		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {

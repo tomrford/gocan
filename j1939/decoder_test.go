@@ -113,7 +113,6 @@ func TestDecoderReferenceTransportAndRecovery(t *testing.T) {
 	// test/test_ecu.py, test_broadcast_receive_long and test_peer_to_peer_receive_long.
 	for _, destination := range []byte{0xff, 2} {
 		t.Run(fmt.Sprintf("destination_%02x", destination), func(t *testing.T) {
-			// Unused receive bytes need not contain the FF emitted by our sender.
 			start := frameEvent(t, 0, 0x00ecff01, []byte{32, 20, 0, 3, 0, 176, 254, 0})
 			if destination == 2 {
 				start.Frame.ID = 0x00ec0201
@@ -194,7 +193,6 @@ func TestDecoderDiscardsInvalidatedPayloads(t *testing.T) {
 			}
 		})
 	}
-	// Capture loss must invalidate both TP history and identity history before replay.
 	capture := gocan.NewCapture()
 	capture.Append(start)
 	frames, cursor, _ := capture.FramesSince(gocan.Cursor{})
@@ -256,7 +254,6 @@ func TestDecoderRejectsCTSBeforeWindowCompletes(t *testing.T) {
 	if len(messages) != 0 || len(diagnostics) != 3 || diagnostics[0].Timestamp != frames[3].Timestamp || !errors.Is(diagnostics[0], j1939.ErrProtocol) {
 		t.Fatalf("overlapping CTS: %v, %v", messages, diagnostics)
 	}
-	// The invalid grant must not prevent a fresh session from succeeding.
 	messages, diagnostics = decoder.PushBatch(append(frames[:3:3], frames[4:]...))
 	if len(messages) != 1 || len(diagnostics) != 0 {
 		t.Fatalf("recovery: %v, %v", messages, diagnostics)
@@ -264,8 +261,6 @@ func TestDecoderRejectsCTSBeforeWindowCompletes(t *testing.T) {
 }
 
 func TestDecoderInterleavedMaximumBAM(t *testing.T) {
-	// J1939-21 permits 255 packets of 7 bytes. Keep the final packet number
-	// and padding bytes in the payload, and isolate peers, buses and directions.
 	var decoder j1939.Decoder
 	start := frameEvent(t, 0, 0x18ecff80, []byte{32, 249, 6, 255, 255, 202, 254, 0})
 	otherSource := frameEvent(t, 0, 0x18ecff81, []byte{32, 9, 0, 2, 255, 176, 254, 0})
@@ -379,7 +374,7 @@ BA_ "VFrameFormat" BO_ 2566844032 3;
 	if len(definitions) != 1 {
 		panic("select an unambiguous device definition")
 	}
-	capture := gocan.NewCapture() // A live Bus supplies its own Capture.
+	capture := gocan.NewCapture()
 	for _, id := range []uint32{0x18feee80, 0x0cfeee81} {
 		frame, err := gocan.NewFrame(id, []byte{100, 255, 255, 255, 255, 255, 255, 255}, gocan.FrameExtended)
 		if err != nil {
@@ -395,13 +390,13 @@ BA_ "VFrameFormat" BO_ 2566844032 3;
 	// reads. Feed all raw frames before PGN filtering so TP control is observed.
 	frames, next, err := capture.FramesSince(cursor)
 	if errors.Is(err, gocan.ErrCursorOutOfRange) {
-		decoder.Reset() // No partial payload or old NAME survives lost history.
+		decoder.Reset()
 		frames, next, err = capture.FramesSince(gocan.Cursor{})
 	}
 	if err != nil {
 		panic(err)
 	}
-	cursor = next // Use this cursor for the next read and retention decisions.
+	cursor = next
 	messages, diagnostics := decoder.PushBatch(frames)
 	for _, diagnostic := range diagnostics {
 		fmt.Println(diagnostic)

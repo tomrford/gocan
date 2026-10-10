@@ -134,7 +134,6 @@ func TestExchangeRoundTrip(t *testing.T) {
 			if err := <-peerErrors; err != nil {
 				t.Fatalf("ECU: %v", err)
 			}
-			// Inspect actual wire frames, independently of the ISO-TP decoder.
 			var lastConsecutive gocan.Frame
 			flowControls := 0
 			for _, event := range capture.Series(gocan.FrameKey{Bus: tester.ID(), ID: test.transmitID, Direction: gocan.DirectionTransmit, Extended: test.flags.Has(gocan.FrameExtended)}) {
@@ -338,9 +337,6 @@ func TestExchangeStopsWithBus(t *testing.T) {
 	})
 }
 
-// TestSendAndReceivePairedLinks drives both state machines through the public
-// server-style API and checks that successive payloads are neither dropped nor
-// repeated, which is what one receive position per Link has to guarantee.
 func TestSendAndReceivePairedLinks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		capture := gocan.NewCapture()
@@ -389,8 +385,6 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 			synctest.Wait()
 			retained := sender.RetentionCursor()
 			if index < 2 {
-				// Queue behind a blocked single-frame send, then behind a segmented
-				// send waiting for Flow Control. Only the latter needs history.
 				queued, cancelQueued := context.WithCancel(ctx)
 				defer cancelQueued()
 				result := make(chan error, 1)
@@ -439,7 +433,6 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 				t.Fatal("completed transfer retained history")
 			}
 		}
-		// Cancellation must release a segmented send's receive ownership too.
 		sendContext, cancelSend := context.WithCancel(ctx)
 		go func() { sent <- sender.Send(sendContext, payloads[1]) }()
 		synctest.Wait()
@@ -501,8 +494,6 @@ func TestSendAndReceivePairedLinks(t *testing.T) {
 	})
 }
 
-// TestCloseCancelsPendingNext asserts that Close does not wait out a protocol
-// timeout, so `defer exchange.Close()` is safe on every path.
 func TestCloseCancelsPendingNext(t *testing.T) {
 	for _, stage := range []string{"first frame", "segmented response"} {
 		t.Run(stage, func(t *testing.T) {
@@ -574,7 +565,6 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 						t.Fatalf("peer read %#x, want a Continue Flow Control", got)
 					}
 
-					// Retention can inspect progress while Next waits for the rest of a payload.
 					progress := make(chan gocan.Cursor, 1)
 					go func() { progress <- link.RetentionCursor() }()
 					select {
@@ -613,7 +603,6 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 					t.Fatal("Close did not release receive history")
 				}
 
-				// The link must be usable again.
 				next, err := link.Begin(ctx, []byte{0x3e, 0})
 				if err != nil {
 					t.Fatalf("Begin after Close: %v", err)
@@ -624,10 +613,6 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 	}
 }
 
-// TestSegmentationConformance covers two ISO 15765-2 rules that pull in opposite
-// directions: a reserved separation time must slow a transmission rather than
-// abandon it, while a Consecutive Frame that is short without being the last one
-// must be rejected.
 func TestSegmentationConformance(t *testing.T) {
 	newPair := func(t *testing.T) (*isotp.Link, *rawPeer, *gocan.Capture) {
 		t.Helper()
@@ -667,7 +652,6 @@ func TestSegmentationConformance(t *testing.T) {
 		received := make(chan []byte, 1)
 		peerErrors := make(chan error, 1)
 		go func() {
-			// 0x80 is reserved, so the sender must fall back to 127 ms.
 			got, err := peer.receivePayload(ctx, 0, 0x80, 120*time.Millisecond, false)
 			received <- got
 			peerErrors <- err
@@ -692,7 +676,7 @@ func TestSegmentationConformance(t *testing.T) {
 		go func() {
 			err := peer.sendFrame(ctx, []byte{0x10, 20, 1, 2, 3, 4, 5, 6}, true)
 			if err == nil {
-				_, err = peer.nextFrame(ctx) // the receiver's Flow Control
+				_, err = peer.nextFrame(ctx)
 			}
 			if err == nil {
 				err = peer.sendFrame(ctx, []byte{0x21, 7}, false)
@@ -912,9 +896,6 @@ func testFDLength(length int) int {
 	return 64
 }
 
-// TestReceiveResynchronisesAfterCaptureClear covers a server link whose
-// capture is reset while it is idle. The first Receive reports the discarded
-// position; the next one must still see a request retained after the reset.
 func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	capture := gocan.NewCapture()
 	var network virtual.Network
@@ -941,8 +922,6 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// One payload first, so the link holds a real position rather than the zero
-	// Cursor that New starts from.
 	opening := patternedPayload(4, 0x40)
 	if err := sender.Send(ctx, opening); err != nil {
 		t.Fatalf("Send opening payload: %v", err)

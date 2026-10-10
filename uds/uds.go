@@ -207,11 +207,8 @@ func parseResponse(service ServiceID, payload []byte) (Response, *NegativeRespon
 			return Response{}, nil, fmt.Errorf("%w: negative response has %d bytes, want 3", ErrInvalidResponse, len(payload))
 		}
 		code := ResponseCode(payload[2])
-		// ResponsePending is classified before the service echo is validated:
-		// several fielded ECU stacks echo a stale service ID on 0x78. A pending
-		// carries no data and the exchange scope leaves only one request it can
-		// belong to, so leniency here cannot misattribute a response. Final
-		// responses keep the strict echo check below.
+		// Some ECUs echo a stale service ID on ResponsePending (0x78). Accept it
+		// for the sole outstanding request; final responses still require a matching echo.
 		if code == responsePending {
 			return Response{}, &NegativeResponseError{Service: service, Code: code}, nil
 		}

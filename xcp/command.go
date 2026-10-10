@@ -16,7 +16,7 @@ import (
 // types.py/master.py at f1b547b23f1ad56cb3b201c1790d941931f45f0a.
 // CAN padding configuration is described by Vector's XCP_104.aml CAN_Parameters.
 func (client *Client) command(ctx context.Context, request Request) (Response, error) {
-	retryConnect := request.Command == CommandConnect && (client.pending == CommandConnect || client.pending == CommandDisconnect)
+	recoveringConnect := request.Command == CommandConnect && (client.pendingCommand == CommandConnect || client.pendingCommand == CommandDisconnect)
 	minimum, known, err := client.validateRequest(request)
 	if err != nil {
 		return Response{}, err
@@ -27,7 +27,7 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 	// Resume an unanswered SYNCH at its existing cursor. Sending another
 	// indistinguishable barrier can leave a late marker that falsely completes
 	// recovery for a command sent after it.
-	if request.Command != CommandSynch || client.pending != CommandSynch {
+	if request.Command != CommandSynch || client.pendingCommand != CommandSynch {
 		packet := [gocan.MaxDataLength]byte{byte(request.Command)}
 		copy(packet[1:], request.Data)
 		length := 1 + len(request.Data)
@@ -53,8 +53,6 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		client.retaining = true
 		client.mu.Unlock()
 		if err := gocan.Send(ctx, client.bus, frame, client.config.TransmitRetryTimeout); err != nil {
-			// Bus.Send reports a definite native result. A rejected send has created
-			// no outstanding command, so it must not poison a synchronised session.
 			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return Response{}, context.Cause(ctx)
 			}
@@ -63,7 +61,7 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		if !known || request.Command == CommandConnect || request.Command == CommandDisconnect {
 			client.connected = false
 		}
-		client.pending = request.Command
+		client.pendingCommand = request.Command
 		cursor, err := transport.SentCursor(client.bus, frame, beforeSend)
 		if err != nil {
 			return Response{}, err
@@ -74,8 +72,8 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 	}
 	response, err := client.receive(ctx, request.Command, minimum)
 	if err != nil {
-		if retryConnect && !errors.Is(err, ErrSessionTerminated) {
-			client.pending = CommandConnect
+		if recoveringConnect && !errors.Is(err, ErrSessionTerminated) {
+			client.pendingCommand = CommandConnect
 		}
 		return Response{}, err
 	}
@@ -84,7 +82,7 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		if err != nil {
 			return Response{}, err
 		}
-		if retryConnect {
+		if recoveringConnect {
 			// CONNECT can recover an unanswered CONNECT or DISCONNECT while the
 			// ECU might be disconnected. Fence earlier replies before trusting
 			// this result. A failed barrier must not permit another
@@ -99,12 +97,12 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		client.capabilities = capabilities
 		client.connected = true
 	}
-	client.pending = 0
+	client.pendingCommand = 0
 	return response, nil
 }
 
 func (client *Client) validateRequest(request Request) (minimum int, known bool, err error) {
-	if client.pending != 0 && request.Command != CommandSynch && !(request.Command == CommandConnect && (client.pending == CommandConnect || client.pending == CommandDisconnect)) {
+	if client.pendingCommand != 0 && request.Command != CommandSynch && !(request.Command == CommandConnect && (client.pendingCommand == CommandConnect || client.pendingCommand == CommandDisconnect)) {
 		return 0, false, ErrSynchronizationRequired
 	}
 	if !client.connected && request.Command != CommandConnect && request.Command != CommandSynch {
@@ -224,7 +222,7 @@ func (client *Client) receive(ctx context.Context, command Command, minimum int)
 			}
 			if data[0] == 0xfe {
 				if data[1] != 0 {
-					client.pending = 0
+					client.pendingCommand = 0
 				}
 				return Response{}, &NegativeResponseError{Command: command, Code: data[1]}
 			}
@@ -241,10 +239,9 @@ func (client *Client) receive(ctx context.Context, command Command, minimum int)
 				deadline = time.Now().Add(client.config.Timeout) // EV_CMD_PENDING
 			case 0x07:
 				client.connected = false
-				client.pending = 0 // Explicit ECU disconnect; SYNCH requires a live session.
+				client.pendingCommand = 0 // Explicit ECU disconnect; SYNCH requires a live session.
 				return Response{}, ErrSessionTerminated
 			}
-			// SERV (0xfc), DAQ (0x00..0xfb), and other events remain in Capture.
 		}
 	}
 }

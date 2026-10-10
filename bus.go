@@ -29,35 +29,22 @@ var (
 	ErrDriverUnavailable = errors.New("CAN driver is not installed")
 )
 
-// Bus owns one logical CAN channel. It accepts frames for transmission and
-// contributes every accepted transmission and received frame to the Capture
-// supplied when the concrete driver was opened.
+// Bus owns one logical CAN channel. Every accepted transmission and received
+// frame is recorded in its non-nil Capture, which remains the same for its lifetime.
+// Consumers receive traffic through Capture.
 //
-// Bus has no receive method. Consumers observe traffic through that Capture,
-// so one native receive loop can preserve every frame without dividing traffic
-// among competing readers.
-//
-// Send is safe to call concurrently. Concrete drivers serialise calls as
-// required by their native API. Once a send has been handed to that API,
-// context cancellation cannot revoke it: Send waits for the definite native
-// result and records an accepted transmission before returning nil.
-//
-// Within a bus, an accepted transmission is recorded before a response to it
-// can be appended. Drivers use Capture.RecordFrame and RecordEvent, whose shared
-// clock follows capture append order across buses. Timestamps describe host
-// observation order, not the order of buffered traffic on the wire.
+// Send is safe concurrently. A native send in progress cannot be revoked by
+// cancellation: Send waits for its definite result and records acceptance before
+// returning nil. Within a bus, transmission is recorded before its response.
+// Capture timestamps describe host observation order, not wire order.
 // Readiness waits do not hold up transmission.
 //
-// Capture returns the non-nil capture that records this bus's traffic. It
-// returns the same capture for the bus's lifetime. Done is closed after
-// acquisition stops. Err then reports the background failure, or nil after a
-// normal Close. ID is the one-based channel stored in captures and trace files;
-// Name is its human-readable label. Close is idempotent.
-//
-// A full native transmit queue is reported as ErrTransmitQueueFull. Send does
-// not wait for queue space or append a rejected transmission; callers decide
-// whether and how to retry under their context.
+// Send returns ErrTransmitQueueFull without waiting or recording acceptance.
 // The package-level Send function provides bounded queue-full retries.
+//
+// Done closes after acquisition stops; Err then reports the background failure
+// or nil after normal Close. ID is the one-based trace channel; Name is its label.
+// Close is idempotent.
 type Bus interface {
 	ID() BusID
 	Name() string
@@ -91,7 +78,6 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 	if retryTimeout == 0 || !errors.Is(err, ErrTransmitQueueFull) {
 		return err
 	}
-	// The budget's cause keeps its expiry distinct from the caller's deadline.
 	ctx, cancel := context.WithTimeoutCause(ctx, retryTimeout, ErrTransmitQueueFull)
 	defer cancel()
 	timer := time.NewTimer(time.Millisecond)
@@ -107,16 +93,12 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 			return errors.Join(err, cause)
 		case <-timer.C:
 		}
-		// The timer can win a race with expiry. Report the rejection rather than
-		// a bare context error from the driver.
 		if cause := context.Cause(ctx); errors.Is(cause, ErrTransmitQueueFull) {
 			return err
 		} else if cause != nil {
 			return errors.Join(err, cause)
 		}
 		nextErr := bus.Send(ctx, frame)
-		// Expiry while the driver waits for its lock still ends retries with
-		// the last rejection. A definite acceptance or other failure wins.
 		if ctx.Err() != nil && errors.Is(nextErr, ctx.Err()) {
 			continue
 		}

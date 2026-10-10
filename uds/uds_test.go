@@ -30,10 +30,8 @@ func TestClientExchangeLifecycle(t *testing.T) {
 
 	testerTransport := &flowControlBus{Bus: testerBus}
 	testerLink, err := isotp.New(testerTransport, isotp.Config{
-		TransmitID: 0x7e0,
-		ReceiveID:  0x7e8,
-		// Keep the segmented response in progress beyond P2* after its First
-		// Frame arrives.
+		TransmitID:               0x7e0,
+		ReceiveID:                0x7e8,
 		AdvertisedSeparationTime: 30 * time.Millisecond,
 		ConsecutiveFrameTimeout:  200 * time.Millisecond,
 		TransmitRetryTimeout:     5 * time.Millisecond,
@@ -75,7 +73,7 @@ func TestClientExchangeLifecycle(t *testing.T) {
 		name      string
 		request   []byte
 		responses [][]byte
-		mode      string // Empty for Do, "send" for Send, "wait" for DoSuppressed.
+		mode      string
 		want      []byte
 		kind      error
 		nrc       uds.ResponseCode
@@ -184,7 +182,6 @@ func TestClientExchangeLifecycle(t *testing.T) {
 			t.Fatal("functional send accepted an invalid subfunction")
 		}
 	}
-	// The first broadcast also proves the rejected requests emitted no traffic.
 	broadcasts := []struct {
 		send func() error
 		want []byte

@@ -13,24 +13,14 @@ import (
 
 const lostCheckInterval = 100 * time.Millisecond
 
-// instanceWatcher is the notification source a Monitor consumes. Production
-// monitors use *Watcher; tests inject fakes.
 type instanceWatcher interface {
 	Events() <-chan Event
 	Lost() bool
 	Close() error
 }
 
-// Monitor turns Windows device-instance removals for one vendor's instance-ID
-// prefix into stop calls on every subscribed bus. Its watcher filters to
-// matching removals before the finite notification queue, so a removal or a
-// lost notification is one shared failure domain: every subscriber stops with
-// gocan.ErrHardwareDisconnected.
-//
-// The Windows registration and its polling goroutine exist only while at
-// least one Hold or Subscription is outstanding, so failed or closed opens do
-// not accumulate registrations. The one process-wide callback trampoline is
-// permanent by Go runtime design and shared by every registration.
+// Monitor stops every subscribed bus on a matching removal or lost notification.
+// Registration lasts while a Hold or Subscription exists.
 type Monitor struct {
 	description string
 	watch       func() (instanceWatcher, error)
@@ -44,9 +34,6 @@ type Monitor struct {
 	subscribers map[*Subscription]struct{}
 }
 
-// NewMonitor watches for removals of device instances whose IDs start with
-// prefix, compared case-insensitively. description names the hardware family
-// in errors, for example "PEAK USB".
 func NewMonitor(prefix, description string) *Monitor {
 	return newMonitor(description, func() (instanceWatcher, error) {
 		return WatchRemovals(prefix)
@@ -70,15 +57,12 @@ type Hold struct {
 	ended      bool
 }
 
-// Subscription is one bus registered for stop fan-out.
 type Subscription struct {
 	monitor  *Monitor
 	stopBus  func(error)
 	canceled bool
 }
 
-// Hold starts (or joins) the Windows notification watcher and pins the current
-// device generation.
 func (monitor *Monitor) Hold() (*Hold, error) {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()

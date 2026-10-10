@@ -123,9 +123,9 @@ type Client struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
 	// Session fields are protected by gate.
-	capabilities Capabilities
-	connected    bool
-	pending      Command // zero, or the last accepted command lacking a trusted reply
+	capabilities   Capabilities
+	connected      bool
+	pendingCommand Command // zero, or the last accepted command lacking a trusted reply
 	// Retention can be read while a command owns gate.
 	mu        sync.Mutex
 	cursor    gocan.Cursor
@@ -210,7 +210,7 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 	}
 	finish := func() {
 		client.mu.Lock()
-		client.retaining = client.pending == CommandSynch
+		client.retaining = client.pendingCommand == CommandSynch
 		client.mu.Unlock()
 		client.gate <- struct{}{}
 		cleanup()
@@ -219,8 +219,6 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 		finish()
 		return nil, nil, err
 	}
-	// Acquiring the gate can win the race with the bus watcher. Observe an
-	// already-closed bus before inspecting the previous command's state.
 	select {
 	case <-client.bus.Done():
 		cancelBus()
@@ -246,9 +244,7 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		return Response{}, err
 	}
 	defer finish()
-	// A public SYNCH must not strand a possibly disconnected bootstrap. The
-	// private CONNECT recovery can send its barrier after observing a reply.
-	if request.Command == CommandSynch && !client.connected && (client.pending == 0 || client.pending == CommandConnect || client.pending == CommandDisconnect) {
+	if request.Command == CommandSynch && !client.connected && (client.pendingCommand == 0 || client.pendingCommand == CommandConnect || client.pendingCommand == CommandDisconnect) {
 		return Response{}, ErrNotConnected
 	}
 	return client.command(ctx, request)

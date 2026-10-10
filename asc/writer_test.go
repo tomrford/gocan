@@ -142,8 +142,6 @@ func TestWriterStreamsCapture(t *testing.T) {
 	}
 }
 
-// TestWriterTimestampField checks the untrimmed nine-character seconds field,
-// which a leading-space trim would hide.
 func TestWriterTimestampField(t *testing.T) {
 	start := time.Date(2026, time.August, 1, 12, 34, 56, 0, time.UTC)
 	var output bytes.Buffer
@@ -174,7 +172,6 @@ func TestWriterTimestampField(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
-	// The records follow the header and precede the End TriggerBlock footer.
 	records := lines[len(lines)-1-len(tests) : len(lines)-1]
 	for i, test := range tests {
 		if want := test.prefix + " 1 123 Rx d 1 AA"; records[i] != want {

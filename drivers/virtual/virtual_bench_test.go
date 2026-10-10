@@ -7,12 +7,7 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-// BenchmarkSendToPeerCapture measures the full virtual acquisition path per
-// frame: Send on one bus, its TX append, the broadcast, and the peer's RX
-// append becoming observable through Next. The virtual driver is the
-// conformance fixture rather than a performance target; this keeps its
-// per-frame serialization overhead honest relative to the raw capture append
-// cost so fixture-driven protocol tests stay fast.
+// BenchmarkSendToPeerCapture measures Send through the peer's captured reception.
 func BenchmarkSendToPeerCapture(b *testing.B) {
 	const clearInterval = 1 << 18
 
@@ -48,8 +43,6 @@ func BenchmarkSendToPeerCapture(b *testing.B) {
 			b.Fatalf("Next: %v", err)
 		}
 		cursor = next
-		// Every send has produced and consumed exactly one reception here, so
-		// clearing between iterations cannot drop an in-flight frame.
 		if i%clearInterval == clearInterval-1 {
 			capture.Clear()
 			cursor = capture.End()

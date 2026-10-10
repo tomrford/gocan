@@ -7,8 +7,6 @@ import (
 	"github.com/tomrford/gocan/cdd"
 )
 
-// TestParseVectorDocument fixes the resolution required by real Vector input:
-// the identifier width and record layout both arrive through references.
 func TestParseVectorDocument(t *testing.T) {
 	document, err := cdd.ParseFile(filepath.Join("testdata", "vector-diddataref.cdd"))
 	if err != nil {
@@ -35,10 +33,6 @@ func TestParseVectorDocument(t *testing.T) {
 	}
 }
 
-// TestParseRecordLayouts covers the record constructs that determine the
-// decoded payload shape. The class also declares an unused write service, so
-// successful resolution proves that only services enabled by an instance are
-// used to select its data proxy.
 func TestParseRecordLayouts(t *testing.T) {
 	database, err := parseCatalogFile(filepath.Join("testdata", "records.cdd"))
 	if err != nil {
@@ -82,8 +76,6 @@ func TestParseRecordLayouts(t *testing.T) {
 
 }
 
-// Helpers select the primary fixture variant explicitly; selection behaviour
-// itself is exercised with multiple ECUs and variants in TestCatalogSelection.
 func parseCatalogFile(path string) (*cdd.Database, error) {
 	document, err := cdd.ParseFile(path)
 	if err != nil {

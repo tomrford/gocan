@@ -29,7 +29,6 @@ func TestReadLifecycle(t *testing.T) {
 				status := []byte{0xff, 4, 1, 0, 0x34, 0x12}
 				var order binary.ByteOrder = binary.LittleEndian
 				if fd {
-					// FD padding capacity is 64; the ECU's CTO limit is only 12.
 					connect = []byte{0xff, 5, 0x81, 12, 0, 64, 1, 1}
 					mta = []byte{0xf6, 0, 0, 7, 0x12, 0x34, 0x56, 0x78}
 					short = []byte{0xf4, 3, 0, 7, 0x12, 0x34, 0x56, 0x78}
@@ -108,7 +107,6 @@ func TestReadLifecycle(t *testing.T) {
 				if _, err := r.client.Read(r.ctx, address, 1); !errors.Is(err, xcp.ErrNotConnected) {
 					t.Fatalf("read after disconnect: %v", err)
 				}
-				// The client never removes asynchronous packets from the shared trace.
 				for _, pid := range []byte{0, 0xfc, 0xfd} {
 					found := false
 					for _, event := range r.capture.Series(r.receiveKey()) {
@@ -131,7 +129,6 @@ func TestRecoveryAndCaptureLoss(t *testing.T) {
 		r.connect()
 		done := run(func() error { _, err := r.client.Status(r.ctx); return err })
 		r.expect(0xfd)
-		// A continuous stream of DAQ/user events does not restart the timer.
 		for i := 0; i < 5; i++ {
 			r.reply(0, byte(i))
 			r.reply(0xfd, 0xfe)
@@ -170,14 +167,13 @@ func TestRecoveryAndCaptureLoss(t *testing.T) {
 		if _, err := r.client.Status(r.ctx); !errors.Is(err, xcp.ErrSynchronizationRequired) {
 			t.Fatalf("after failed SYNCH: %v", err)
 		}
-		r.reply(0xfe, 0) // The outstanding SYNCH can complete between calls.
+		r.reply(0xfe, 0)
 		if err := r.client.Synchronize(r.ctx); err != nil {
 			t.Fatal(err)
 		}
 		done = run(func() error { _, err := r.client.Status(r.ctx); return err })
 		r.expect(0xfd)
-		// Safe pruning keeps the active command boundary; Clear deliberately loses it.
-		synctest.Wait() // Exercise Clear while Capture.Next is already parked.
+		synctest.Wait()
 		if err := r.capture.Prune(r.client.RetentionCursor()); err != nil {
 			t.Fatal(err)
 		}
@@ -222,7 +218,6 @@ func TestSynchronizeRetainsOneBarrier(t *testing.T) {
 					}
 					return
 				}
-				// Repeated waits must not send additional indistinguishable markers.
 				done = run(func() error { return r.client.Synchronize(r.ctx) })
 				synctest.Wait()
 				if r.client.RetentionCursor() != cursor {
@@ -237,7 +232,7 @@ func TestSynchronizeRetainsOneBarrier(t *testing.T) {
 					}
 					return err
 				})
-				r.expect(0xfd) // An extra SYNCH would appear here before GET_STATUS.
+				r.expect(0xfd)
 				r.reply(0xff, 0x22, 0, 0, 0, 0)
 				r.finish(done)
 			})
@@ -282,7 +277,7 @@ func TestReadIgnoresDTOLimits(t *testing.T) {
 				})
 				r.expect(0xf4, 1, 0, 0, 0, 0x10, 0, 0)
 				if maxDTO == 64 {
-					r.reply(make([]byte, 64)...) // DAQ may exceed command capacity.
+					r.reply(make([]byte, 64)...)
 				}
 				r.reply(0xff, 0x42)
 				r.finish(done)
@@ -319,7 +314,6 @@ func TestPendingAndCancellation(t *testing.T) {
 			t.Fatalf("cancel lost uncertainty: %v", err)
 		}
 		r.synchronize()
-		// Cancelled before sending: no synchronisation is needed.
 		if _, err := r.client.Status(ctx); !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
@@ -358,7 +352,6 @@ func TestCompoundReadOwnershipAndPartialProgress(t *testing.T) {
 		r.expect(0xf5, 3)
 		r.reply(0xfe, 0x24)
 		r.finish(done)
-		// The raw call only reaches the bus after the whole read releases ownership.
 		r.expect(0xfd)
 		r.reply(0xff, 0, 0, 0, 0, 0)
 		r.finish(queuedRaw)
@@ -413,7 +406,7 @@ func TestRawSessionStateAndReadValidation(t *testing.T) {
 		if _, err := r.client.Read(r.ctx, xcp.Address{}, 1); !errors.Is(err, xcp.ErrUnsupported) {
 			t.Fatalf("word read: %v", err)
 		}
-		r.connect() // raw CONNECT changed the same trusted session state
+		r.connect()
 		for _, test := range []struct {
 			address uint32
 			length  int
@@ -434,8 +427,6 @@ func TestRawSessionStateAndReadValidation(t *testing.T) {
 		if _, err := r.client.CommunicationInfo(r.ctx); !errors.Is(err, xcp.ErrUnsupported) {
 			t.Fatalf("unadvertised information: %v", err)
 		}
-		// An unmodelled USER_CMD could change ECU state; the raw result is retained
-		// but typed reads must not continue using pre-command capabilities.
 		done = run(func() error {
 			response, err := r.client.Do(r.ctx, xcp.Request{Command: 0xf1, Data: []byte{0}})
 			if err == nil && !bytes.Equal(response.Data, []byte{0, 0xaa, 0}) {
@@ -496,14 +487,13 @@ func TestFDRoundingAndSessionTermination(t *testing.T) {
 		}
 		defer r.client.Close()
 		done := run(func() error { _, err := r.client.Connect(r.ctx); return err })
-		r.expect(0xff, 0) // Bootstrap is FD even though CONNECT needs only two bytes.
+		r.expect(0xff, 0)
 		r.reply(0xff, 1, 0, 64, 64, 0, 1, 1)
 		r.finish(done)
 		done = run(func() error {
 			_, err := r.client.Do(r.ctx, xcp.Request{Command: 0xf1, Data: []byte{1, 2, 3, 4, 5, 6, 7, 8}})
 			return err
 		})
-		// Nine protocol bytes must round to a 12-byte FD frame, using configured fill.
 		r.expect(0xf1, 1, 2, 3, 4, 5, 6, 7, 8, 0xaa, 0xaa, 0xaa)
 		r.reply(0xff)
 		r.finish(done)
@@ -517,7 +507,6 @@ func TestFDRoundingAndSessionTermination(t *testing.T) {
 		if _, err := r.client.Status(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
 			t.Fatalf("terminated session: %v", err)
 		}
-		// A disconnected ECU ignores SYNCH. Explicit termination must permit CONNECT.
 		r.connect()
 	})
 }
@@ -534,8 +523,6 @@ func TestConnectRetryBarrier(t *testing.T) {
 		if err := r.client.Synchronize(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
 			t.Fatalf("SYNCH after unanswered CONNECT: %v", err)
 		}
-		// The ECU might still be disconnected. Allow another CONNECT, not a
-		// prerequisite SYNCH which disconnected ECUs need not answer.
 		done = run(func() error { _, err := r.client.Connect(r.ctx); return err })
 		r.expect(0xff, 0)
 		r.reply(0xfe, 0x33)
@@ -548,24 +535,20 @@ func TestConnectRetryBarrier(t *testing.T) {
 		}
 		done = run(func() error { _, err := r.client.Connect(r.ctx); return err })
 		r.expect(0xff, 0)
-		r.reply(0xff, 1, 0, 8, 8, 0, 1, 1) // could be an earlier reply
+		r.reply(0xff, 1, 0, 8, 8, 0, 1, 1)
 		r.expect(0xfc)
 		time.Sleep(21 * time.Millisecond)
 		if err := <-done; !errors.Is(err, xcp.ErrTimeout) {
 			t.Fatal(err)
 		}
-		// An old SYNCH marker cannot fence a CONNECT sent after it. No newer
-		// CONNECT may pass until explicit synchronisation has succeeded.
 		if _, err := r.client.Connect(r.ctx); !errors.Is(err, xcp.ErrSynchronizationRequired) {
 			t.Fatalf("CONNECT passed failed barrier: %v", err)
 		}
-		r.reply(0xfe, 0) // Resume the private CONNECT barrier without another SYNCH.
+		r.reply(0xfe, 0)
 		if err := r.client.Synchronize(r.ctx); err != nil {
 			t.Fatal(err)
 		}
 		r.connect()
-		// A second timeout/retry succeeds, but only fresh post-barrier capabilities
-		// are exposed. Older CONNECT replies and unrelated errors are drained.
 		done = run(func() error { _, err := r.client.Connect(r.ctx); return err })
 		r.expect(0xff, 0)
 		time.Sleep(21 * time.Millisecond)
@@ -610,7 +593,7 @@ func TestDisconnectedRecovery(t *testing.T) {
 		if err := r.client.Disconnect(r.ctx); !errors.Is(err, xcp.ErrNotConnected) {
 			t.Fatalf("fresh DISCONNECT: %v", err)
 		}
-		r.connect() // This must be the first frame; the rejected calls send nothing.
+		r.connect()
 		done := run(func() error { return r.client.Disconnect(r.ctx) })
 		r.expect(0xfe)
 		r.reply(0xff)
@@ -634,7 +617,6 @@ func TestDisconnectedRecovery(t *testing.T) {
 		if err := <-done; !errors.Is(err, xcp.ErrInvalidResponse) {
 			t.Fatalf("invalid CONNECT candidate: %v", err)
 		}
-		// A candidate must decode as CONNECT before it justifies sending SYNCH.
 		done = run(func() error {
 			caps, err := r.client.Connect(r.ctx)
 			if err == nil && caps.Resources != 5 {
@@ -681,7 +663,6 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		if _, err := r.client.Status(ctx); !errors.Is(err, gocan.ErrTransmitQueueFull) {
 			t.Fatalf("definite rejection masked: %v", err)
 		}
-		// No command was accepted, so no SYNCH is needed after a rejected send.
 		done := run(func() error { _, err := r.client.Status(r.ctx); return err })
 		r.expect(0xfd)
 		r.reply(0xff, 0, 0, 0, 0, 0)
@@ -689,7 +670,7 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		ctx, cancel = context.WithCancel(r.ctx)
 		bus.after = cancel
 		done = run(func() error { _, err := r.client.Status(ctx); return err })
-		r.expect(0xfd) // Cancellation coincides with a definite accepted native send.
+		r.expect(0xfd)
 		if err := <-done; !errors.Is(err, context.Canceled) {
 			t.Fatalf("accepted cancellation: %v", err)
 		}
@@ -697,8 +678,6 @@ func TestDefiniteSendOutcome(t *testing.T) {
 			t.Fatalf("accepted send not tracked: %v", err)
 		}
 		r.synchronize()
-		// Opt-in retries recover queue rejection before creating an outstanding
-		// command.
 		r.client.Close()
 		r.config.TransmitRetryTimeout = 10 * time.Millisecond
 		r.client, err = xcp.New(bus, r.config)
@@ -707,8 +686,6 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		}
 		defer r.client.Close()
 		r.connect()
-		// Traffic captured while the command is rejected predates it. Keep the
-		// actual reply even when it is captured before the native send returns.
 		inject := func(session byte) {
 			frame, _ := gocan.NewFrame(r.config.ReceiveID, []byte{0xff, session, 0, 0, 0, 0}, 0)
 			if err := r.capture.RecordFrame(gocan.FrameEvent{Bus: r.tester.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
@@ -723,8 +700,6 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		if status, err := r.client.Status(r.ctx); err != nil || status.Session != 1 {
 			t.Fatalf("reply after retry: %+v, %v", status, err)
 		}
-		// Losing the accepted TX record must fail promptly, including when the
-		// pre-send capture was empty, and must retain command uncertainty.
 		r.client.Close()
 		synctest.Wait()
 		r.capture.Clear()

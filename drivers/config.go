@@ -142,8 +142,6 @@ type BitTiming struct {
 	SJW uint32
 }
 
-// prepareOpen validates the open contract and resolves rate presets to explicit
-// timing before passing the configuration to a native driver.
 func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config, error) {
 	switch {
 	case capture == nil:

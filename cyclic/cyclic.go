@@ -55,8 +55,8 @@ type Task struct {
 	period       time.Duration
 	retryTimeout time.Duration
 	maxMisses    uint
-	misses       uint          // Consecutive misses, owned by the send loop.
-	missed       atomic.Uint64 // Total misses, tolerated or terminal.
+	misses       uint
+	missed       atomic.Uint64
 	frame        gocan.Frame
 	generate     func() (gocan.Frame, error)
 
@@ -233,8 +233,6 @@ func (task *Task) send(anchor time.Time) error {
 		return err
 	}
 
-	// Run user code without the state lock so Stop can request cancellation and
-	// the callback can inspect the Task. The single send loop prevents overlap.
 	var generated gocan.Frame
 	if task.generate != nil {
 		var err error
@@ -259,14 +257,10 @@ func (task *Task) send(anchor time.Time) error {
 	ctx := task.ctx
 	if task.retryTimeout > 0 {
 		var cancel context.CancelFunc
-		// Occurrence expiry alone does not prove queue saturation. If a retry
-		// was rejected, Send also retains that rejection in its returned error.
 		ctx, cancel = context.WithDeadlineCause(ctx, nextDeadline(anchor, task.period, time.Now()), ErrOccurrenceMissed)
 		defer cancel()
 	}
 	err := gocan.Send(ctx, task.bus, frame, task.retryTimeout)
-	// A driver can observe occurrence expiry before Stop or caller cancellation.
-	// Resolve context errors against the task's cause after the send finishes.
 	if task.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return context.Cause(task.ctx)
 	}

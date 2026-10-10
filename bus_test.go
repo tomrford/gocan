@@ -47,7 +47,6 @@ func TestSendRetryLifecycle(t *testing.T) {
 		if err := gocan.Send(cancelled, bus, frame, 0); !errors.Is(err, cause) || !errors.Is(err, context.Canceled) {
 			t.Fatalf("first-attempt cancellation: %v", err)
 		}
-		// Expiry during first and retry calls preserves definite native results.
 		for _, attempt := range []int{1, 2} {
 			for _, result := range []error{nil, context.DeadlineExceeded, gocan.ErrBusOff} {
 				calls = 0

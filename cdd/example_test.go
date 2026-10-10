@@ -11,8 +11,6 @@ func ExampleDocument_Select() {
 	if err != nil {
 		panic(err)
 	}
-	// Select from document.ECUs and their Variants. Zero means automatic only
-	// when that level has exactly one choice; indexes are one-based.
 	catalog, err := document.Select(cdd.Selection{ECU: 1, Variant: 1})
 	if err != nil {
 		panic(err)
@@ -28,8 +26,6 @@ func ExampleDocument_Select() {
 	if !ok {
 		panic("missing or ambiguous DID")
 	}
-	// Choose a service alternative explicitly. This record codec accepts the
-	// data returned by uds.Client.ReadDataByIdentifier, after the identifier.
 	service := did.Read[0]
 	if service.Err != nil || service.PositiveResponse == nil || service.PositiveResponse.Err != nil {
 		panic("unsupported response")

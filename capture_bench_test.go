@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// These benchmarks verify the claim behind the single append mutex: a
-// saturated classical bus is ~9k frames/s and even an 8-bus CAN FD rig stays
-// under ~100k appends/s, so the serialised path must deliver comfortable
-// multiples of that with readers attached. Clear runs periodically so memory
-// stays bounded; its cost amortises to noise.
-
 const benchClearInterval = 1 << 20
 
 var benchTimestamp = time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
@@ -73,10 +67,7 @@ func BenchmarkAppendParallel(b *testing.B) {
 	})
 }
 
-// BenchmarkAppendUnderLoad measures the append path while consumers behave as
-// protocol layers will: one reader polls the hot series frontier with
-// SeriesSince, and one waits on a rare key through Next, woken every 1024th
-// append.
+// BenchmarkAppendUnderLoad appends with a hot-series reader and a rare-key waiter.
 func BenchmarkAppendUnderLoad(b *testing.B) {
 	capture := NewCapture()
 	hot := benchEvent(1, 0x100, 8)

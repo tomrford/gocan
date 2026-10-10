@@ -83,21 +83,17 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	assertDecoded(t, command, frame, "BigEndian", uint64(0xabcd))
 	assertDecoded(t, command, frame, "SignedCounter", int64(-2))
 
-	// Classical DLC values 9 through 15 still describe eight data bytes.
 	frame.DLC = 15
 	if err := command.Patch(&frame, Values{"Temperature": 50.0}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 	assertDecoded(t, command, frame, "Temperature", 50.0)
 
-	// An off-grid physical value is quantized to the nearest raw value.
 	if err := command.Patch(&frame, Values{"Temperature": json.Number("50.03")}); err != nil {
 		t.Fatalf("Patch off-grid Temperature: %v", err)
 	}
 	assertDecoded(t, command, frame, "Temperature", 50.0)
 
-	// A value description encodes even when its raw value lies outside the
-	// physical range, matching the not-available idiom.
 	if err := command.Patch(&frame, Values{"SignedCounter": "SNA"}); err != nil {
 		t.Fatalf("Patch SNA: %v", err)
 	}
@@ -252,7 +248,6 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 		t.Fatalf("encoded J1939 frame = %#v", j1939Frame)
 	}
 	assertDecoded(t, j1939, j1939Frame, "Coolant", 60.0)
-	// The selected PGN definition applies across priority/source changes.
 	j1939Frame.ID = 0x0cfeee21
 	assertDecoded(t, j1939, j1939Frame, "Coolant", 60.0)
 	if err := j1939.Patch(&j1939Frame, Values{"Coolant": 70.0}); err != nil {
@@ -370,8 +365,6 @@ func TestLongJ1939PayloadDecode(t *testing.T) {
 }
 
 func TestEncodePayloadTransported(t *testing.T) {
-	// The payload codec has no J1939 TP size limit. The caller selects a
-	// transport capable of carrying this message's declared length.
 	const source = `BU_: ECU
 BO_ 2566834942 Long: 1800 ECU
  SG_ Selector M : 568|8@1+ (1,0) [0|255] "" ECU

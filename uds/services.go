@@ -408,9 +408,6 @@ func validateSecurityLevel(level SecurityLevel) error {
 	return nil
 }
 
-// communicationControlRequest accepts control type zero, which is a valid
-// enableRxAndTx subfunction, unlike the services covered by
-// validateSubfunction.
 func communicationControlRequest(controlType CommunicationControlType, communicationType CommunicationType, nodeID *uint16) ([]byte, error) {
 	if byte(controlType)&suppressPositiveResponse != 0 {
 		return nil, fmt.Errorf("UDS communication control type %#02x sets suppressPositiveResponse", controlType)

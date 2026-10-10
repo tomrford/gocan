@@ -166,9 +166,6 @@ func (recorder *Recorder) run() {
 	}
 }
 
-// pass publishes accepted progress, then flushes before publishing the safe
-// prune cursor. An idle window or a failure that accepted nothing does not
-// flush.
 func (recorder *Recorder) pass() error {
 	previous := recorder.accepted
 	next, writeErr := recorder.capture.WriteRecordsSince(previous, recorder.writer)
@@ -190,8 +187,6 @@ func (recorder *Recorder) pass() error {
 	return writeErr
 }
 
-// finish closes the format writer exactly once. A successful Close flushes
-// every accepted record, including output left pending by a failed Flush.
 func (recorder *Recorder) finish(runErr error) error {
 	recorder.cancel(runErr)
 	closeErr := recorder.writer.Close()

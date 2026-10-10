@@ -101,8 +101,6 @@ func (client *Client) ReadDTCByStatusMask(ctx context.Context, mask DTCStatus) (
 		return result, invalidServiceResponse(ServiceReadDTCInformation, "list response has %d data bytes, want 2 + 4*n", len(data))
 	}
 	availability := DTCStatus(data[1])
-	// Validate length before excluding the suffix, so incomplete records remain
-	// invalid. Interior zero records still fail the status selection check.
 	end := len(data)
 	for end > 2 && binary.BigEndian.Uint32(data[end-4:end]) == 0 {
 		end -= 4

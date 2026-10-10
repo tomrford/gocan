@@ -31,8 +31,6 @@ func TestVectorSessionTransitions(t *testing.T) {
 			t.Fatalf("instance %d = %#v", index, instance)
 		}
 		service := instance.Services[0]
-		// Protocol definitions were removed from the source fixture. Resolving
-		// state metadata must not depend on being able to encode the service.
 		if service.Err == nil || service.Transitions.Err != nil || service.Requirements.Err != nil {
 			t.Fatalf("service errors = %v, %v, %v", service.Err, service.Transitions.Err, service.Requirements.Err)
 		}
@@ -63,7 +61,6 @@ func TestTransitionsPreserveIndependentGroupEffects(t *testing.T) {
 	}
 	source := strings.Replace(string(data), `</STATEGROUPS>`, `<STATEGROUP id="communication" spec="none"><QUAL>Communication</QUAL><STATE id="enabled"><QUAL>Same</QUAL></STATE><STATE id="disabled"><QUAL>Same</QUAL></STATE></STATEGROUP></STATEGROUPS>`, 1)
 	source = strings.Replace(source, `<SERVICE tmplref="modernRead" req="0" mayBeExec="(4)"/>`, `<SERVICE tmplref="modernRead" mayBeExec="(1,3,4,5)" trans="(3,1,5,4,4,4,6,7,3,1)"/>`, 1)
-	// Unresolved template preconditions must not conceal literal transitions.
 	source = strings.Replace(source, `<DCLSRVTMPL id="modernRead"`, `<DCLSRVTMPL mayBeExec="(2,3)" id="modernRead"`, 1)
 	database, err := parseCatalog("transitions.cdd", []byte(source))
 	if err != nil {

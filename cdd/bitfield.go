@@ -42,8 +42,6 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 	} else if container.BitLength > 64 || (container.Encoding != EncodingUnsigned && container.Encoding != EncodingSigned) {
 		return sourceError(resolver.name, "STRUCT atomic containers require integers up to 64 bits")
 	}
-	// Only the enclosing coded representation controls packing; choice labels
-	// belong to each child's datatype, not the container's text table.
 	bitfield := &Bitfield{Datatype: container.Datatype, BitOffset: uint32(*offset), BitLength: container.BitSize(), ByteOrder: order}
 	var position uint64
 	start := len(*fields)

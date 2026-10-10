@@ -1,8 +1,5 @@
 package gocan
 
-// This file is intentionally large: capture storage, reads, and locking belong
-// together for now. Size alone is not a reason to split it.
-
 import (
 	"context"
 	"errors"
@@ -13,9 +10,6 @@ import (
 )
 
 const (
-	// These capacities fill together for 64-byte CAN FD frames. Classical CAN
-	// reaches the record limit first. Replacement chunks preserve the fill
-	// ratio of the chunk that caused rotation; see replacementCapacities.
 	initialCaptureChunkPayloadCapacity = 8 << 20
 	initialCaptureChunkRecordCapacity  = initialCaptureChunkPayloadCapacity / MaxDataLength
 	minimumCaptureChunkPayloadCapacity = initialCaptureChunkPayloadCapacity / 16
@@ -34,9 +28,7 @@ const (
 // capture as it was at call time; later appends are not included. A read that
 // starts before Clear continues against the records it observed.
 //
-// Capture owns no retention policy: it retains every record until Clear or
-// Prune discards it, so a layer that captures indefinitely must prune, and
-// decides for itself what history is worth keeping.
+// Records remain until Clear or Prune; callers own the retention policy.
 type Capture struct {
 	mu     sync.RWMutex
 	origin time.Time
@@ -50,14 +42,10 @@ type Capture struct {
 	latest         map[FrameKey]FrameEvent
 	waiters        map[FrameKey]*captureWaiter
 	length         int
-	// pruneSeam is the last discarded record after Prune. That cursor still
-	// places: it names the boundary after the discarded history, so a
-	// follow-and-prune loop can continue into the records that remain.
+	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
 	pruneSeam Cursor
 }
 
-// captureEpochs issues process-unique generation numbers, so a cursor can
-// never match a capture other than the one, in the generation, that minted it.
 var captureEpochs atomic.Uint64
 
 // NewCapture creates an empty capture.
@@ -112,11 +100,6 @@ type frameRecordData struct {
 	flags         FrameFlags
 }
 
-// eventRecordData is the typed event view of a capture record. Previous links
-// to the prior event from the same bus in the same chunk, or noCaptureRecord.
-// Word 0 and the upper seven bits of detail 2 remain free so a future native
-// diagnostic payload can use the chunk payload buffer through an offset and
-// length.
 type eventRecordData struct {
 	bus              BusID
 	previous         uint32
@@ -186,8 +169,6 @@ func (record captureRecord) eventData() eventRecordData {
 }
 
 type captureChunk struct {
-	// sequence numbers chunks in creation order within a generation, so a
-	// cursor keeps naming the same records after pruning drops leading chunks.
 	sequence    uint32
 	keys        []FrameKey
 	keyStates   map[FrameKey]captureKeyState
@@ -207,9 +188,6 @@ type captureEventState struct {
 	count      uint32
 }
 
-// captureWaiter parks the Next calls following one key. The first matching
-// append after registration carries its record and cursor directly to every
-// parked call, so none needs to walk the capture again.
 type captureWaiter struct {
 	ready  chan struct{}
 	count  int
@@ -270,15 +248,6 @@ type Cursor struct {
 	record     uint32
 }
 
-// locateCursor places cursor in a snapshot of chunks taken in generation. It
-// reports the chunk a read starts in and the record boundary within it: that
-// record and every earlier one lie before the cursor.
-//
-// Generations are process-unique, so only a cursor from this capture and
-// generation places at all; within it, chunk sequences convert to snapshot
-// indexes by subtracting the oldest retained sequence. A cursor whose chunk
-// Prune discarded fails, except pruneSeam, which is the boundary after the
-// last discarded record and starts at the first retained chunk.
 func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk, pruneSeam Cursor) (chunk, boundary int, err error) {
 	if cursor == (Cursor{}) {
 		return 0, -1, nil
@@ -296,7 +265,6 @@ func locateCursor(cursor Cursor, generation uint64, chunks []*captureChunk, prun
 	return index, int(cursor.record), nil
 }
 
-// newestCursor returns the last record in views, or cursor when they are empty.
 func newestCursor(cursor Cursor, generation uint64, views []captureView) Cursor {
 	for i := len(views) - 1; i >= 0; i-- {
 		if count := len(views[i].records); count > 0 {
@@ -356,8 +324,6 @@ func (chunk *captureChunk) view() captureView {
 	}
 }
 
-// frameAt reconstructs the record at index as an owned FrameEvent. The
-// timestamp is rebuilt in UTC from stored wall-clock nanoseconds; see Append.
 func (view captureView) frameAt(index uint32) FrameEvent {
 	record := view.records[index]
 	data := record.frameData()
@@ -403,8 +369,6 @@ func (capture *Capture) rotate(payloadLength int) {
 		len(capture.active.payload),
 	)
 	if capture.next == nil {
-		// This fallback is only expected if acquisition fills a chunk before the
-		// background allocation of its successor completes.
 		capture.next = newCaptureChunk(recordCapacity, payloadCapacity)
 	}
 	capture.next.sequence = capture.active.sequence + 1
@@ -414,14 +378,9 @@ func (capture *Capture) rotate(payloadLength int) {
 	capture.prepareNextLocked(recordCapacity, payloadCapacity)
 }
 
-// replacementCapacities sizes the next chunk from the fill shape of the chunk
-// that caused rotation. The sealed chunk's record:payload ratio is preserved
-// and scaled so that its proportionally fuller dimension returns to the
-// initial capacity; the other dimension shrinks in proportion, floored at the
-// minimum. Scaling back up to the initial capacities on every rotation keeps
-// chunk sizes matched to observed traffic without ratcheting them down
-// permanently after a transient traffic shape.
-// The caller supplies a full chunk, which always contains at least one record.
+// replacementCapacities preserves the full chunk's record:payload ratio,
+// scaling its fuller dimension to the initial capacity and flooring the other
+// at the minimum. Each rotation adapts afresh to the observed traffic.
 func replacementCapacities(records, payloadBytes int) (recordCapacity, payloadCapacity int) {
 	recordCapacity = initialCaptureChunkRecordCapacity
 	payloadCapacity = initialCaptureChunkPayloadCapacity
@@ -434,8 +393,6 @@ func replacementCapacities(records, payloadBytes int) (recordCapacity, payloadCa
 		max(payloadCapacity, minimumCaptureChunkPayloadCapacity)
 }
 
-// prepareNextLocked allocates the next chunk away from the append path. The
-// caller must hold capture.mu.
 func (capture *Capture) prepareNextLocked(recordCapacity, payloadCapacity int) {
 	if capture.next != nil || capture.allocatingNext {
 		return
@@ -517,9 +474,6 @@ func (capture *Capture) appendFrame(event FrameEvent, live bool) error {
 	keyState.count++
 	chunk.keyStates[key] = keyState
 
-	// Decoding the record just written keeps the stored frame, not the caller's
-	// event, in latest: an owned copy that holds nothing of the chunk, so
-	// pruning can free it.
 	stored := chunk.view().frameAt(recordIndex)
 	capture.latest[key] = stored
 	capture.length++
@@ -585,10 +539,6 @@ func (capture *Capture) appendEvent(event Event, live bool) error {
 	return nil
 }
 
-// wakeWaitersLocked hands the record that woke the waiters to every Next
-// parked on key. The waiter leaves the map first, so only the first matching
-// append after registration can set it, which is the earliest record those
-// callers have not seen.
 func (capture *Capture) wakeWaitersLocked(key FrameKey, event FrameEvent, cursor Cursor) {
 	waiter := capture.waiters[key]
 	if waiter == nil {
@@ -630,24 +580,13 @@ func (capture *Capture) endLocked() Cursor {
 	return Cursor{}
 }
 
-// Prune discards records at or before the earliest cursor. It is how a capture
-// that runs indefinitely releases memory; the caller owns the policy of what
-// to keep, and a zero Cursor prevents pruning. Calling Prune with no cursors is
-// a no-op.
+// Prune discards whole sealed chunks ending at or before the earliest cursor.
+// A zero Cursor or no cursors prevents pruning. The active chunk is retained.
 //
-// Pruning is chunk-granular, so it is approximate in the caller's favour: it
-// discards only whole sealed chunks that end at or before the earliest cursor
-// and never the chunk being appended to, so records after the last discarded
-// chunk stay retained however far they precede that cursor. Nothing is ever
-// discarded from inside a chunk.
-//
-// Every cursor must place. If any is unplaceable, Prune reports
-// ErrCursorOutOfRange and discards nothing. Pruning past a cursor another
-// reader holds is allowed: a new read from that cursor fails with
-// ErrCursorOutOfRange and resynchronises. Reads already in progress finish
-// against the chunks they observed. A Next that has registered its waiter has
-// finished using the input cursor and remains subscribed to the first matching
-// append.
+// Every cursor must place; otherwise Prune returns ErrCursorOutOfRange and
+// discards nothing. Other readers' cursors may become invalid, as described by
+// Cursor. Reads in progress finish against their snapshots; a registered Next
+// waiter remains subscribed to the first matching append.
 func (capture *Capture) Prune(cursors ...Cursor) error {
 	if len(cursors) == 0 {
 		return nil
@@ -672,8 +611,6 @@ func (capture *Capture) Prune(cursors ...Cursor) error {
 			chunk, boundary = placedChunk, placedBoundary
 		}
 	}
-	// The cursor's own chunk goes too when the cursor names its last record and
-	// a later chunk has sealed it.
 	discard := chunk
 	if discard < len(capture.chunks)-1 && boundary == len(capture.chunks[discard].records)-1 {
 		discard++
@@ -713,15 +650,10 @@ func (capture *Capture) Prune(cursors ...Cursor) error {
 // through deep history, read in bulk with SeriesSince and continue from the
 // returned cursor.
 //
-// The cursor is validated while the waiter and search snapshot are registered
-// under the capture lock. Clear or Prune after registration cannot invalidate
-// that in-progress call: its snapshot remains readable, and if the snapshot
-// has no match the waiter returns the first later matching append directly.
-// The cursor at Prune's discarded boundary still places for new calls.
+// Clear or Prune after registration cannot invalidate the call: it reads its
+// snapshot or receives the first later matching append. See Cursor for validity
+// rules when starting a new call.
 func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (FrameEvent, Cursor, error) {
-	// Registering the waiter and freezing the search in one critical section
-	// closes the only lost-wake window: an append lands either in the snapshot
-	// or after the waiter can hear it.
 	waiter, search := capture.addWaiter(key, cursor)
 	if search.err != nil {
 		return FrameEvent{}, cursor, search.err
@@ -740,12 +672,7 @@ func (capture *Capture) Next(ctx context.Context, key FrameKey, cursor Cursor) (
 	}
 }
 
-// nextSearch freezes the state one Next walk scans after the lock is
-// released. Every chunk but the last is sealed, so their views and key states
-// may be read lazily without the lock; the active chunk's view and state were
-// frozen while it was held. start and boundary place the cursor in the
-// snapshot; err reports a cursor the snapshot cannot place, and leaves the
-// walk unusable.
+// Sealed chunks are immutable; activeView and activeState are frozen under mu.
 type nextSearch struct {
 	key         FrameKey
 	generation  uint64
@@ -757,8 +684,6 @@ type nextSearch struct {
 	err         error
 }
 
-// nextSearchLocked captures what one Next walk from cursor needs. The caller
-// must hold at least the read lock.
 func (capture *Capture) nextSearchLocked(key FrameKey, cursor Cursor) nextSearch {
 	search := nextSearch{
 		key:         key,
@@ -779,8 +704,6 @@ func (search nextSearch) chunkAt(index int) (captureView, captureKeyState) {
 	return chunk.view(), chunk.keyStates[search.key]
 }
 
-// find returns the first frame matching the search key after its cursor, up
-// to the snapshot's end.
 func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 	start, boundary := search.start, search.boundary
 	for chunkIndex := start; chunkIndex < len(search.chunks); chunkIndex++ {
@@ -793,11 +716,6 @@ func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 		if chunkIndex == start {
 			stop = boundary
 		}
-		// The backward walk from the chunk's series tail visits only records
-		// of this key, so the cost of following a frontier scales with the
-		// key's own traffic since the cursor, not with everything else
-		// appended in between. The earliest record visited before crossing
-		// stop is the first match.
 		first := noCaptureRecord
 		for r := state.lastRecord; r != noCaptureRecord && int(r) > stop; r = view.records[r].frameData().previous {
 			first = r
@@ -816,9 +734,7 @@ func (search nextSearch) find() (FrameEvent, Cursor, bool) {
 	return FrameEvent{}, Cursor{}, false
 }
 
-// addWaiter registers one waiter for key and captures the search state from
-// cursor in the same critical section, so an append can land only inside the
-// returned snapshot or after the waiter is able to hear it, never between.
+// Register the waiter and search snapshot atomically to prevent lost wakeups.
 func (capture *Capture) addWaiter(key FrameKey, cursor Cursor) (*captureWaiter, nextSearch) {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
@@ -854,7 +770,6 @@ func (capture *Capture) removeWaiter(key FrameKey, waiter *captureWaiter) {
 
 // Frames returns owned copies of every captured frame in append order.
 func (capture *Capture) Frames() []FrameEvent {
-	// The zero Cursor is always placeable, so this read cannot fail.
 	frames, _, _ := capture.FramesSince(Cursor{})
 	return frames
 }
@@ -948,7 +863,6 @@ func framesFromViews(views []captureView, skip int) []FrameEvent {
 
 // Events returns every captured non-frame event in append order.
 func (capture *Capture) Events() []Event {
-	// The zero Cursor is always placeable, so this read cannot fail.
 	events, _, _ := capture.EventsSince(Cursor{})
 	return events
 }
@@ -994,9 +908,6 @@ func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor, e
 	pruneSeam := capture.pruneSeam
 	capture.mu.RUnlock()
 
-	// The placed cursor names its own chunk, so the read jumps straight to it
-	// and its cost scales with what arrived since the cursor, not with total
-	// capture history.
 	start, boundary, err := locateCursor(cursor, generation, chunks, pruneSeam)
 	if err != nil {
 		return nil, 0, cursor, err
@@ -1033,7 +944,6 @@ func recordKindCount(views []captureView, skip int, kind captureRecordKind) int 
 // Series returns owned copies of every captured frame matching key in append
 // order.
 func (capture *Capture) Series(key FrameKey) []FrameEvent {
-	// The zero Cursor is always placeable, so this read cannot fail.
 	frames, _, _ := capture.SeriesSince(key, Cursor{})
 	return frames
 }
@@ -1052,9 +962,6 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 	pruneSeam := capture.pruneSeam
 	capture.mu.RUnlock()
 
-	// The placed cursor names its own chunk, so the read jumps straight to it
-	// and its cost scales with what arrived since the cursor, not with total
-	// capture history.
 	start, boundary, err := locateCursor(cursor, generation, chunks, pruneSeam)
 	if err != nil {
 		return nil, cursor, err
@@ -1071,16 +978,8 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 		}
 	}
 
-	// The returned cursor is the newest record observed anywhere, not the
-	// (possibly much older) series tail, so cursors remain global positions
-	// and never move backwards: an input cursor always lies at or before the
-	// capture's current tail.
 	next := newestCursor(cursor, generation, views)
 
-	// Record indexes within a chunk follow append order and prevByKey links
-	// strictly decrease, so the cursor's position is a walk stop condition:
-	// within its chunk every record index at or below cursor.record is
-	// excluded, and earlier chunks are excluded entirely.
 	total := 0
 	for i := range views {
 		if states[i].count == 0 {
@@ -1098,9 +997,6 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 		return nil, next, nil
 	}
 
-	// The counts size the result exactly, and the backward walks from each
-	// chunk's captured tail fill it newest-first, which restores append order
-	// without a reversal pass.
 	frames := make([]FrameEvent, total)
 	remaining := total
 	for i := len(views) - 1; i >= 0; i-- {
@@ -1121,7 +1017,6 @@ func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, 
 
 // BusEvents returns every captured event from bus in append order.
 func (capture *Capture) BusEvents(bus BusID) []Event {
-	// The zero Cursor is always placeable, so this read cannot fail.
 	events, _, _ := capture.BusEventsSince(bus, Cursor{})
 	return events
 }

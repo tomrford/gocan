@@ -94,9 +94,6 @@ func (capture *Capture) BusEventsBetween(bus BusID, start, end Cursor) ([]Event,
 	return events, nil
 }
 
-// viewsBetween freezes the records in (start, end]. The returned views are
-// clipped at end, so readers can use the same loops as an unbounded Since
-// read.
 func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, skip int, err error) {
 	capture.mu.RLock()
 	chunks := capture.chunks
@@ -105,8 +102,6 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	pruneSeam := capture.pruneSeam
 	capture.mu.RUnlock()
 
-	// The end boundary is the last record the interval includes, so a zero end
-	// bounds an empty interval at the start of the capture.
 	last, endRecord, err := locateCursor(end, generation, chunks, pruneSeam)
 	if err != nil {
 		return nil, 0, fmt.Errorf("capture range end: %w", err)
@@ -131,8 +126,6 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 			views[i] = chunks[chunkIndex].view()
 		}
 	}
-	// The end record is cut from the frozen tail view, so it has to lie inside
-	// it. Only a library bug can name a record the chunk does not hold.
 	tail := views[len(views)-1].records
 	if endRecord+1 > len(tail) {
 		return nil, 0, fmt.Errorf("capture range end: %w", &CursorOutOfRangeError{Cursor: end})

@@ -35,7 +35,7 @@ func TestPackedReferenceValues(t *testing.T) {
 		bits     int
 		children string
 		values   cdd.Values
-		wire     []byte // big-endian enclosing value, reserved bits zero
+		wire     []byte
 	}{
 		{"Vector diagram", 16, packedChild("seven", "A") + packedChild("two", "B"), cdd.Values{"A": uint64(0x7f), "B": uint64(0)}, []byte{0, 0x7f}},
 		{"crossing boundary", 16, packedChild("seven", "A") + packedChild("nine", "B"), cdd.Values{"A": uint64(0x35), "B": uint64(0x123)}, []byte{0x91, 0xb5}},
@@ -129,7 +129,6 @@ func TestPackedArrayByteReversal(t *testing.T) {
 		{"explicit normal", `<DEFATTS><DATATYPEATTS><ENUMDEF id="different-id" v="1"><QUAL>ReverseBitfieldBytes</QUAL></ENUMDEF></DATATYPEATTS></DEFATTS>`, `<ENUM attrref="different-id" v="0"/>`, []byte{0, 0, 0x91, 0xb5}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			// bo=12 on one-byte elements must not reverse the array by itself.
 			datatype := `<IDENT id="container"><CVALUETYPE bl="8" bo="12" enc="uns" qty="field" minsz="4" maxsz="4"/>` + test.attribute + `</IDENT>`
 			record := packedRecord(t, datatype, packedChild("seven", "A")+packedChild("nine", "B"), test.declarations)
 			assertCodecReference(t, record, cdd.Values{"A": uint64(0x35), "B": uint64(0x123)}, test.wire)
@@ -173,9 +172,6 @@ func TestPackedEncodingWidth(t *testing.T) {
 }
 
 func TestPackedWideArrayInteger(t *testing.T) {
-	// A 64-bit value at bit 3 spans nine wire bytes in a 16-byte container.
-	// This also checks that trailing container space, not the last child,
-	// determines payload length.
 	datatype := `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="16" maxsz="16"/></IDENT>`
 	record := packedRecord(t, datatype, `<GAPDATAOBJ bl="3"/>`+packedChild("exact", "A"), "")
 	assertCodecReference(t, record, cdd.Values{"A": uint64(math.MaxUint64)}, []byte{0, 0, 0, 0, 0, 0, 0, 7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf8})

@@ -34,7 +34,6 @@ type Writer struct {
 	start   time.Time
 	last    time.Time
 
-	// scratch holds the complete record under construction.
 	scratch []byte
 }
 
@@ -227,8 +226,6 @@ func appendHexUpper(dst []byte, value uint32) []byte {
 	return dst
 }
 
-// appendPadded appends value right-aligned in width characters, filling the
-// gap with fill.
 func appendPadded(dst []byte, value int64, width int, fill byte) []byte {
 	start := len(dst)
 	dst = strconv.AppendInt(dst, value, 10)

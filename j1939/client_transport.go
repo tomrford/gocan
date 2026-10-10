@@ -131,8 +131,6 @@ func (c *Client) failReceive(reason byte) error {
 }
 
 func (c *Client) invalidatePeer(peer Address) {
-	// A changed known NAME or NAME move breaks transport identity. Do not send
-	// an abort to an address that may now belong to a different controller.
 	if c.tx != nil && c.tx.request.destination == peer {
 		c.finishSend(fmt.Errorf("%w: transport peer address changed", ErrProtocol))
 	}
@@ -143,7 +141,6 @@ func (c *Client) invalidatePeer(peer Address) {
 
 func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) error {
 	now := event.Timestamp
-	// Arrival time decides whether a queued frame was timely.
 	if err := c.expireTransport(now); err != nil {
 		return err
 	}
@@ -304,15 +301,11 @@ func (c *Client) tickTransport(now time.Time) error {
 	copy(data[1:], r.payload[(t.next-1)*7:])
 	if err := c.sendFrame(r, transportDataPGN, 7, data[:]); err != nil {
 		if r.destination != GlobalAddress && errors.Is(err, gocan.ErrTransmitQueueFull) {
-			// Retry rejected data without advancing sequence or extending the
-			// peer's first/consecutive-packet deadline.
 			t.due = time.Now().Add(5 * time.Millisecond)
 			return nil
 		}
 		return c.failSend(err, 2)
 	}
-	// A native send can finish after its context expires. Check acceptance
-	// timing too, including the final packet, before reporting BAM success.
 	if r.destination == GlobalAddress && time.Since(t.due) > 150*time.Millisecond {
 		return c.failSend(ErrTimeout, 3)
 	}

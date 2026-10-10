@@ -25,8 +25,6 @@ func TestExportMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Groups are created lazily. Caller mutations after construction must not
-	// change the exported names, even for buses first seen later.
 	busNames[1], busNames[2], properties["boost.workspace.id"] = "changed", "changed", "changed"
 	if err := w.WriteEvent(gocan.Event{Bus: 2, Timestamp: start.Add(-time.Second), Kind: gocan.EventReceiveOverrun}); err != nil {
 		t.Fatal(err)

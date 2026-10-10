@@ -20,10 +20,7 @@ func receiveKey(receiver gocan.Bus, frame gocan.Frame) gocan.FrameKey {
 	}
 }
 
-// RoundTripBenchmark measures one frame's full path per iteration: Send on
-// sender, wire transmission, receiver's native reception, and the RX append
-// becoming observable through Next. Adapter delivery latency dominates wire
-// time on USB hardware; the software layers must stay negligible beside both.
+// RoundTripBenchmark measures Send through the peer's captured reception.
 func RoundTripBenchmark(b *testing.B, capture *gocan.Capture, sender, receiver gocan.Bus, frame gocan.Frame) {
 	b.Helper()
 	ctx := context.Background()
@@ -85,7 +82,6 @@ func SaturatedCaptureBenchmark(b *testing.B, capture *gocan.Capture, sender, rec
 
 	b.ReportAllocs()
 	for b.Loop() {
-		// One reception frees exactly one wire slot for the next send.
 		waitNext(ctx)
 		for {
 			err := sender.Send(ctx, frame)

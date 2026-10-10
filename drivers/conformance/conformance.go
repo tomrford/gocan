@@ -24,8 +24,6 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-// waitTimeout bounds every wait for captured traffic. It is generous so that
-// hardware latency never fails a healthy driver.
 const waitTimeout = 5 * time.Second
 
 // Pair opens two connected endpoints on one shared medium, both contributing
@@ -95,7 +93,6 @@ func frameKey(bus gocan.Bus, frame gocan.Frame, direction gocan.Direction) gocan
 	}
 }
 
-// nextEvent waits for the first frame matching key after cursor.
 func nextEvent(t *testing.T, capture *gocan.Capture, key gocan.FrameKey, cursor gocan.Cursor) (gocan.FrameEvent, gocan.Cursor) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
@@ -156,7 +153,6 @@ func testLifecycle(t *testing.T, open Pair) {
 		}
 
 		if b != nil {
-			// Closing one bus must not affect its peers or the capture.
 			if err := b.Send(context.Background(), frame); err != nil {
 				t.Fatalf("cycle %d: peer Send after close: %v", cycle, err)
 			}
@@ -168,17 +164,8 @@ func testLifecycle(t *testing.T, open Pair) {
 	}
 }
 
-// testFirstFrameAfterOpen verifies that a pair can carry traffic the moment
-// Open returns. A driver whose channel is not ready when Open hands it back
-// loses that frame outright rather than delaying it, so this case fails on any
-// single loss.
-//
-// The loss it guards against is intermittent, which is why the case samples
-// repeatedly instead of sending once: the PCAN driver lost roughly a quarter of
-// first frames until Open began waiting for its channel, and a single sample
-// would have passed three times in four. See channelSettleDelay in
-// PCAN. This is also the case to run when qualifying new hardware,
-// because a settle budget that is too short for a slower host fails silently.
+// Repeat opens to catch intermittent first-frame loss: PCAN lost roughly one
+// quarter of first frames before Open waited through channelSettleDelay.
 func testFirstFrameAfterOpen(t *testing.T, open Pair) {
 	const samples = 20
 
@@ -240,10 +227,6 @@ func testRejectsInvalid(t *testing.T, open Pair) {
 	nextEvent(t, capture, frameKey(a, frame, gocan.DirectionTransmit), gocan.Cursor{})
 }
 
-// testCancellation verifies that a cancelled Send reports a definite outcome:
-// either the context error with nothing captured, or nil with the
-// transmission captured. It must never lose a frame it reported sent, nor
-// report failure for a frame it handed to the medium.
 func testCancellation(t *testing.T, open Pair) {
 	capture, a, _ := openPair(t, open)
 
@@ -304,7 +287,6 @@ func testFrameShapes(t *testing.T, open Pair, caps Capabilities) {
 			capture, a, b := openPair(t, open)
 			requirePeer(t, b)
 
-			// Both directions: each endpoint transmits, the other receives.
 			for _, side := range []struct{ from, to gocan.Bus }{{a, b}, {b, a}} {
 				cursor := capture.End()
 				if err := side.from.Send(context.Background(), shape.frame); err != nil {
@@ -324,7 +306,6 @@ func testFrameShapes(t *testing.T, open Pair, caps Capabilities) {
 				}
 			}
 
-			// No echo: each endpoint has one TX and one RX series occurrence.
 			for _, expect := range []struct {
 				bus       gocan.Bus
 				direction gocan.Direction
@@ -371,7 +352,6 @@ func testConcurrentTraffic(t *testing.T, open Pair) {
 	}
 	sending.Wait()
 
-	// Every frame arrives at the peer exactly once, in per-series order.
 	for g := range senders {
 		key := gocan.FrameKey{Bus: b.ID(), ID: uint32(0x300 + g), Direction: gocan.DirectionReceive}
 		var cursor gocan.Cursor
@@ -419,7 +399,6 @@ func testOverrun(t *testing.T, open Pair, caps Capabilities) {
 		t.Fatalf("Send on overrun bus = %v, want the stop reason", err)
 	}
 
-	// The failure is contained: the peer and the capture keep working.
 	if err := a.Send(context.Background(), frame); err != nil {
 		t.Fatalf("peer Send after overrun: %v", err)
 	}

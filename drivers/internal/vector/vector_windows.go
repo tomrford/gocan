@@ -56,8 +56,6 @@ type xlDriverProcess struct {
 	closeFailed error
 }
 
-// ChannelInfo describes one CAN-capable channel reported by the XL Driver
-// Library.
 type ChannelInfo struct {
 	ChannelIndex    ChannelIndex
 	Name            string
@@ -435,8 +433,6 @@ func loadXLAPI(fd bool) (*xlAPI, error) {
 }
 
 func (api *xlAPI) statusError(operation string, status xlStatus) error {
-	// Keep the native status in the error text until a fourth driver establishes
-	// whether a shared typed native-error model is useful.
 	return fmt.Errorf("%s: Vector status %d", operation, status)
 }
 
@@ -460,7 +456,6 @@ func portArgument(port xlPortHandle) uintptr {
 	return uintptr(uint32(port))
 }
 
-// Bus is one open Vector CAN channel.
 type Bus struct {
 	id      gocan.BusID
 	name    string
@@ -487,16 +482,12 @@ type Bus struct {
 
 var _ gocan.Bus = (*Bus)(nil)
 
-// ID returns the one-based trace channel assigned to this bus.
 func (bus *Bus) ID() gocan.BusID { return bus.id }
 
-// Name returns the human-readable name of this bus.
 func (bus *Bus) Name() string { return bus.name }
 
-// Capture returns the capture that records this bus's traffic.
 func (bus *Bus) Capture() *gocan.Capture { return bus.capture }
 
-// Send hands frame to the XL Driver Library and records an accepted transmission.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {
 		return err
@@ -588,15 +579,12 @@ func (bus *Bus) transmitFrame(frame gocan.Frame) error {
 	return nil
 }
 
-// Done is closed when this bus stops.
 func (bus *Bus) Done() <-chan struct{} { return bus.lifecycle.Done() }
 
-// Err returns the background failure that stopped this bus, if any.
 func (bus *Bus) Err() error {
 	return bus.lifecycle.Err()
 }
 
-// Close stops acquisition and releases the Vector channel and port.
 func (bus *Bus) Close() error {
 	bus.stopWithError(nil)
 	<-bus.lifecycle.Done()

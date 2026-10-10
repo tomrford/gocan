@@ -24,9 +24,6 @@ func TestPCANOpenRejectsUnknownClassicalBitrate(t *testing.T) {
 	}
 }
 
-// TestPCANClassicalBitrateMatrix opens every configured adapter at each
-// predefined classical bitrate and has each one send a frame that every
-// other adapter must receive intact.
 func TestPCANClassicalBitrateMatrix(t *testing.T) {
 	channels := []Channel{
 		testChannel(t, "GOCAN_PCAN_CHANNEL_A"),

@@ -77,7 +77,6 @@ func metadata(node *element) Metadata {
 func localizedText(node *element) LocalizedText {
 	var result LocalizedText
 	for _, translation := range node.childrenNamed("TUV") {
-		// Collapse XML indentation within a paragraph without joining paragraphs.
 		var paragraphs []string
 		for _, paragraph := range strings.Split(translation.text.String(), "\n\n") {
 			if text := strings.Join(strings.Fields(paragraph), " "); text != "" {

@@ -82,8 +82,6 @@ func TestMonitorStopsAllSubscribersOnRemoval(t *testing.T) {
 		t.Fatalf("Bind across a removal = %v, want ErrHardwareDisconnected", err)
 	}
 
-	// Idle shutdown after both cancels proves the failed Bind returned its
-	// hold; a leaked hold would keep the watcher registered forever.
 	if err := firstSubscription.Cancel(); err != nil {
 		t.Fatalf("Cancel first: %v", err)
 	}
@@ -157,8 +155,6 @@ func TestMonitorReleasesWatcherWhenIdle(t *testing.T) {
 	if len(watchers) != 2 {
 		t.Fatalf("watchers started = %d, want a fresh watcher after idle release", len(watchers))
 	}
-	// The pcan driver defers Release on every open path; after Bind it must be
-	// a no-op that leaves the live subscription's watcher registered.
 	if err := hold.Release(); err != nil {
 		t.Fatalf("Release after Bind: %v", err)
 	}

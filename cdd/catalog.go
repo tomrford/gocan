@@ -30,8 +30,6 @@ func newResolver(name string, ecuDoc *element) *resolver {
 func (resolver *resolver) index(node *element) {
 	if id := node.attr("id"); id != "" {
 		if _, exists := resolver.byID[id]; exists {
-			// A duplicate ID cannot prove a reference. Keep it ambiguous instead
-			// of selecting whichever definition happened to appear last.
 			resolver.byID[id] = nil
 		} else {
 			resolver.byID[id] = node
@@ -121,7 +119,6 @@ func (resolver *resolver) resolveInstance(database *Database, path string, node 
 		if service.Protocol == nil {
 			database.report(servicePath, service.Source, DiagnosticReference, service.Err)
 		} else {
-			// The binding resolved; a missing/invalid SID is a request defect.
 			database.report(servicePath+"/REQ", service.Source, DiagnosticMessage, service.Err)
 		}
 		database.report(servicePath, service.Source, DiagnosticPrecondition, service.Requirements.Err)
@@ -157,7 +154,6 @@ func (resolver *resolver) resolveService(instance, classTemplate, node *element,
 	if err == nil && (classTemplate == nil || !directChild(classTemplate, template)) {
 		err = sourceError(resolver.name, "service template %q is not a child of the instance's DCLTMPL %q", service.TemplateRef, instance.attr("tmplref"))
 	}
-	// Literal rules depend on this template, not on protocol-message support.
 	service.Requirements = resolver.precondition(node, template, err)
 	service.Transitions = resolver.transitions(node, template, err)
 	var protocol *element
@@ -228,7 +224,6 @@ func (resolver *resolver) resolveMessage(instance, classTemplate, node *element)
 		problems = append(problems, sourceError(resolver.name, "message contains multiple data components"))
 	} else if len(dataComponents) == 1 {
 		component := dataComponents[0]
-		// Resolve a single component independently for each source service.
 		if _, err := resolver.reference(component.attr("id"), "SIMPLEPROXYCOMP"); err != nil {
 			problems = append(problems, err)
 		} else {
@@ -356,8 +351,6 @@ func directChild(parent, candidate *element) bool {
 	return false
 }
 
-// A DID may bind its identifier in REQ, POS, or both. If both declare it, they
-// must agree. This view describes the binding, not complete message encodability.
 func didIdentifier(service *Service) (*uint16, error) {
 	var identifier *uint16
 	for _, message := range []*Message{service.Request, service.PositiveResponse} {

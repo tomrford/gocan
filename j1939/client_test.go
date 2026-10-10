@@ -143,7 +143,6 @@ func TestActiveClaimRequestAndAddressLoss(t *testing.T) {
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 		b.inject(t, 0x18eaff22, 0, 0xee, 0)
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
-		// Higher NAME loses; our client must defend the configured address.
 		b.inject(t, 0x18eeff80, 0x35, 0x12, 0, 0, 0, 0, 0, 0)
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 		r := sendActive(c, context.Background(), 0x22, activePayload)
@@ -204,7 +203,7 @@ func TestActiveDirectedSendWindowsPauseRetransmitAndAcknowledgement(t *testing.T
 		r := sendActive(c, context.Background(), 0x22, activePayload)
 		wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
 		resultIs(t, sendActive(c, context.Background(), 0x23, activePayload), j1939.ErrBusy)
-		b.inject(t, 0x1cec8023, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0) // wrong peer
+		b.inject(t, 0x1cec8023, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
 		time.Sleep(20 * time.Millisecond)
 		quiet(t, b)
 		// Receive unused bytes permissively, as Linux and python-can-j1939 do.
@@ -223,7 +222,6 @@ func TestActiveDirectedSendWindowsPauseRetransmitAndAcknowledgement(t *testing.T
 			t.Fatalf("completed without EOMA: %v", err)
 		default:
 		}
-		// Passive observation can already complete before delivery is acknowledged.
 		var decoder j1939.Decoder
 		messages, diagnostics := decoder.PushBatch(b.capture.Frames())
 		if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) || len(messages) != 2 || !bytes.Equal(messages[1].Payload, activePayload) {
@@ -307,7 +305,6 @@ func TestActiveSendFailuresCancelAndRecover(t *testing.T) {
 				if mode != "abort" {
 					wire(t, b, 0x1cec2280, 0xff, reason, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
 				}
-				// A failed transaction must release transport ownership for a new one.
 				r = sendActive(c, context.Background(), 0x22, activePayload)
 				wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
 				c.Close()
@@ -380,7 +377,6 @@ func TestActiveRejectsDataBeforeCTSAndMalformedReplacements(t *testing.T) {
 				b.inject(t, 0x1ceb8022, 3, 15, 16, 17, 18, 19, 20, 0xff)
 				time.Sleep(10 * time.Millisecond)
 				quiet(t, b)
-				// Recovery must use a new RTS and cannot inherit old bytes or grants.
 				b.inject(t, 0x18ec8022, 0x10, 9, 0, 2, 2, 0xca, 0xfe, 0)
 				wire(t, b, 0x1cec2280, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
 				b.inject(t, 0x1ceb8022, 1, 1, 2, 3, 4, 5, 6, 7)
@@ -567,7 +563,7 @@ func TestActiveResponseArrivingDuringNativeSend(t *testing.T) {
 		b.mu.Unlock()
 		sent := make(chan error, 1)
 		go func() { sent <- c.Send(context.Background(), 6, 0xef00, 0x23, []byte{42}) }()
-		synctest.Wait() // the native send is blocked, but incoming capture remains live
+		synctest.Wait()
 		time.Sleep(100 * time.Millisecond)
 		b.inject(t, 0x1ceb8022, 1, 1, 2, 3, 4, 5, 6, 7)
 		resultIs(t, sent, nil)
@@ -611,10 +607,8 @@ func TestActivePeerClaimChangeAndIndependentTransport(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		r := sendActive(c, context.Background(), 0x22, activePayload)
 		wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
-		// Reception from another peer remains independent of this send.
 		b.inject(t, 0x18ec8023, 0x10, 9, 0, 2, 2, 0xca, 0xfe, 0)
 		wire(t, b, 0x1cec2380, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
-		// The transmit peer moves its NAME; do not send an abort to its old address.
 		b.inject(t, 0x18eeff24, 0x45, 0x23, 0, 0, 0, 0, 0, 0)
 		resultIs(t, r, j1939.ErrProtocol)
 		b.inject(t, 0x1ceb8023, 1, 1, 2, 3, 4, 5, 6, 7)
@@ -699,8 +693,6 @@ func TestActiveClaimConflictArrivingDuringDefence(t *testing.T) {
 		b.mu.Unlock()
 		b.inject(t, 0x18eeff80, 0x35, 0x12, 0, 0, 0, 0, 0, 0)
 		time.Sleep(9 * time.Millisecond)
-		// The winning claim arrives within the initial arbitration interval while
-		// our defence send is blocked. Open must not report success ahead of it.
 		b.inject(t, 0x18eeff80, 1, 0, 0, 0, 0, 0, 0, 0)
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 		wire(t, b, 0x18eefffe, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
@@ -714,8 +706,6 @@ func TestActiveFirstPeerClaimPreservesTransport(t *testing.T) {
 		c := openActive(t, b)
 		r := sendActive(c, context.Background(), 0x22, activePayload)
 		wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
-		// This peer may have claimed before Open. Its first observed reannouncement
-		// establishes a NAME association without proving any identity change.
 		b.inject(t, 0x18eeff22, 0x45, 0x23, 0, 0, 0, 0, 0, 0)
 		b.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
 		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
@@ -723,7 +713,6 @@ func TestActiveFirstPeerClaimPreservesTransport(t *testing.T) {
 		wire(t, b, 0x1ceb2280, 3, 15, 16, 17, 18, 19, 20, 0xff)
 		b.inject(t, 0x1cec8022, 0x13, 20, 0, 3, 0xff, 0xca, 0xfe, 0)
 		resultIs(t, r, nil)
-		// Once known, a different NAME at the same address does invalidate transport.
 		r = sendActive(c, context.Background(), 0x22, activePayload)
 		wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
 		b.inject(t, 0x18eeff22, 0x46, 0x23, 0, 0, 0, 0, 0, 0)
@@ -811,8 +800,6 @@ func TestActiveBAMReportsLateNativeAcceptance(t *testing.T) {
 				} else {
 					wire(t, b, 0x1cebff80, 1, 1, 2, 3, 4, 5, 6, 7)
 				}
-				// The driver accepted a frame after the pacing deadline. It cannot be
-				// revoked, but even a final accepted DT must not turn that into success.
 				resultIs(t, r, j1939.ErrTimeout)
 				time.Sleep(100 * time.Millisecond)
 				quiet(t, b)

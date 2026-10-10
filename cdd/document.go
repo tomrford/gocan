@@ -97,7 +97,6 @@ func (document *Document) Select(selection Selection) (*Database, error) {
 	if err != nil {
 		return nil, sourceError(document.resolver.name, "ECU %d: %v", ecuIndex+1, err)
 	}
-	// Reference indexes and XML are immutable; state resolution is per catalog.
 	resolver := *document.resolver
 	return resolver.resolve(document.ecus[ecuIndex], variants[variantIndex], Selection{ECU: ecuIndex + 1, Variant: variantIndex + 1}), nil
 }
