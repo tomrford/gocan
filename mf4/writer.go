@@ -32,6 +32,21 @@ import (
 
 const bufferSize = 64 << 10
 
+const (
+	unfinishedCGCounters      = 1
+	attachmentEmbedded        = 1
+	attachmentMD5Valid        = 1 << 2
+	eventMarker               = 6
+	syncTime                  = 1
+	channelTimeMaster         = 2
+	channelBusEvent           = 1 << 10
+	channelGroupBusEvent      = 1 << 1
+	channelGroupPlainBusEvent = 1 << 2
+	dataTypeUnsignedLE        = 0
+	dataTypeFloatLE           = 4
+	dataTypeByteArray         = 10
+)
+
 // Database associates original DBC bytes with one logical bus.
 // The writer embeds Data without interpreting or converting its encoding.
 type Database struct {
@@ -147,7 +162,7 @@ func NewWriter(output io.WriteSeeker, options Options) (*Writer, error) {
 	copy(id[8:], "4.10    ")
 	copy(id[16:], "gocan   ")
 	binary.LittleEndian.PutUint16(id[28:], 410)
-	binary.LittleEndian.PutUint16(id[60:], 1) // CG cycle counters need finalisation.
+	binary.LittleEndian.PutUint16(id[60:], unfinishedCGCounters)
 	w.write(id)
 	created := uint64(time.Now().UnixNano())
 	header := make([]byte, 32)
@@ -172,7 +187,7 @@ func NewWriter(output io.WriteSeeker, options Options) (*Writer, error) {
 		name := w.text(database.Name)
 		mime := w.text("application/x-dbc")
 		data := make([]byte, 40+len(database.Data))
-		binary.LittleEndian.PutUint16(data, 5) // embedded, MD5 valid
+		binary.LittleEndian.PutUint16(data, attachmentEmbedded|attachmentMD5Valid)
 		hash := md5.Sum(database.Data)
 		copy(data[8:], hash[:])
 		binary.LittleEndian.PutUint64(data[24:], uint64(len(database.Data)))
@@ -293,7 +308,7 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 		comment = w.textBlock("##MD", fmt.Sprintf(`<EVcomment xmlns="http://www.asam.net/mdf/v4"><TX>Bus=%d; %s</TX></EVcomment>`, event.Bus, details))
 	}
 	data := make([]byte, 32)
-	data[0], data[1] = 6, 1 // marker, time sync
+	data[0], data[1] = eventMarker, syncTime
 	binary.LittleEndian.PutUint64(data[16:], uint64(offset))
 	binary.LittleEndian.PutUint64(data[24:], math.Float64bits(1e-9))
 	ev := w.block("##EV", []uint64{0, 0, 0, title, comment}, data)
@@ -422,14 +437,14 @@ func (w *Writer) addGroup(bus gocan.BusID, remote bool) *channelGroup {
 		kind         byte
 	}
 	fields := []member{
-		{"BusChannel", 8, 16, 0}, {"ID", 10, 32, 0}, {"IDE", 14, 8, 0},
-		{"DLC", 15, 8, 0}, {"DataLength", 16, 8, 0},
+		{"BusChannel", 8, 16, dataTypeUnsignedLE}, {"ID", 10, 32, dataTypeUnsignedLE}, {"IDE", 14, 8, dataTypeUnsignedLE},
+		{"DLC", 15, 8, dataTypeUnsignedLE}, {"DataLength", 16, 8, dataTypeUnsignedLE},
 	}
 	if remote {
-		fields = append(fields, member{"Dir", 17, 8, 0})
+		fields = append(fields, member{"Dir", 17, 8, dataTypeUnsignedLE})
 	} else {
 		fields = append(fields, []member{
-			{"DataBytes", 17, 512, 10}, {"Dir", 81, 8, 0}, {"EDL", 82, 8, 0}, {"BRS", 83, 8, 0}, {"ESI", 84, 8, 0},
+			{"DataBytes", 17, 512, dataTypeByteArray}, {"Dir", 81, 8, dataTypeUnsignedLE}, {"EDL", 82, 8, dataTypeUnsignedLE}, {"BRS", 83, 8, dataTypeUnsignedLE}, {"ESI", 84, 8, dataTypeUnsignedLE},
 		}...)
 	}
 	var next uint64
@@ -437,12 +452,12 @@ func (w *Writer) addGroup(bus gocan.BusID, remote bool) *channelGroup {
 		field := fields[i]
 		next = w.channel(name+"."+field.name, next, 0, 0, 0, field.offset, field.bits, field.kind, false)
 	}
-	structure := w.channel(name, 0, next, source, w.attachments[bus], 8, structureSize*8, 10, false)
-	master := w.channel("time", structure, 0, 0, 0, 0, 64, 4, true)
+	structure := w.channel(name, 0, next, source, w.attachments[bus], 8, structureSize*8, dataTypeByteArray, false)
+	master := w.channel("time", structure, 0, 0, 0, 0, 64, dataTypeFloatLE, true)
 	group := &channelGroup{id: uint32(len(w.groups) + 1)}
 	data := make([]byte, 32)
 	binary.LittleEndian.PutUint64(data, uint64(group.id))
-	binary.LittleEndian.PutUint16(data[16:], 6) // bus event, plain bus event
+	binary.LittleEndian.PutUint16(data[16:], channelGroupBusEvent|channelGroupPlainBusEvent)
 	binary.LittleEndian.PutUint16(data[18:], '.')
 	binary.LittleEndian.PutUint32(data[24:], structureSize+8)
 	group.address = w.block("##CG", []uint64{0, master, w.text(name), source, 0, 0}, data)
@@ -458,10 +473,10 @@ func (w *Writer) channel(name string, next, component, source, attachment uint64
 	binary.LittleEndian.PutUint32(data[4:], offset)
 	binary.LittleEndian.PutUint32(data[8:], bits)
 	if master {
-		data[0], data[1] = 2, 1 // time master
+		data[0], data[1] = channelTimeMaster, syncTime
 		links[6] = w.text("s")
 	} else {
-		binary.LittleEndian.PutUint32(data[12:], 1<<10) // bus-event channel
+		binary.LittleEndian.PutUint32(data[12:], channelBusEvent)
 	}
 	if attachment != 0 {
 		links = append(links, attachment)
