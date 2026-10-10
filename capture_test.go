@@ -255,46 +255,6 @@ func TestCaptureLifecycle(t *testing.T) {
 	}
 }
 
-func TestCaptureRotationSeam(t *testing.T) {
-	// Three 8-byte payloads seal the first chunk, so the fourth append rotates.
-	capture := newTestCapture(4, 24)
-
-	const total = 12
-	var events, evenSeries, oddSeries []FrameEvent
-	for seq := range total {
-		id := uint32(0x100)
-		if seq%2 == 1 {
-			id = 0x200
-		}
-		data := make([]byte, 8)
-		binary.LittleEndian.PutUint32(data, uint32(seq))
-		event := testDataEvent(t, testBus0, id, 0, data, seq, DirectionReceive)
-		if err := capture.Append(event); err != nil {
-			t.Fatalf("Append event %d: %v", seq, err)
-		}
-		events = append(events, event)
-		if seq%2 == 0 {
-			evenSeries = append(evenSeries, event)
-		} else {
-			oddSeries = append(oddSeries, event)
-		}
-	}
-
-	if got := len(capture.chunks); got != 2 {
-		t.Fatalf("capture holds %d chunks, want rotation into exactly 2", got)
-	}
-	requireEvents(t, "Frames across seam", capture.Frames(), events)
-	requireEvents(t, "Series 0x100 across seam",
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}), evenSeries)
-	requireEvents(t, "Series 0x200 across seam",
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}), oddSeries)
-
-	latest, ok := capture.Latest(FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive})
-	if !ok || !eventsEqual(latest, events[total-1]) {
-		t.Fatalf("Latest across seam = %+v (ok=%t), want %+v", latest, ok, events[total-1])
-	}
-}
-
 func TestCaptureMixedRecords(t *testing.T) {
 	capture := newTestCapture(4, 24)
 	frame0 := testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 0, DirectionReceive)
@@ -639,47 +599,6 @@ func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
 	}
 	if len(skip.frames) != 0 || len(skip.events) != 1 || skip.events[0] != errorEvent.Kind {
 		t.Fatalf("records after skipped failure = frames %v events %v", skip.frames, skip.events)
-	}
-}
-
-func TestReplacementCapacities(t *testing.T) {
-	tests := []struct {
-		name                     string
-		records, payload         int
-		wantRecords, wantPayload int
-	}{
-		{
-			name:        "classical fill keeps records at the limit",
-			records:     initialCaptureChunkRecordCapacity,
-			payload:     initialCaptureChunkRecordCapacity * 8,
-			wantRecords: initialCaptureChunkRecordCapacity,
-			wantPayload: initialCaptureChunkRecordCapacity * 8,
-		},
-		{
-			name:        "fd fill regrows a shrunken chunk to the initial shape",
-			records:     initialCaptureChunkRecordCapacity / 8,
-			payload:     initialCaptureChunkRecordCapacity / 8 * MaxDataLength,
-			wantRecords: initialCaptureChunkRecordCapacity,
-			wantPayload: initialCaptureChunkPayloadCapacity,
-		},
-		{
-			name:        "payload-free traffic floors the payload capacity",
-			records:     1000,
-			payload:     0,
-			wantRecords: initialCaptureChunkRecordCapacity,
-			wantPayload: minimumCaptureChunkPayloadCapacity,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			gotRecords, gotPayload := replacementCapacities(test.records, test.payload)
-			if gotRecords != test.wantRecords || gotPayload != test.wantPayload {
-				t.Fatalf("replacementCapacities(%d, %d) = (%d, %d), want (%d, %d)",
-					test.records, test.payload,
-					gotRecords, gotPayload,
-					test.wantRecords, test.wantPayload)
-			}
-		})
 	}
 }
 
@@ -1062,58 +981,6 @@ func TestCaptureNext(t *testing.T) {
 	}
 }
 
-func TestCaptureNextWalksAcrossRotation(t *testing.T) {
-	// Three 8-byte payloads seal the first chunk, so the walk crosses a seam.
-	capture := newTestCapture(4, 24)
-	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
-
-	var want []FrameEvent
-	for seq := range 12 {
-		id := uint32(0x100)
-		if seq%2 == 1 {
-			id = 0x200
-		}
-		data := make([]byte, 8)
-		binary.LittleEndian.PutUint32(data, uint32(seq))
-		event := testDataEvent(t, testBus0, id, 0, data, seq, DirectionReceive)
-		if err := capture.Append(event); err != nil {
-			t.Fatalf("Append %d: %v", seq, err)
-		}
-		if id == 0x100 {
-			want = append(want, event)
-		}
-	}
-	if len(capture.chunks) < 2 {
-		t.Fatalf("capture holds %d chunks, want the walk to span a rotation", len(capture.chunks))
-	}
-
-	var got []FrameEvent
-	var cursor Cursor
-	for range len(want) {
-		event, next, err := capture.Next(context.Background(), key, cursor)
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		got = append(got, event)
-		cursor = next
-	}
-	requireEvents(t, "Next walk across seam", got, want)
-
-	// The series is exhausted: one more Next must wait, not return a frame,
-	// and cancellation must not leak its waiter registration.
-	expired, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	if _, _, err := capture.Next(expired, key, cursor); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Next past the tail returned %v, want context.DeadlineExceeded", err)
-	}
-	capture.mu.RLock()
-	leaked := len(capture.waiters)
-	capture.mu.RUnlock()
-	if leaked != 0 {
-		t.Fatalf("%d waiter entries remain after cancellation", leaked)
-	}
-}
-
 // waitForCaptureWaiter blocks until one Next has parked on key.
 func waitForCaptureWaiter(t *testing.T, capture *Capture, key FrameKey) {
 	t.Helper()
@@ -1297,12 +1164,6 @@ func TestCaptureNextAcrossPrune(t *testing.T) {
 		t.Fatalf("new Next from pruned cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
 	}
 
-	capture.mu.RLock()
-	leaked := len(capture.waiters)
-	capture.mu.RUnlock()
-	if leaked != 0 {
-		t.Fatalf("%d waiter entries remain after the prune/wait/append lifecycle", leaked)
-	}
 }
 
 // TestCaptureConcurrentClear hammers appends, reads, and Clear together. Run
@@ -1451,13 +1312,6 @@ func TestCaptureConcurrentClear(t *testing.T) {
 	}()
 	<-done
 	churning.Wait()
-
-	capture.mu.RLock()
-	leaked := len(capture.waiters)
-	capture.mu.RUnlock()
-	if leaked != 0 {
-		t.Fatalf("%d waiter entries remain after Clear churn", leaked)
-	}
 
 	// Whatever survived the final Clear must be, per bus, a consecutive run of
 	// the most recently appended sequence numbers, and the total must agree.

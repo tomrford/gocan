@@ -192,26 +192,6 @@ func encodeMessageType(frame gocan.Frame) uint8 {
 	return messageType
 }
 
-func decodeClassicMessage(message pcanMsg) (gocan.Frame, error) {
-	return decodeMessage(
-		message.id,
-		message.messageType,
-		message.length,
-		message.data[:],
-		false,
-	)
-}
-
-func decodeFDMessage(message pcanMsgFD) (gocan.Frame, error) {
-	return decodeMessage(
-		message.id,
-		message.messageType,
-		message.dlc,
-		message.data[:],
-		true,
-	)
-}
-
 func decodeStatusFrame(messageType uint8, data []byte) (pcanStatus, bool) {
 	if messageType&pcanMessageStatus == 0 {
 		return 0, false

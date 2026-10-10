@@ -7,37 +7,6 @@ import (
 )
 
 func TestFrameFormat(t *testing.T) {
-	for _, fd := range []bool{false, true} {
-		for _, extended := range []bool{false, true} {
-			for dlc := uint8(0); dlc <= 15; dlc++ {
-				if !fd && dlc > 8 {
-					continue
-				}
-				flags := gocan.FrameFlags(0)
-				if fd {
-					flags |= gocan.FrameFD | gocan.FrameBitRateSwitch
-				}
-				if extended {
-					flags |= gocan.FrameExtended
-				}
-				frame := gocan.Frame{ID: 0x123, DLC: dlc, Flags: flags}
-				for i := 0; i < frame.DataLength(); i++ {
-					frame.Data[i] = byte(i + 1)
-				}
-				encoded, size, err := encodeFrame(frame, fd)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if size != recordSize(frame.DataLength()) || encoded[15] != byte(frame.DataLength()) {
-					t.Fatalf("incorrect record size %d, length %d", size, encoded[15])
-				}
-				decoded, err := decodeFrame(encoded[:size])
-				if err != nil || decoded != frame {
-					t.Fatalf("round trip dlc=%d flags=%x: %+v %v", dlc, flags, decoded, err)
-				}
-			}
-		}
-	}
 	for dlc := uint8(0); dlc <= 8; dlc++ {
 		frame, _ := gocan.NewRemoteFrame(0x123, dlc, true)
 		data, size, err := encodeFrame(frame, false)

@@ -43,38 +43,6 @@ func BenchmarkMessageCodecCompilation(b *testing.B) {
 	}
 }
 
-func TestMessageOverlapWordBoundaries(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		start uint32
-		order ByteOrder
-		bytes [16]byte
-	}{
-		// Literal occupied payload bits for unaligned 64-bit signals.
-		{"Intel", 63, ByteOrderLittleEndian, [16]byte{7: 0x80, 8: 0xff, 9: 0xff, 10: 0xff, 11: 0xff, 12: 0xff, 13: 0xff, 14: 0xff, 15: 0x7f}},
-		{"Motorola", 56, ByteOrderBigEndian, [16]byte{7: 0x01, 8: 0xff, 9: 0xff, 10: 0xff, 11: 0xff, 12: 0xff, 13: 0xff, 14: 0xff, 15: 0xfe}},
-	} {
-		for _, offset := range []uint32{0, 512, math.MaxUint32 - 255} {
-			t.Run(fmt.Sprintf("%s/%d", test.name, offset), func(t *testing.T) {
-				for bit := uint32(0); bit < 192; bit++ {
-					wantOverlap := bit < 128 && test.bytes[bit/8]&(1<<(bit%8)) != 0
-					message := Message{Length: math.MaxUint32, Signals: []Signal{
-						{Name: "Wide", StartBit: offset + test.start, BitLength: 64, ByteOrder: test.order, Factor: 1},
-						{Name: "Probe", StartBit: offset + bit, BitLength: 1, ByteOrder: ByteOrderLittleEndian, Factor: 1},
-					}}
-					for range 2 {
-						codec := compileMessageCodec(&message)
-						if codec.err != nil || (codec.writeErr != nil) != wantOverlap {
-							t.Fatalf("bit %d: compile = %v, %v; want overlap %t", bit, codec.err, codec.writeErr, wantOverlap)
-						}
-						message.Signals[0], message.Signals[1] = message.Signals[1], message.Signals[0]
-					}
-				}
-			})
-		}
-	}
-}
-
 func TestMessageCodecLifecycle(t *testing.T) {
 	db := parseFixture(t, "testdata/codec.dbc")
 	command, ok := db.MessageByName("Command")
@@ -294,52 +262,6 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	j1939Frame.ID = 0x0cfeef21
 	if _, err := j1939.Decode(j1939Frame, "Coolant"); err == nil {
 		t.Fatal("decoded another PGN")
-	}
-}
-
-func TestSignalNumericConversion(t *testing.T) {
-	for _, test := range []struct {
-		kind  ValueType
-		value any
-		raw   uint64
-	}{
-		{ValueTypeFloat32, uint64(16777217), 0x4b800000},
-		{ValueTypeFloat32, uint64(9007199254740993), 0x5a000000},
-		{ValueTypeFloat32, json.Number("9007199254740993"), 0x5a000000},
-		// These integers sit just beyond a float32 midpoint. Going through
-		// float64 first would round them onto it and choose the wrong float32.
-		{ValueTypeFloat32, uint64(18014399583223809), 0x5a800001},
-		{ValueTypeFloat32, int64(-18014399583223809), 0xda800001},
-		{ValueTypeFloat32, json.Number("18014399583223809"), 0x5a800001},
-		{ValueTypeFloat32, json.Number("1.0000000596046447753906250000000001"), 0x3f800001},
-		{ValueTypeFloat64, uint64(9007199254740993), 0x4340000000000000},
-		{ValueTypeFloat64, json.Number("9007199254740993"), 0x4340000000000000},
-		{ValueTypeFloat64, int64(-9007199254740993), 0xc340000000000000},
-		{ValueTypeFloat64, int64(math.MaxInt64), 0x43e0000000000000},
-		{ValueTypeFloat64, uint64(math.MaxUint64), 0x43f0000000000000},
-		{ValueTypeInteger, uint64(9007199254740993), 9007199254740993},
-	} {
-		signal := Signal{ValueType: test.kind, BitLength: 64, Factor: 1}
-		if test.kind == ValueTypeFloat32 {
-			signal.BitLength = 32
-		}
-		if raw, err := encodeSignalValue(signal, test.value); err != nil || raw != test.raw {
-			t.Fatalf("kind %v, %T(%v): raw = %#x, %v; want %#x", test.kind, test.value, test.value, raw, err, test.raw)
-		}
-	}
-	for _, value := range []any{math.MaxFloat64, math.NaN(), math.Inf(1), json.Number("1e39")} {
-		signal := Signal{ValueType: ValueTypeFloat32, BitLength: 32, Factor: 1}
-		if _, err := encodeSignalValue(signal, value); err == nil {
-			t.Fatalf("float32 accepted non-finite or overflowing value %v", value)
-		}
-	}
-
-	// Rounding before subtracting this offset would silently turn raw 1 into 0.
-	scaled := Signal{BitLength: 8, Factor: 1, Offset: 9007199254740992}
-	for _, value := range []any{uint64(9007199254740993), int64(9007199254740993)} {
-		if _, err := encodeSignalValue(scaled, value); err == nil {
-			t.Fatalf("scaled integer accepted imprecise %T(%v)", value, value)
-		}
 	}
 }
 

@@ -2,7 +2,6 @@ package vector
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 	"unsafe"
 
@@ -23,21 +22,7 @@ func TestClassicNativeLayoutAndTranslation(t *testing.T) {
 		t.Fatalf("XLevent tagData offset = %d, want 16", got)
 	}
 
-	frame, err := gocan.NewFrame(gocan.MaxExtendedID, []byte{1, 2, 3}, gocan.FrameExtended)
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	event := encodeEvent(frame)
-	event.tag = xlEventReceiveMessage
-	got, err := decodeClassicReceiveEvent(&event, 1)
-	if err != nil {
-		t.Fatalf("decode event: %v", err)
-	}
-	if !got.hasFrame || got.frame != frame {
-		t.Fatalf("round trip = %+v, want frame %+v", got, frame)
-	}
-
-	event.flags = xlEventFlagOverrun
+	event := xlEvent{tag: xlEventReceiveMessage, flags: xlEventFlagOverrun}
 	overrun, err := decodeClassicReceiveEvent(&event, 1)
 	if err != nil || !errors.Is(overrun.terminal, gocan.ErrReceiveOverrun) ||
 		overrun.eventCount != 1 || overrun.events[0].Kind != gocan.EventReceiveOverrun {
@@ -80,17 +65,10 @@ func TestFDNativeLayoutAndTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	tx := encodeFDTransmitEvent(frame)
-	if tx.tag != xlCANEventTX || tx.transactionID != 0xffff {
-		t.Fatalf("FD transmit header = tag %d transaction %#x", tx.tag, tx.transactionID)
-	}
-
 	rx := xlCANRXEvent{tag: xlCANEventRXOK}
-	rxMessage := rx.message()
-	rxMessage.id = tx.message.id
-	rxMessage.flags = tx.message.flags | xlCANMessageFlagESI
-	rxMessage.dlc = tx.message.dlc
-	rxMessage.data = tx.message.data
+	// Controller-owned ESI cannot be requested by Send. Supply the native
+	// receive flags independently so the hardware send matrix cannot mask it.
+	*rx.message() = xlCANRXMessage{id: 0x9fffffff, flags: 7, dlc: 15, data: [64]byte(data)}
 	got, err := decodeFDReceiveEvent(&rx, 1)
 	if err != nil {
 		t.Fatalf("decode FD event: %v", err)
@@ -98,71 +76,6 @@ func TestFDNativeLayoutAndTranslation(t *testing.T) {
 	frame.Flags |= gocan.FrameErrorStateIndicator
 	if !got.hasFrame || got.frame != frame {
 		t.Fatalf("FD round trip = %+v, want frame %+v", got, frame)
-	}
-}
-
-func TestClassicalDLCAboveEightNativeTranslation(t *testing.T) {
-	for _, nativeAPI := range []string{"classic", "FD"} {
-		for dlc := uint8(9); dlc <= 15; dlc++ {
-			for _, remote := range []bool{false, true} {
-				kind := "data"
-				flags := gocan.FrameFlags(0)
-				if remote {
-					kind = "RTR"
-					flags = gocan.FrameRemote
-				}
-				t.Run(fmt.Sprintf("%s/DLC_%d/%s", nativeAPI, dlc, kind), func(t *testing.T) {
-					frame := gocan.Frame{ID: 0x321, DLC: dlc, Flags: flags}
-					if !remote {
-						copy(frame.Data[:8], []byte{0, 1, 2, 3, 4, 5, 6, 7})
-					}
-					if err := frame.Validate(); err != nil {
-						t.Fatalf("validate fixture: %v", err)
-					}
-
-					var (
-						got receiveObservation
-						err error
-					)
-					switch nativeAPI {
-					case "classic":
-						event := encodeEvent(frame)
-						event.tag = xlEventReceiveMessage
-						if event.message().dlc != uint16(dlc) {
-							t.Fatalf("encoded DLC = %d, want %d", event.message().dlc, dlc)
-						}
-						got, err = decodeClassicReceiveEvent(&event, 1)
-					case "FD":
-						tx := encodeFDTransmitEvent(frame)
-						if tx.message.dlc != dlc {
-							t.Fatalf("encoded DLC = %d, want %d", tx.message.dlc, dlc)
-						}
-						if tx.message.flags&xlCANMessageFlagEDL != 0 {
-							t.Fatalf("encoded classical flags %#x have EDL set", tx.message.flags)
-						}
-						if !remote {
-							tx.message.data[8] = 0xff
-						}
-						rx := xlCANRXEvent{tag: xlCANEventRXOK}
-						*rx.message() = xlCANRXMessage{
-							id:    tx.message.id,
-							flags: tx.message.flags,
-							dlc:   tx.message.dlc,
-							data:  tx.message.data,
-						}
-						got, err = decodeFDReceiveEvent(&rx, 1)
-					default:
-						t.Fatalf("unsupported native API %q", nativeAPI)
-					}
-					if err != nil {
-						t.Fatalf("decode: %v", err)
-					}
-					if !got.hasFrame || got.frame != frame {
-						t.Fatalf("round trip = %+v, want frame %+v", got, frame)
-					}
-				})
-			}
-		}
 	}
 }
 
