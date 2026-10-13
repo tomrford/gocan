@@ -4,23 +4,88 @@
 networks. It provides one stack from hardware access and raw capture through
 ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 
+## Install
+
+The module requires Go 1.25 or newer.
+
+```sh
+go get github.com/tomrford/gocan
+```
+
+## Quick start
+
+Two buses on one [virtual network](https://pkg.go.dev/github.com/tomrford/gocan/drivers/virtual)
+share a capture and exchange frames in-process.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/virtual"
+)
+
+func main() {
+	ctx := context.Background()
+	capture := gocan.NewCapture()
+	var network virtual.Network
+
+	sender, err := network.Open(ctx, capture, virtual.Config{ID: 1, Name: "sender"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sender.Close()
+	receiver, err := network.Open(ctx, capture, virtual.Config{ID: 2, Name: "receiver"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer receiver.Close()
+
+	frame, err := gocan.NewFrame(0x123, []byte{1, 2, 3, 4}, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cursor := capture.End()
+	if err := sender.Send(ctx, frame); err != nil {
+		log.Fatal(err)
+	}
+
+	wait, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	received, _, err := capture.Next(wait, gocan.FrameKey{
+		Bus:       receiver.ID(),
+		ID:        frame.ID,
+		Direction: gocan.DirectionReceive,
+	}, cursor)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%x\n", received.Frame.Data[:received.Frame.DataLength()])
+}
+```
+
 ## Packages
 
 | Package | Purpose |
 | --- | --- |
-| `gocan` | Raw CAN and CAN FD frames, the common bus interface, and concurrent multi-bus capture |
-| `drivers` | Discovery and opening of physical CAN channels |
-| `drivers/virtual` | In-process CAN networks for development and tests |
-| `cyclic` | Recurring raw frame transmission |
-| `asc` | Vector ASCII trace writing |
-| `mf4` | MDF 4.10 raw CAN/CAN FD export with DBC attachments, event markers, compression and application metadata |
-| `recorder` | Lifecycled trace recording with safe flush checkpoints |
-| `dbc` | DBC parsing with original source retention, and CAN frame encoding and decoding |
-| `j1939` | J1939 identifiers, passive decoding, active address claiming and classical BAM/RTS-CTS transport |
-| `isotp` | ISO-TP payload transport over classical CAN and CAN FD |
-| `uds` | Raw exchanges and typed Unified Diagnostic Services operations |
-| `xcp` | Sequential XCP-on-CAN/CAN FD sessions and raw byte-addressed memory reads |
-| `cdd` | CANdela ECU/variant selection, diagnostic service catalogs and metadata, and data-record codecs |
+| [`gocan`](https://pkg.go.dev/github.com/tomrford/gocan) | Raw CAN and CAN FD frames, the common bus interface, and concurrent multi-bus capture |
+| [`drivers`](https://pkg.go.dev/github.com/tomrford/gocan/drivers) | Discovery and opening of physical CAN channels |
+| [`drivers/virtual`](https://pkg.go.dev/github.com/tomrford/gocan/drivers/virtual) | In-process CAN networks for development and tests |
+| [`cyclic`](https://pkg.go.dev/github.com/tomrford/gocan/cyclic) | Recurring raw frame transmission |
+| [`asc`](https://pkg.go.dev/github.com/tomrford/gocan/asc) | Vector ASCII trace writing |
+| [`mf4`](https://pkg.go.dev/github.com/tomrford/gocan/mf4) | MDF 4.10 raw CAN/CAN FD export with DBC attachments, event markers, compression and application metadata |
+| [`recorder`](https://pkg.go.dev/github.com/tomrford/gocan/recorder) | Lifecycled trace recording with safe flush checkpoints |
+| [`dbc`](https://pkg.go.dev/github.com/tomrford/gocan/dbc) | DBC parsing with original source retention, and CAN frame encoding and decoding |
+| [`j1939`](https://pkg.go.dev/github.com/tomrford/gocan/j1939) | J1939 identifiers, passive decoding, active address claiming and classical BAM/RTS-CTS transport |
+| [`isotp`](https://pkg.go.dev/github.com/tomrford/gocan/isotp) | ISO-TP payload transport over classical CAN and CAN FD |
+| [`uds`](https://pkg.go.dev/github.com/tomrford/gocan/uds) | Raw exchanges and typed Unified Diagnostic Services operations |
+| [`xcp`](https://pkg.go.dev/github.com/tomrford/gocan/xcp) | Sequential XCP-on-CAN/CAN FD sessions and raw byte-addressed memory reads |
+| [`cdd`](https://pkg.go.dev/github.com/tomrford/gocan/cdd) | CANdela ECU/variant selection, diagnostic service catalogs and metadata, and data-record codecs |
 
 ## Driver support
 
