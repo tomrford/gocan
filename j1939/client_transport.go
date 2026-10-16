@@ -11,8 +11,8 @@ import (
 )
 
 // Classical J1939-21 timers: T1 (consecutive DT), T2/T3 (first DT/control),
-// T4 (CTS hold), and BAM spacing. See the pinned python-can-j1939 reference in
-// .repos/.lock and Linux transport.c at 9f0346dcbea363787186c94ef94dd01aaa215afa.
+// T4 (CTS hold), and BAM spacing. See the python-can-j1939 reference pinned in
+// AGENTS.md and Linux transport.c at 9f0346dcbea363787186c94ef94dd01aaa215afa.
 const (
 	consecutiveTimeout = 750 * time.Millisecond
 	responseTimeout    = 1250 * time.Millisecond

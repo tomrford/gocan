@@ -1,7 +1,7 @@
 // Package mf4 records raw CAN/CAN FD bus events in MDF 4.10 files.
 //
 // The bus structures and attachment links follow ASAM MDF Bus Logging, as
-// used by python-can's can/io/mf4.py and asammdf (see .repos/.lock).
+// used by python-can's can/io/mf4.py and asammdf (see AGENTS.md).
 // https://www.asam.net/standards/detail/mdf/wiki/ describes the block model.
 // Non-frame Capture observations are exported as timestamped event markers.
 // This package does not write decoded channels, recover interrupted files,
