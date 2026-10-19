@@ -255,9 +255,27 @@ func (link *Link) Reset(ctx context.Context) error {
 	if err := link.acquire(ctx, link.receiving); err != nil {
 		return err
 	}
+	// acquire's select may take a free token even when ctx or the bus has
+	// already ended, and no operation follows to observe that here.
+	if err := link.resetError(ctx); err != nil {
+		link.release(link.receiving)
+		return err
+	}
 	link.startReception(true)
 	link.finishReception()
 	return nil
+}
+
+func (link *Link) resetError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-link.bus.Done():
+		return link.busError()
+	default:
+		return nil
+	}
 }
 
 // Begin transmits one complete ISO-TP payload and returns an Exchange scoped to

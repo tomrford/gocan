@@ -1008,6 +1008,20 @@ func TestResetDiscardsUnreadTraffic(t *testing.T) {
 		cursor = next
 	}
 
+	// The token is free here, so a cancelled Reset races its own context in
+	// acquire. Repeat so a Reset that wins the token cannot pass by chance.
+	position := receiver.Cursor()
+	cancelled, cancelWait := context.WithCancel(ctx)
+	cancelWait()
+	for range 32 {
+		if err := receiver.Reset(cancelled); !errors.Is(err, context.Canceled) {
+			t.Fatalf("idle Reset with a cancelled context = %v, want context.Canceled", err)
+		}
+	}
+	if receiver.Cursor() != position {
+		t.Fatal("a cancelled Reset moved the receive position")
+	}
+
 	if err := receiver.Reset(ctx); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
@@ -1027,6 +1041,15 @@ func TestResetDiscardsUnreadTraffic(t *testing.T) {
 		}
 		if !bytes.Equal(got, want) {
 			t.Fatalf("Receive after Reset = %x, want %x", got, want)
+		}
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for range 32 {
+		if err := receiver.Reset(ctx); !errors.Is(err, gocan.ErrBusClosed) {
+			t.Fatalf("Reset on a closed bus = %v, want gocan.ErrBusClosed", err)
 		}
 	}
 }
