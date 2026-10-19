@@ -55,7 +55,7 @@ type transmitter struct {
 
 func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDataLength uint8, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
 	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
-		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", unsupported)
+		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", uint8(unsupported))
 	}
 	if flags.Has(gocan.FrameBitRateSwitch) && !flags.Has(gocan.FrameFD) {
 		return transmitter{}, errors.New("ISO-TP bit-rate switching requires CAN FD")

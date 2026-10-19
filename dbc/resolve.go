@@ -424,12 +424,14 @@ func (r *resolver) resolveFrameFormats() error {
 
 func (r *resolver) compileCodecs() error {
 	r.db.messagesByName = make(map[string]int, len(r.messagesByName))
+	r.db.messagesByID = make(map[messageID]int, len(r.db.Messages))
 	r.db.messagesByPGN = make(map[j1939.PGN][]int)
 	for name, index := range r.messagesByName {
 		r.db.messagesByName[name] = index
 	}
 	for index := range r.db.Messages {
 		message := &r.db.Messages[index]
+		r.db.messagesByID[messageID{id: message.ID, extended: message.Extended}] = index
 		message.codec = compileMessageCodec(message)
 		if message.Format == FrameFormatJ1939 {
 			header, err := j1939.ParseID(message.ID)

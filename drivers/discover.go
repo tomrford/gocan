@@ -73,3 +73,9 @@ func (channel Channel) Identifier() string {
 
 // SupportsTermination reports whether gocan can switch the channel's bus termination.
 func (channel Channel) SupportsTermination() bool { return channel.supportsTermination }
+
+// String returns the channel's driver, native name, and identifier, for example
+// "pcan PCAN_USBBUS1 (pcan:0x51)".
+func (channel Channel) String() string {
+	return fmt.Sprintf("%s %s (%s)", channel.Driver(), channel.Name(), channel.Identifier())
+}
