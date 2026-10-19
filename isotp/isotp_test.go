@@ -950,6 +950,146 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	}
 }
 
+func TestResetDiscardsUnreadTraffic(t *testing.T) {
+	capture := gocan.NewCapture()
+	var network virtual.Network
+	first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
+	if err != nil {
+		t.Fatalf("Open second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	sender, err := isotp.New(second, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
+	if err != nil {
+		t.Fatalf("New sender: %v", err)
+	}
+	receiver, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+	if err != nil {
+		t.Fatalf("New receiver: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Prove the transmit identifier is live, so an unchanged series afterwards
+	// shows that Reset itself transmitted nothing.
+	if err := receiver.Send(ctx, []byte{0x3e, 0x00}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	transmitKey := gocan.FrameKey{Bus: first.ID(), ID: 0x7e0, Direction: gocan.DirectionTransmit}
+	transmitted := capture.Series(transmitKey)
+	if len(transmitted) != 1 {
+		t.Fatalf("link transmitted %d frames before Reset, want its single Send", len(transmitted))
+	}
+
+	// Two payloads arrive and are never read. Wait until both are captured:
+	// Reset discards captured traffic only, so a frame still in flight would
+	// legitimately arrive after it.
+	stale, unread := patternedPayload(4, 0x51), patternedPayload(5, 0x52)
+	receiveKey := gocan.FrameKey{Bus: first.ID(), ID: 0x7e8, Direction: gocan.DirectionReceive}
+	cursor := capture.End()
+	for _, payload := range [][]byte{stale, unread} {
+		if err := sender.Send(ctx, payload); err != nil {
+			t.Fatalf("Send queued payload: %v", err)
+		}
+		event, next, err := capture.Next(ctx, receiveKey, cursor)
+		if err != nil {
+			t.Fatalf("waiting for a queued payload: %v", err)
+		}
+		want := append([]byte{byte(len(payload))}, payload...)
+		if got := event.Frame.Data[:len(want)]; !bytes.Equal(got, want) {
+			t.Fatalf("queued payload frame = %x, want %x", got, want)
+		}
+		cursor = next
+	}
+
+	if err := receiver.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if got := capture.Series(transmitKey); len(got) != len(transmitted) {
+		t.Fatalf("Reset transmitted %d frames, want none", len(got)-len(transmitted))
+	}
+
+	// Only traffic that arrives after Reset is received, in order, and the
+	// discarded payloads never resurface.
+	for _, want := range [][]byte{patternedPayload(6, 0x53), patternedPayload(3, 0x54)} {
+		if err := sender.Send(ctx, want); err != nil {
+			t.Fatalf("Send after Reset: %v", err)
+		}
+		got, err := receiver.Receive(ctx)
+		if err != nil {
+			t.Fatalf("Receive after Reset: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("Receive after Reset = %x, want %x", got, want)
+		}
+	}
+}
+
+func TestResetWaitsForOpenExchange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network virtual.Network
+		first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
+		if err != nil {
+			t.Fatalf("Open first: %v", err)
+		}
+		t.Cleanup(func() { _ = first.Close() })
+		second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
+		if err != nil {
+			t.Fatalf("Open second: %v", err)
+		}
+		t.Cleanup(func() { _ = second.Close() })
+
+		receiver, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		if err != nil {
+			t.Fatalf("New receiver: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		exchange, err := receiver.Begin(ctx, []byte{0x3e, 0x00})
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		t.Cleanup(exchange.Close)
+
+		position := receiver.Cursor()
+		cancelled, cancelWait := context.WithCancel(ctx)
+		cancelWait()
+		if err := receiver.Reset(cancelled); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Reset with a cancelled context = %v, want context.Canceled", err)
+		}
+		if receiver.Cursor() != position {
+			t.Fatal("a failed Reset moved the receive position")
+		}
+
+		blocked := make(chan error, 1)
+		go func() { blocked <- receiver.Reset(ctx) }()
+		synctest.Wait()
+		select {
+		case err := <-blocked:
+			t.Fatalf("Reset returned %v while an exchange was open", err)
+		default:
+		}
+
+		exchange.Close()
+		select {
+		case err := <-blocked:
+			if err != nil {
+				t.Fatalf("Reset after Close: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Reset did not return after the exchange closed")
+		}
+	})
+}
+
 type gatedBus struct {
 	gocan.Bus
 	gate <-chan struct{}

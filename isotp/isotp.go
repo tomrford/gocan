@@ -95,11 +95,13 @@ type Config struct {
 // Use one Link per endpoint, exclusively owning its transmit ID during operations.
 // Links with overlapping bus and receive addresses cannot distinguish traffic.
 //
-// Link maintains one receive position. Begin and segmented Send reposition it
-// to the accepted first frame. ISO-TP has no transaction identifier: finish or
-// recover earlier exchanges before reusing the receive address, including late
-// replies and traffic buffered in the driver. Capture loss fails the operation
-// with gocan.ErrCursorOutOfRange; the next starts at the oldest retained record.
+// Link maintains one receive position. Begin and segmented Send reposition it to
+// the accepted first frame, and Reset discards unread captured traffic by
+// repositioning it to the current end of the capture.
+// ISO-TP has no transaction identifier: finish or recover earlier exchanges
+// before reusing the receive address, including late replies and traffic
+// buffered in the driver. Capture loss fails the operation with
+// gocan.ErrCursorOutOfRange; the next starts at the oldest retained record.
 //
 // Send and Receive calls are serialised independently. Begin owns both paths
 // until its Exchange closes. Use Link as a client (Begin) or a server
@@ -236,6 +238,26 @@ func (link *Link) Receive(ctx context.Context) ([]byte, error) {
 	defer cancel()
 	payload, err := link.receive(operationContext, 0)
 	return payload, withCause(operationContext, err)
+}
+
+// Reset discards captured traffic this link has not yet consumed and repositions
+// its receive position to the current end of the capture, so a later Receive or
+// Exchange.Next observes only frames that arrive afterwards. It transmits
+// nothing, so a server can drop stale or unread traffic without answering it.
+// As with every cursor, this discards captured traffic only; it does not flush
+// the driver's receive queue or traffic still arriving.
+//
+// Reset takes the receiving token, so it waits for an in-progress Receive, a
+// segmented Send, or an open Exchange to finish. When that wait ends first, it
+// returns the caller's context error or the bus failure and leaves the receive
+// position unchanged.
+func (link *Link) Reset(ctx context.Context) error {
+	if err := link.acquire(ctx, link.receiving); err != nil {
+		return err
+	}
+	link.startReception(true)
+	link.finishReception()
+	return nil
 }
 
 // Begin transmits one complete ISO-TP payload and returns an Exchange scoped to
