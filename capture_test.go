@@ -154,10 +154,11 @@ func TestCaptureLiveClock(t *testing.T) {
 func newTestCapture(recordCapacity, payloadCapacity int) *Capture {
 	active := newCaptureChunk(recordCapacity, payloadCapacity)
 	return &Capture{
-		generation: captureEpochs.Add(1),
-		chunks:     []*captureChunk{active},
-		active:     active,
-		latest:     make(map[FrameKey]FrameEvent),
+		generation:   captureEpochs.Add(1),
+		chunks:       []*captureChunk{active},
+		active:       active,
+		latest:       make(map[FrameKey]FrameEvent),
+		latestStates: make(map[BusID]Event),
 	}
 }
 
@@ -343,6 +344,91 @@ func TestCaptureMixedRecords(t *testing.T) {
 	}
 	if got := capture.Len(); got != 7 {
 		t.Fatalf("Len() after rejected event = %d, want 7", got)
+	}
+}
+
+func TestCaptureLatestControllerState(t *testing.T) {
+	// A one-record chunk seals after the first append, so pruning the records
+	// that follow can discard the first state's storage while later records stay.
+	capture := newTestCapture(1, 8)
+	if _, ok := capture.LatestControllerState(testBus0); ok {
+		t.Fatal("an empty capture reported a controller state")
+	}
+
+	at := func(ms int) time.Time { return captureTestBase.Add(time.Duration(ms) * time.Millisecond) }
+	newState := func(bus BusID, ms int, state ControllerState, tx, rx uint8) Event {
+		t.Helper()
+		event, err := NewControllerStateEvent(bus, at(ms), state, tx, rx, true)
+		if err != nil {
+			t.Fatalf("NewControllerStateEvent: %v", err)
+		}
+		return event
+	}
+	busOff := newState(testBus0, 1, ControllerBusOff, 255, 3)
+	warning := newState(testBus1, 2, ControllerWarning, 96, 0)
+	active := newState(testBus1, 3, ControllerActive, 0, 1)
+	errorFrame, err := NewErrorFrameEvent(testBus0, at(4))
+	if err != nil {
+		t.Fatalf("NewErrorFrameEvent: %v", err)
+	}
+	overrun, err := NewReceiveOverrunEvent(testBus0, at(5))
+	if err != nil {
+		t.Fatalf("NewReceiveOverrunEvent: %v", err)
+	}
+	otherBusError, err := NewErrorFrameEvent(BusID(3), at(6))
+	if err != nil {
+		t.Fatalf("NewErrorFrameEvent: %v", err)
+	}
+
+	// Bus 0 enters bus-off and then reports an error frame, an overrun, and a
+	// frame. None of those is a state change, so bus-off must stay reported.
+	for _, appendRecord := range []func() error{
+		func() error { return capture.AppendEvent(busOff) },
+		func() error { return capture.AppendEvent(warning) },
+		func() error { return capture.AppendEvent(active) },
+		func() error { return capture.AppendEvent(errorFrame) },
+		func() error { return capture.AppendEvent(overrun) },
+		func() error { return capture.AppendEvent(otherBusError) },
+		func() error {
+			return capture.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 7, DirectionReceive))
+		},
+	} {
+		if err := appendRecord(); err != nil {
+			t.Fatalf("append record: %v", err)
+		}
+	}
+
+	requireState := func(label string, bus BusID, want Event) {
+		t.Helper()
+		got, ok := capture.LatestControllerState(bus)
+		if !ok {
+			t.Fatalf("%s: bus %d has no controller state", label, bus)
+		}
+		requireBusEvents(t, label, []Event{got}, []Event{want})
+	}
+	requireState("bus 0 after later non-state events", testBus0, busOff)
+	requireState("bus 1 newest state", testBus1, active)
+	if _, ok := capture.LatestControllerState(BusID(3)); ok {
+		t.Fatal("a bus with only an error frame reported a controller state")
+	}
+
+	// As with Latest, discarding the records keeps the stored copy available.
+	if err := capture.Prune(capture.End()); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	for _, event := range capture.BusEvents(testBus0) {
+		if event.Kind == EventControllerState {
+			t.Fatalf("bus 0 events after Prune = %+v, want the bus-off record discarded", event)
+		}
+	}
+	requireState("bus 0 after Prune", testBus0, busOff)
+	requireState("bus 1 after Prune", testBus1, active)
+
+	capture.Clear()
+	for _, bus := range []BusID{testBus0, testBus1} {
+		if _, ok := capture.LatestControllerState(bus); ok {
+			t.Fatalf("Clear kept the controller state of bus %d", bus)
+		}
 	}
 }
 

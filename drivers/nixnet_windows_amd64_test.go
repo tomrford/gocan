@@ -88,7 +88,7 @@ func TestNIXNETFDLengthsHardware(t *testing.T) {
 						event, _, err := capture.Next(ctx, gocan.FrameKey{Bus: side[1].ID(), ID: frame.ID, Extended: flags.Has(gocan.FrameExtended), Direction: gocan.DirectionReceive}, cursor)
 						cancel()
 						if err != nil || event.Frame != frame {
-							t.Fatalf("FD DLC%d flags%x: got %+v %v", dlc, flags, event.Frame, err)
+							t.Fatalf("FD DLC%d flags %v: got %+v %v", dlc, flags, event.Frame, err)
 						}
 					}
 				}

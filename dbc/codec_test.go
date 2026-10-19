@@ -280,7 +280,7 @@ func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {
 		t.Fatalf("Encode Classic: %v", err)
 	}
 	if frame.Flags != 0 {
-		t.Fatalf("Classic flags = %#x, want no CAN FD or BRS flags", frame.Flags)
+		t.Fatalf("Classic flags = %v, want no CAN FD or BRS flags", frame.Flags)
 	}
 	assertDecoded(t, classic, frame, "Value", uint64(7))
 }
@@ -302,6 +302,51 @@ func TestMessagesByPGNCanonicalisesPDU1Identifiers(t *testing.T) {
 	matches := database.MessagesByPGN(0xda00)
 	if len(matches) != 2 || matches[0].Name != "First" || matches[1].Name != "Second" {
 		t.Fatalf("MessagesByPGN = %#v", matches)
+	}
+}
+
+func TestMessageByIDLookup(t *testing.T) {
+	database := parseFixture(t, "testdata/codec.dbc")
+	if message, ok := database.MessageByID(0x123, false); !ok || message.Name != "Command" {
+		t.Fatalf("standard identifier 0x123 = %v, %t; want Command", message, ok)
+	}
+	if _, ok := database.MessageByID(0x123, true); ok {
+		t.Fatal("standard identifier 0x123 matched an extended lookup")
+	}
+	if _, ok := database.MessageByID(0x1abcde, false); ok {
+		t.Fatal("extended identifier 0x1abcde matched a standard lookup")
+	}
+	if message, ok := database.MessageByID(0x1abcde, true); !ok || message.Name != "FastStatus" {
+		t.Fatalf("extended identifier 0x1abcde = %v, %t; want FastStatus", message, ok)
+	}
+	if _, ok := database.MessageByID(0x125, false); ok {
+		t.Fatal("unknown identifier 0x125 resolved a message")
+	}
+
+	for index := range database.Messages {
+		message := &database.Messages[index]
+		found, ok := database.MessageByID(message.ID, message.Extended)
+		if !ok || found != message {
+			t.Fatalf("MessageByID(%#x, %t) did not return message %q", message.ID, message.Extended, message.Name)
+		}
+	}
+
+	j1939Database := parseFixture(t, "testdata/multiplex_j1939.dbc")
+	engine, ok := j1939Database.MessageByName("EngineTemperature")
+	if !ok {
+		t.Fatal("EngineTemperature message was not resolved")
+	}
+	if engine.Format != FrameFormatJ1939 || engine.ID != 0x18feee80 {
+		t.Fatalf("EngineTemperature = format %d identifier %#x, want J1939 0x18feee80", engine.Format, engine.ID)
+	}
+	found, ok := j1939Database.MessageByID(engine.ID, engine.Extended)
+	if !ok || found != engine {
+		t.Fatalf("MessageByID(%#x, %t) = %v, %t; want EngineTemperature", engine.ID, engine.Extended, found, ok)
+	}
+
+	var missing *Database
+	if _, ok := missing.MessageByID(0x123, false); ok {
+		t.Fatal("a nil database resolved a message")
 	}
 }
 
