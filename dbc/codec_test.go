@@ -280,7 +280,7 @@ func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {
 		t.Fatalf("Encode Classic: %v", err)
 	}
 	if frame.Flags != 0 {
-		t.Fatalf("Classic flags = %#x, want no CAN FD or BRS flags", frame.Flags)
+		t.Fatalf("Classic flags = %v, want no CAN FD or BRS flags", frame.Flags)
 	}
 	assertDecoded(t, classic, frame, "Value", uint64(7))
 }

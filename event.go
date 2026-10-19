@@ -19,6 +19,20 @@ const (
 	EventReceiveOverrun
 )
 
+// String returns the kind's name, or "EventKind(n)" for an undefined value.
+func (kind EventKind) String() string {
+	switch kind {
+	case EventControllerState:
+		return "controller state"
+	case EventErrorFrame:
+		return "error frame"
+	case EventReceiveOverrun:
+		return "receive overrun"
+	default:
+		return fmt.Sprintf("EventKind(%d)", uint8(kind))
+	}
+}
+
 // ControllerState is the operating state of a CAN controller.
 type ControllerState uint8
 
@@ -33,6 +47,23 @@ const (
 	// ControllerBusOff indicates that the controller entered the bus-off state.
 	ControllerBusOff
 )
+
+// String returns the state's name as the trace formats spell it, or
+// "ControllerState(n)" for an undefined value.
+func (state ControllerState) String() string {
+	switch state {
+	case ControllerActive:
+		return "error active"
+	case ControllerWarning:
+		return "error warning"
+	case ControllerPassive:
+		return "error passive"
+	case ControllerBusOff:
+		return "bus off"
+	default:
+		return fmt.Sprintf("ControllerState(%d)", uint8(state))
+	}
+}
 
 // Event is one non-frame bus observation and its capture metadata.
 //

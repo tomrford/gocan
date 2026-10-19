@@ -8,6 +8,7 @@ package gocan
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -41,9 +42,38 @@ const (
 
 const allFrameFlags = FrameExtended | FrameRemote | FrameFD | FrameBitRateSwitch | FrameErrorStateIndicator
 
+// hexDigits renders identifiers, data length codes, and payload bytes in the
+// uppercase form trace logs use.
+const hexDigits = "0123456789ABCDEF"
+
 // Has reports whether flags contains flag.
 func (flags FrameFlags) Has(flag FrameFlags) bool {
 	return flags&flag != 0
+}
+
+// String returns the names of the flags that are set, separated by "|", or the
+// empty string when none is set. An undefined bit renders as its hexadecimal
+// value. For example, "extended|fd|brs".
+func (flags FrameFlags) String() string {
+	names := make([]string, 0, 5)
+	for _, named := range [...]struct {
+		flag FrameFlags
+		name string
+	}{
+		{FrameExtended, "extended"},
+		{FrameRemote, "remote"},
+		{FrameFD, "fd"},
+		{FrameBitRateSwitch, "brs"},
+		{FrameErrorStateIndicator, "esi"},
+	} {
+		if flags.Has(named.flag) {
+			names = append(names, named.name)
+		}
+	}
+	if unknown := flags &^ allFrameFlags; unknown != 0 {
+		names = append(names, fmt.Sprintf("%#x", uint8(unknown)))
+	}
+	return strings.Join(names, "|")
 }
 
 // Frame is an owned classical CAN or CAN FD frame.
@@ -110,7 +140,7 @@ func (frame Frame) DataLength() int {
 // Validate reports whether frame is a valid classical CAN or CAN FD frame.
 func (frame Frame) Validate() error {
 	if unknown := frame.Flags &^ allFrameFlags; unknown != 0 {
-		return fmt.Errorf("%w: unknown frame flags %#x", ErrInvalidFrame, unknown)
+		return fmt.Errorf("%w: unknown frame flags %#x", ErrInvalidFrame, uint8(unknown))
 	}
 	if frame.Flags.Has(FrameExtended) {
 		if frame.ID > MaxExtendedID {
@@ -136,6 +166,57 @@ func (frame Frame) Validate() error {
 		return fmt.Errorf("%w: %v", ErrInvalidFrame, err)
 	}
 	return nil
+}
+
+// String returns frame in the compact can-utils form that cansend accepts and
+// "candump -L" logs write, which cantraceviewer and python-can's
+// CanutilsLogReader also read. A standard identifier uses three hexadecimal
+// digits and an extended identifier eight. A remote frame renders its requested
+// data length code after "R". CAN FD adds a flag digit carrying bit-rate
+// switching and the error state indicator. A classical data length code above
+// eight follows its eight payload bytes, or a remote frame's length 8, as "_<dlc>".
+//
+// This is a log form, not a canonical serialization: the asc and mf4 writers
+// define their own rendering. A frame that does not Validate renders as a
+// diagnostic struct instead, so an invalid frame is never mistaken for a record.
+func (frame Frame) String() string {
+	if err := frame.Validate(); err != nil {
+		return fmt.Sprintf("Frame{ID: %#x, DLC: %d, Flags: %#x, Data: % X} (invalid)",
+			frame.ID, frame.DLC, uint8(frame.Flags), frame.Data[:min(int(frame.DLC), MaxDataLength)])
+	}
+
+	buffer := make([]byte, 0, 8+2+2*MaxDataLength)
+	if frame.Flags.Has(FrameExtended) {
+		buffer = fmt.Appendf(buffer, "%08X#", frame.ID)
+	} else {
+		buffer = fmt.Appendf(buffer, "%03X#", frame.ID)
+	}
+	if frame.Flags.Has(FrameRemote) {
+		buffer = append(buffer, 'R')
+		if frame.DLC > 8 {
+			buffer = append(buffer, '8', '_', hexDigits[frame.DLC])
+		} else if frame.DLC != 0 {
+			buffer = append(buffer, hexDigits[frame.DLC])
+		}
+		return string(buffer)
+	}
+	if frame.Flags.Has(FrameFD) {
+		var flags byte
+		if frame.Flags.Has(FrameBitRateSwitch) {
+			flags |= 1
+		}
+		if frame.Flags.Has(FrameErrorStateIndicator) {
+			flags |= 2
+		}
+		buffer = append(buffer, '#', hexDigits[flags])
+	}
+	for _, value := range frame.Data[:frame.DataLength()] {
+		buffer = append(buffer, hexDigits[value>>4], hexDigits[value&0x0f])
+	}
+	if !frame.Flags.Has(FrameFD) && frame.DLC > 8 {
+		buffer = append(buffer, '_', hexDigits[frame.DLC])
+	}
+	return string(buffer)
 }
 
 // DLCToLength converts an on-wire data length code to a payload length in
@@ -204,6 +285,18 @@ const (
 	// DirectionTransmit indicates a frame submitted for transmission.
 	DirectionTransmit
 )
+
+// String returns the direction's name, or "Direction(n)" for an undefined value.
+func (direction Direction) String() string {
+	switch direction {
+	case DirectionReceive:
+		return "receive"
+	case DirectionTransmit:
+		return "transmit"
+	default:
+		return fmt.Sprintf("Direction(%d)", uint8(direction))
+	}
+}
 
 // FrameKey identifies a frame series within a multi-bus capture.
 //
