@@ -950,165 +950,93 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	}
 }
 
-func TestResetDiscardsUnreadTraffic(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network virtual.Network
-	first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
-	if err != nil {
-		t.Fatalf("Open first: %v", err)
-	}
-	t.Cleanup(func() { _ = first.Close() })
-	second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
-	if err != nil {
-		t.Fatalf("Open second: %v", err)
-	}
-	t.Cleanup(func() { _ = second.Close() })
-
-	sender, err := isotp.New(second, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
-	if err != nil {
-		t.Fatalf("New sender: %v", err)
-	}
-	receiver, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
-	if err != nil {
-		t.Fatalf("New receiver: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Prove the transmit identifier is live, so an unchanged series afterwards
-	// shows that Reset itself transmitted nothing.
-	if err := receiver.Send(ctx, []byte{0x3e, 0x00}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	transmitKey := gocan.FrameKey{Bus: first.ID(), ID: 0x7e0, Direction: gocan.DirectionTransmit}
-	transmitted := capture.Series(transmitKey)
-	if len(transmitted) != 1 {
-		t.Fatalf("link transmitted %d frames before Reset, want its single Send", len(transmitted))
-	}
-
-	// Two payloads arrive and are never read. Wait until both are captured:
-	// Reset discards captured traffic only, so a frame still in flight would
-	// legitimately arrive after it.
-	stale, unread := patternedPayload(4, 0x51), patternedPayload(5, 0x52)
-	receiveKey := gocan.FrameKey{Bus: first.ID(), ID: 0x7e8, Direction: gocan.DirectionReceive}
-	cursor := capture.End()
-	for _, payload := range [][]byte{stale, unread} {
-		if err := sender.Send(ctx, payload); err != nil {
-			t.Fatalf("Send queued payload: %v", err)
-		}
-		event, next, err := capture.Next(ctx, receiveKey, cursor)
-		if err != nil {
-			t.Fatalf("waiting for a queued payload: %v", err)
-		}
-		want := append([]byte{byte(len(payload))}, payload...)
-		if got := event.Frame.Data[:len(want)]; !bytes.Equal(got, want) {
-			t.Fatalf("queued payload frame = %x, want %x", got, want)
-		}
-		cursor = next
-	}
-
-	// The token is free here, so a cancelled Reset races its own context in
-	// acquire. Repeat so a Reset that wins the token cannot pass by chance.
-	position := receiver.Cursor()
-	cancelled, cancelWait := context.WithCancel(ctx)
-	cancelWait()
-	for range 32 {
-		if err := receiver.Reset(cancelled); !errors.Is(err, context.Canceled) {
-			t.Fatalf("idle Reset with a cancelled context = %v, want context.Canceled", err)
-		}
-	}
-	if receiver.Cursor() != position {
-		t.Fatal("a cancelled Reset moved the receive position")
-	}
-
-	if err := receiver.Reset(ctx); err != nil {
-		t.Fatalf("Reset: %v", err)
-	}
-	if got := capture.Series(transmitKey); len(got) != len(transmitted) {
-		t.Fatalf("Reset transmitted %d frames, want none", len(got)-len(transmitted))
-	}
-
-	// Only traffic that arrives after Reset is received, in order, and the
-	// discarded payloads never resurface.
-	for _, want := range [][]byte{patternedPayload(6, 0x53), patternedPayload(3, 0x54)} {
-		if err := sender.Send(ctx, want); err != nil {
-			t.Fatalf("Send after Reset: %v", err)
-		}
-		got, err := receiver.Receive(ctx)
-		if err != nil {
-			t.Fatalf("Receive after Reset: %v", err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("Receive after Reset = %x, want %x", got, want)
-		}
-	}
-
-	if err := first.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	for range 32 {
-		if err := receiver.Reset(ctx); !errors.Is(err, gocan.ErrBusClosed) {
-			t.Fatalf("Reset on a closed bus = %v, want gocan.ErrBusClosed", err)
-		}
-	}
-}
-
-func TestResetWaitsForOpenExchange(t *testing.T) {
+// TestReset walks one server link through Reset: a cancelled Reset never moves
+// the position even when the token is free, Reset drops captured payloads
+// without transmitting, it waits for an open Exchange, and it fails once the
+// bus has closed.
+func TestReset(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		capture := gocan.NewCapture()
 		var network virtual.Network
-		first, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "first"})
+		ecuBus, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "ecu"})
 		if err != nil {
-			t.Fatalf("Open first: %v", err)
+			t.Fatalf("Open ecu: %v", err)
 		}
-		t.Cleanup(func() { _ = first.Close() })
-		second, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "second"})
+		t.Cleanup(func() { _ = ecuBus.Close() })
+		testerBus, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "tester"})
 		if err != nil {
-			t.Fatalf("Open second: %v", err)
+			t.Fatalf("Open tester: %v", err)
 		}
-		t.Cleanup(func() { _ = second.Close() })
-
-		receiver, err := isotp.New(first, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		t.Cleanup(func() { _ = testerBus.Close() })
+		ecu, err := isotp.New(ecuBus, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
 		if err != nil {
-			t.Fatalf("New receiver: %v", err)
+			t.Fatalf("New ecu: %v", err)
+		}
+		tester, err := isotp.New(testerBus, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		if err != nil {
+			t.Fatalf("New tester: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		exchange, err := receiver.Begin(ctx, []byte{0x3e, 0x00})
+		if err := tester.Send(ctx, patternedPayload(4, 0x51)); err != nil {
+			t.Fatalf("Send stale payload: %v", err)
+		}
+		synctest.Wait()
+
+		// The token is free, so acquire races the cancelled context; repeat so a
+		// Reset that wins the token cannot pass by chance.
+		position := ecu.Cursor()
+		cancelled, cancelWait := context.WithCancel(ctx)
+		cancelWait()
+		for range 32 {
+			if err := ecu.Reset(cancelled); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Reset with a cancelled context = %v, want context.Canceled", err)
+			}
+		}
+		if ecu.Cursor() != position {
+			t.Fatal("a cancelled Reset moved the receive position")
+		}
+
+		records := capture.Len()
+		if err := ecu.Reset(ctx); err != nil {
+			t.Fatalf("Reset: %v", err)
+		}
+		if capture.Len() != records {
+			t.Fatal("Reset transmitted")
+		}
+		fresh := patternedPayload(5, 0x52)
+		if err := tester.Send(ctx, fresh); err != nil {
+			t.Fatalf("Send fresh payload: %v", err)
+		}
+		if got, err := ecu.Receive(ctx); err != nil || !bytes.Equal(got, fresh) {
+			t.Fatalf("Receive after Reset = %x, %v; want %x", got, err, fresh)
+		}
+
+		exchange, err := ecu.Begin(ctx, []byte{0x3e, 0x00})
 		if err != nil {
 			t.Fatalf("Begin: %v", err)
 		}
-		t.Cleanup(exchange.Close)
-
-		position := receiver.Cursor()
-		cancelled, cancelWait := context.WithCancel(ctx)
-		cancelWait()
-		if err := receiver.Reset(cancelled); !errors.Is(err, context.Canceled) {
-			t.Fatalf("Reset with a cancelled context = %v, want context.Canceled", err)
-		}
-		if receiver.Cursor() != position {
-			t.Fatal("a failed Reset moved the receive position")
-		}
-
-		blocked := make(chan error, 1)
-		go func() { blocked <- receiver.Reset(ctx) }()
+		done := make(chan error, 1)
+		go func() { done <- ecu.Reset(ctx) }()
 		synctest.Wait()
 		select {
-		case err := <-blocked:
+		case err := <-done:
 			t.Fatalf("Reset returned %v while an exchange was open", err)
 		default:
 		}
-
 		exchange.Close()
-		select {
-		case err := <-blocked:
-			if err != nil {
-				t.Fatalf("Reset after Close: %v", err)
+		if err := <-done; err != nil {
+			t.Fatalf("Reset after Close: %v", err)
+		}
+
+		if err := ecuBus.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		for range 32 {
+			if err := ecu.Reset(ctx); !errors.Is(err, gocan.ErrBusClosed) {
+				t.Fatalf("Reset on a closed bus = %v, want gocan.ErrBusClosed", err)
 			}
-		case <-time.After(time.Second):
-			t.Fatal("Reset did not return after the exchange closed")
 		}
 	})
 }
