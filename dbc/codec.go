@@ -35,6 +35,25 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 	return &database.Messages[index], true
 }
 
+// MessageByID returns the resolved message with arbitration identifier id,
+// which is 11-bit unless extended is set. The extended flag is part of the
+// identity, so an extended message never answers a standard lookup of the same
+// numeric identifier.
+//
+// A J1939 message matches only its declared identifier, including priority and
+// source, so a frame from another source misses here even though Decode accepts
+// it. Use MessagesByPGN to match J1939 traffic by parameter group.
+func (database *Database) MessageByID(id uint32, extended bool) (*Message, bool) {
+	if database == nil {
+		return nil, false
+	}
+	index, ok := database.messagesByID[messageID{id: id, extended: extended}]
+	if !ok {
+		return nil, false
+	}
+	return &database.Messages[index], true
+}
+
 // MessagesByPGN returns the resolved J1939 messages with pgn in declaration
 // order. More than one message may deliberately describe the same PGN.
 // Callers must resolve multiple matches from their device/database context;
