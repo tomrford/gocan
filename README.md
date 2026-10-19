@@ -76,6 +76,7 @@ func main() {
 | [`gocan`](https://pkg.go.dev/github.com/tomrford/gocan) | Raw CAN and CAN FD frames, the common bus interface, and concurrent multi-bus capture |
 | [`drivers`](https://pkg.go.dev/github.com/tomrford/gocan/drivers) | Discovery and opening of physical CAN channels |
 | [`drivers/virtual`](https://pkg.go.dev/github.com/tomrford/gocan/drivers/virtual) | In-process CAN networks for development and tests |
+| [`drivers/conformance`](https://pkg.go.dev/github.com/tomrford/gocan/drivers/conformance) | Driver-independent test suite for `gocan.Bus` implementations |
 | [`cyclic`](https://pkg.go.dev/github.com/tomrford/gocan/cyclic) | Recurring raw frame transmission |
 | [`asc`](https://pkg.go.dev/github.com/tomrford/gocan/asc) | Vector ASCII trace writing |
 | [`mf4`](https://pkg.go.dev/github.com/tomrford/gocan/mf4) | MDF 4.10 raw CAN/CAN FD export with DBC attachments, event markers, compression and application metadata |
@@ -102,6 +103,10 @@ link timing configured by Linux. PCAN, Vector and NI-XNET accept shared exact CA
 timing through the same public configuration.
 
 ## Driver restrictions
+
+SocketCAN carries classical DLC values 9–15 only on interfaces configured with
+`cc-len8-dlc on` (vcan passes them through). Without it, the controller sends
+those frames as DLC 8 and received frames report DLC 8.
 
 The PCAN classical API cannot transmit classical DLC values 9–15. PCAN-Basic
 cannot select ISO or non-ISO CAN FD framing, so the adapter's stored mode must
@@ -143,8 +148,9 @@ runtime, with no C compiler or Python dependency in applications.
 The module requires Go 1.25 or newer:
 
 ```sh
-go test ./...
+go test -race ./...
 go vet ./...
+gofmt -l .
 ```
 
 `gocan` is licensed under the [MIT License](LICENSE).
