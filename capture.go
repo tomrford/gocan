@@ -40,7 +40,7 @@ type Capture struct {
 
 	allocatingNext bool
 	latest         map[FrameKey]FrameEvent
-	latestEvents   map[BusID]Event
+	latestStates   map[BusID]Event
 	waiters        map[FrameKey]*captureWaiter
 	length         int
 	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
@@ -65,7 +65,7 @@ func NewCapture() *Capture {
 			initialCaptureChunkPayloadCapacity,
 		),
 		latest:       make(map[FrameKey]FrameEvent),
-		latestEvents: make(map[BusID]Event),
+		latestStates: make(map[BusID]Event),
 	}
 }
 
@@ -537,11 +537,9 @@ func (capture *Capture) appendEvent(event Event, live bool) error {
 	eventState.lastRecord = recordIndex
 	eventState.count++
 	chunk.eventStates[event.Bus] = eventState
-	stored := chunk.view().eventAt(recordIndex)
-	if capture.latestEvents == nil {
-		capture.latestEvents = make(map[BusID]Event)
+	if event.Kind == EventControllerState {
+		capture.latestStates[event.Bus] = chunk.view().eventAt(recordIndex)
 	}
-	capture.latestEvents[event.Bus] = stored
 	capture.length++
 	return nil
 }
@@ -566,15 +564,16 @@ func (capture *Capture) Latest(key FrameKey) (FrameEvent, bool) {
 	return event, ok
 }
 
-// LatestEvent returns an owned copy of the latest non-frame event from bus. The
-// capture keeps that copy, so pruning the records it came from does not lose it.
-// A bus with no retained event reports false. Frames are not events; use Latest
-// for a frame series.
-func (capture *Capture) LatestEvent(bus BusID) (Event, bool) {
+// LatestControllerState returns an owned copy of the latest EventControllerState
+// event from bus. Error-frame and overrun events do not replace it, so it
+// reports the controller's last known state. The capture keeps that copy, so
+// pruning the records it came from does not lose it. A bus that has reported
+// no controller state since NewCapture or Clear reports false.
+func (capture *Capture) LatestControllerState(bus BusID) (Event, bool) {
 	capture.mu.RLock()
 	defer capture.mu.RUnlock()
 
-	event, ok := capture.latestEvents[bus]
+	event, ok := capture.latestStates[bus]
 	return event, ok
 }
 
@@ -1132,7 +1131,7 @@ func (capture *Capture) Clear() {
 	capture.active = fresh
 	capture.chunks = []*captureChunk{fresh}
 	clear(capture.latest)
-	clear(capture.latestEvents)
+	clear(capture.latestStates)
 	capture.length = 0
 	capture.pruneSeam = Cursor{}
 	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))
