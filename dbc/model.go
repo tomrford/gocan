@@ -23,8 +23,17 @@ type Database struct {
 	Diagnostics          []Diagnostic
 
 	messagesByName map[string]int
+	messagesByID   map[messageID]int
 	messagesByPGN  map[j1939.PGN][]int
 	source         string
+}
+
+// messageID indexes one message by its resolved arbitration identifier. The
+// extended flag is part of the identity: a standard and an extended message may
+// share the same numeric identifier.
+type messageID struct {
+	id       uint32
+	extended bool
 }
 
 // Source returns the exact input passed to Parse or read by ParseFile, including
