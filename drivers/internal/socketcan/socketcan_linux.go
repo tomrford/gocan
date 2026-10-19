@@ -435,7 +435,7 @@ func encodeFrame(frame gocan.Frame, buffer *[fdMTU]byte) []byte {
 	binary.NativeEndian.PutUint32(packet[:4], canID)
 
 	if frame.Flags.Has(gocan.FrameRemote) {
-		packet[4] = frame.DLC
+		packet[4] = min(frame.DLC, 8)
 	} else {
 		packet[4] = byte(frame.DataLength())
 		copy(packet[8:], frame.Data[:frame.DataLength()])
@@ -450,6 +450,9 @@ func encodeFrame(frame gocan.Frame, buffer *[fdMTU]byte) []byte {
 			packet[5] |= canFDErrorState
 		}
 	} else if frame.DLC > 8 {
+		// Linux UAPI len8_dlc: a classical DLC of 9-15, data or remote, travels
+		// in byte 7 with len 8. Controllers honour it only with CAN_CTRLMODE_CC_LEN8_DLC set
+		// (ip link ... cc-len8-dlc on); otherwise the frame goes out as DLC 8.
 		packet[7] = frame.DLC
 	}
 	return packet
@@ -495,6 +498,7 @@ func decodeFrame(packet []byte) (gocan.Frame, error) {
 			return gocan.Frame{}, fmt.Errorf("classical SocketCAN payload length %d exceeds 8", payloadLength)
 		}
 		frame.DLC = uint8(payloadLength)
+		// len8_dlc, as in encodeFrame: valid only alongside len 8.
 		if payloadLength == 8 && packet[7] > 8 && packet[7] <= 15 {
 			frame.DLC = packet[7]
 		}

@@ -40,6 +40,9 @@ type Capabilities struct {
 	FD bool
 	// RemoteFrames enables the classical remote frame case.
 	RemoteFrames bool
+	// ClassicalDLCAboveEight enables classical data and remote cases whose
+	// DLC is 9-15, which must arrive with that DLC intact.
+	ClassicalDLCAboveEight bool
 	// InduceOverrun forces a receive overrun on target while leaving healthy
 	// usable. Both buses belong to this suite's medium. Nil skips the overrun
 	// contract case: a healthy receive loop always drains, so most real media
@@ -280,6 +283,13 @@ func testFrameShapes(t *testing.T, open Pair, caps Capabilities) {
 	if caps.RemoteFrames {
 		remote, err := gocan.NewRemoteFrame(0x104, 4, false)
 		add("remote", remote, err)
+	}
+	if caps.ClassicalDLCAboveEight {
+		long := gocan.Frame{ID: 0x105, DLC: 15}
+		copy(long.Data[:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+		add("classical dlc 15", long, long.Validate())
+		remote, err := gocan.NewRemoteFrame(0x106, 9, false)
+		add("remote dlc 9", remote, err)
 	}
 
 	for _, shape := range shapes {

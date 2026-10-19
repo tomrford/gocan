@@ -25,8 +25,9 @@ func TestConformance(t *testing.T) {
 	}
 
 	conformance.Run(t, open, conformance.Capabilities{
-		FD:           true,
-		RemoteFrames: true,
+		FD:                     true,
+		RemoteFrames:           true,
+		ClassicalDLCAboveEight: true,
 		InduceOverrun: func(_ *testing.T, _, target gocan.Bus) {
 			target.(*Bus).fail(gocan.ErrReceiveOverrun)
 		},

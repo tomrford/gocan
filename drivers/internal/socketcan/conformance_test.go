@@ -44,8 +44,9 @@ func TestVCanConformance(t *testing.T) {
 	}
 
 	conformance.Run(t, open, conformance.Capabilities{
-		FD:           true,
-		RemoteFrames: true,
+		FD:                     true,
+		RemoteFrames:           true,
+		ClassicalDLCAboveEight: true,
 		InduceOverrun: func(t *testing.T, healthy, target gocan.Bus) {
 			induceVCanOverrun(t, healthy.(*Bus), target.(*Bus), iface)
 		},
