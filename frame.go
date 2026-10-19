@@ -140,7 +140,7 @@ func (frame Frame) DataLength() int {
 // Validate reports whether frame is a valid classical CAN or CAN FD frame.
 func (frame Frame) Validate() error {
 	if unknown := frame.Flags &^ allFrameFlags; unknown != 0 {
-		return fmt.Errorf("%w: unknown frame flags %#x", ErrInvalidFrame, unknown)
+		return fmt.Errorf("%w: unknown frame flags %#x", ErrInvalidFrame, uint8(unknown))
 	}
 	if frame.Flags.Has(FrameExtended) {
 		if frame.ID > MaxExtendedID {
@@ -339,11 +339,4 @@ func (event FrameEvent) Validate() error {
 		return fmt.Errorf("frame event has invalid direction %d", event.Direction)
 	}
 	return event.Frame.Validate()
-}
-
-// String returns the event's bus, direction, and frame in the can-utils log
-// form, for example "bus 1 receive 123#11223344". Timestamp is not included;
-// format it separately when a log needs it.
-func (event FrameEvent) String() string {
-	return fmt.Sprintf("bus %d %s %s", event.Bus, event.Direction, event.Frame)
 }

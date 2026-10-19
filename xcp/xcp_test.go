@@ -809,7 +809,7 @@ func (r *rig) expect(want ...byte) {
 		}
 	}
 	if event.Frame.Flags != r.config.FrameFlags || !bytes.Equal(event.Frame.Data[:event.Frame.DataLength()], want) {
-		r.t.Fatalf("request %x flags %x, want %x flags %x", event.Frame.Data[:event.Frame.DataLength()], event.Frame.Flags, want, r.config.FrameFlags)
+		r.t.Fatalf("request %x flags %v, want %x flags %v", event.Frame.Data[:event.Frame.DataLength()], event.Frame.Flags, want, r.config.FrameFlags)
 	}
 }
 

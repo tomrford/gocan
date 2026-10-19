@@ -139,17 +139,3 @@ func (event Event) Validate() error {
 	}
 	return nil
 }
-
-// String returns the event's bus, kind, and controller details when they are
-// known, for example "bus 1 controller state bus off (tx 12 rx 3)". Timestamp is
-// not included; format it separately when a log needs it.
-func (event Event) String() string {
-	if event.Kind == EventControllerState {
-		if event.ErrorCountsKnown {
-			return fmt.Sprintf("bus %d controller state %s (tx %d rx %d)",
-				event.Bus, event.ControllerState, event.TXErrorCount, event.RXErrorCount)
-		}
-		return fmt.Sprintf("bus %d controller state %s", event.Bus, event.ControllerState)
-	}
-	return fmt.Sprintf("bus %d %s", event.Bus, event.Kind)
-}

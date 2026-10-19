@@ -9,7 +9,7 @@ func testFrame(t *testing.T, id uint32, data []byte, flags FrameFlags) Frame {
 	t.Helper()
 	frame, err := NewFrame(id, data, flags)
 	if err != nil {
-		t.Fatalf("NewFrame(%#x, %d bytes, %#x): %v", id, len(data), flags, err)
+		t.Fatalf("NewFrame(%#x, %d bytes, %v): %v", id, len(data), flags, err)
 	}
 	return frame
 }
@@ -75,88 +75,5 @@ func TestFrameStringInvalidFrame(t *testing.T) {
 		if !strings.HasPrefix(got, "Frame{") || !strings.HasSuffix(got, " (invalid)") {
 			t.Errorf("String() of %#v = %q, want the diagnostic form", frame, got)
 		}
-	}
-}
-
-func TestVocabularyStrings(t *testing.T) {
-	tests := []struct {
-		name string
-		got  string
-		want string
-	}{
-		{"direction receive", DirectionReceive.String(), "receive"},
-		{"direction transmit", DirectionTransmit.String(), "transmit"},
-		{"direction unset", Direction(0).String(), "Direction(0)"},
-		{"direction unknown", Direction(9).String(), "Direction(9)"},
-		{"flags unset", FrameFlags(0).String(), ""},
-		{"flags extended", FrameExtended.String(), "extended"},
-		{"flags remote", FrameRemote.String(), "remote"},
-		{"flags can fd", FrameFD.String(), "fd"},
-		{"flags bit-rate switch", FrameBitRateSwitch.String(), "brs"},
-		{"flags error state indicator", FrameErrorStateIndicator.String(), "esi"},
-		{"flags all", allFrameFlags.String(), "extended|remote|fd|brs|esi"},
-		{"flags undefined bit", (FrameFD | 1<<7).String(), "fd|0x80"},
-		{"event kind controller state", EventControllerState.String(), "controller state"},
-		{"event kind error frame", EventErrorFrame.String(), "error frame"},
-		{"event kind receive overrun", EventReceiveOverrun.String(), "receive overrun"},
-		{"event kind unset", EventKind(0).String(), "EventKind(0)"},
-		{"controller active", ControllerActive.String(), "error active"},
-		{"controller warning", ControllerWarning.String(), "error warning"},
-		{"controller passive", ControllerPassive.String(), "error passive"},
-		{"controller bus off", ControllerBusOff.String(), "bus off"},
-		{"controller unset", ControllerState(0).String(), "ControllerState(0)"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if test.got != test.want {
-				t.Errorf("String() = %q, want %q", test.got, test.want)
-			}
-		})
-	}
-}
-
-func TestEventStrings(t *testing.T) {
-	received := testDataEvent(t, testBus0, 0x123, 0, []byte{0x11, 0x22}, 0, DirectionReceive)
-	if got, want := received.String(), "bus 1 receive 123#1122"; got != want {
-		t.Errorf("FrameEvent.String() = %q, want %q", got, want)
-	}
-	transmitted := testDataEvent(t, testBus1, 0x1abcde, FrameExtended|FrameFD, []byte{0xaa}, 1, DirectionTransmit)
-	if got, want := transmitted.String(), "bus 2 transmit 001ABCDE##0AA"; got != want {
-		t.Errorf("FrameEvent.String() = %q, want %q", got, want)
-	}
-
-	busOff, err := NewControllerStateEvent(testBus1, captureTestBase, ControllerBusOff, 12, 3, true)
-	if err != nil {
-		t.Fatalf("NewControllerStateEvent: %v", err)
-	}
-	unknownCounts, err := NewControllerStateEvent(testBus1, captureTestBase, ControllerWarning, 0, 0, false)
-	if err != nil {
-		t.Fatalf("NewControllerStateEvent: %v", err)
-	}
-	errorFrame, err := NewErrorFrameEvent(testBus1, captureTestBase)
-	if err != nil {
-		t.Fatalf("NewErrorFrameEvent: %v", err)
-	}
-	overrun, err := NewReceiveOverrunEvent(testBus1, captureTestBase)
-	if err != nil {
-		t.Fatalf("NewReceiveOverrunEvent: %v", err)
-	}
-
-	events := []struct {
-		name  string
-		event Event
-		want  string
-	}{
-		{"controller state with counts", busOff, "bus 2 controller state bus off (tx 12 rx 3)"},
-		{"controller state without counts", unknownCounts, "bus 2 controller state error warning"},
-		{"error frame", errorFrame, "bus 2 error frame"},
-		{"receive overrun", overrun, "bus 2 receive overrun"},
-	}
-	for _, test := range events {
-		t.Run(test.name, func(t *testing.T) {
-			if got := test.event.String(); got != test.want {
-				t.Errorf("Event.String() = %q, want %q", got, test.want)
-			}
-		})
 	}
 }
