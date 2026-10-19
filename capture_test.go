@@ -346,6 +346,84 @@ func TestCaptureMixedRecords(t *testing.T) {
 	}
 }
 
+func TestCaptureLatestEvent(t *testing.T) {
+	// A one-record chunk seals after the first append, so pruning the records
+	// that follow can discard the first event's storage while later records stay.
+	capture := newTestCapture(1, 8)
+	if _, ok := capture.LatestEvent(testBus0); ok {
+		t.Fatal("an empty capture reported a latest event")
+	}
+
+	state0, err := NewControllerStateEvent(testBus0, captureTestBase.Add(time.Millisecond), ControllerWarning, 12, 34, true)
+	if err != nil {
+		t.Fatalf("NewControllerStateEvent: %v", err)
+	}
+	error1, err := NewErrorFrameEvent(testBus1, captureTestBase.Add(2*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewErrorFrameEvent: %v", err)
+	}
+	state1, err := NewControllerStateEvent(testBus1, captureTestBase.Add(3*time.Millisecond), ControllerActive, 0, 1, true)
+	if err != nil {
+		t.Fatalf("NewControllerStateEvent: %v", err)
+	}
+
+	// A frame appended after the bus's newest event must not become that event.
+	frame := testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 4, DirectionReceive)
+	for _, appendRecord := range []func() error{
+		func() error { return capture.AppendEvent(state0) },
+		func() error { return capture.AppendEvent(error1) },
+		func() error { return capture.AppendEvent(state1) },
+		func() error { return capture.Append(frame) },
+	} {
+		if err := appendRecord(); err != nil {
+			t.Fatalf("append record: %v", err)
+		}
+	}
+
+	latest, ok := capture.LatestEvent(testBus0)
+	if !ok {
+		t.Fatal("bus 0 has no latest event")
+	}
+	requireBusEvents(t, "bus 0 latest event", []Event{latest}, []Event{state0})
+	latest, ok = capture.LatestEvent(testBus1)
+	if !ok {
+		t.Fatal("bus 1 has no latest event")
+	}
+	requireBusEvents(t, "bus 1 latest event", []Event{latest}, []Event{state1})
+	if !latest.ErrorCountsKnown || latest.TXErrorCount != 0 || latest.RXErrorCount != 1 {
+		t.Fatalf("bus 1 latest event = %+v, want the active state with its counts", latest)
+	}
+	if _, ok := capture.LatestEvent(BusID(3)); ok {
+		t.Fatal("an unrecorded bus reported a latest event")
+	}
+
+	// As with Latest, discarding the records keeps the stored copy available.
+	if err := capture.Prune(capture.End()); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if retained := capture.BusEvents(testBus0); len(retained) != 0 {
+		t.Fatalf("bus 0 events after Prune = %+v, want the discarded record gone", retained)
+	}
+	latest, ok = capture.LatestEvent(testBus0)
+	if !ok {
+		t.Fatal("pruning discarded the latest event")
+	}
+	requireBusEvents(t, "bus 0 latest event after Prune", []Event{latest}, []Event{state0})
+	latest, ok = capture.LatestEvent(testBus1)
+	if !ok {
+		t.Fatal("bus 1 has no latest event after Prune")
+	}
+	requireBusEvents(t, "bus 1 latest event after Prune", []Event{latest}, []Event{state1})
+
+	capture.Clear()
+	if _, ok := capture.LatestEvent(testBus0); ok {
+		t.Fatal("Clear kept the latest event")
+	}
+	if _, ok := capture.LatestEvent(testBus1); ok {
+		t.Fatal("Clear kept the latest event of a bus with retained records")
+	}
+}
+
 func TestCaptureBetween(t *testing.T) {
 	capture := NewCapture()
 	frames := []FrameEvent{

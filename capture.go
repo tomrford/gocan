@@ -40,6 +40,7 @@ type Capture struct {
 
 	allocatingNext bool
 	latest         map[FrameKey]FrameEvent
+	latestEvents   map[BusID]Event
 	waiters        map[FrameKey]*captureWaiter
 	length         int
 	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
@@ -63,7 +64,8 @@ func NewCapture() *Capture {
 			initialCaptureChunkRecordCapacity,
 			initialCaptureChunkPayloadCapacity,
 		),
-		latest: make(map[FrameKey]FrameEvent),
+		latest:       make(map[FrameKey]FrameEvent),
+		latestEvents: make(map[BusID]Event),
 	}
 }
 
@@ -535,6 +537,11 @@ func (capture *Capture) appendEvent(event Event, live bool) error {
 	eventState.lastRecord = recordIndex
 	eventState.count++
 	chunk.eventStates[event.Bus] = eventState
+	stored := chunk.view().eventAt(recordIndex)
+	if capture.latestEvents == nil {
+		capture.latestEvents = make(map[BusID]Event)
+	}
+	capture.latestEvents[event.Bus] = stored
 	capture.length++
 	return nil
 }
@@ -556,6 +563,18 @@ func (capture *Capture) Latest(key FrameKey) (FrameEvent, bool) {
 	defer capture.mu.RUnlock()
 
 	event, ok := capture.latest[key]
+	return event, ok
+}
+
+// LatestEvent returns an owned copy of the latest non-frame event from bus. The
+// capture keeps that copy, so pruning the records it came from does not lose it.
+// A bus with no retained event reports false. Frames are not events; use Latest
+// for a frame series.
+func (capture *Capture) LatestEvent(bus BusID) (Event, bool) {
+	capture.mu.RLock()
+	defer capture.mu.RUnlock()
+
+	event, ok := capture.latestEvents[bus]
 	return event, ok
 }
 
@@ -1113,6 +1132,7 @@ func (capture *Capture) Clear() {
 	capture.active = fresh
 	capture.chunks = []*captureChunk{fresh}
 	clear(capture.latest)
+	clear(capture.latestEvents)
 	capture.length = 0
 	capture.pruneSeam = Cursor{}
 	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))
