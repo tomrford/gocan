@@ -168,12 +168,13 @@ func (frame Frame) Validate() error {
 	return nil
 }
 
-// String returns frame as a can-utils log line: the form written by "candump -L"
-// and read by candump, cantraceviewer, and python-can's CanutilsLogWriter. A
-// standard identifier uses three hexadecimal digits and an extended identifier
-// eight, a remote frame renders its requested data length code after "R", CAN FD
-// adds a flag digit carrying bit-rate switching and the error state indicator,
-// and a classical frame whose data length code exceeds eight appends "_<dlc>".
+// String returns frame in the compact can-utils form that cansend accepts and
+// "candump -L" logs write, which cantraceviewer and python-can's
+// CanutilsLogReader also read. A standard identifier uses three hexadecimal
+// digits and an extended identifier eight. A remote frame renders its requested
+// data length code after "R". CAN FD adds a flag digit carrying bit-rate
+// switching and the error state indicator. A classical data length code above
+// eight follows its eight payload bytes, or a remote frame's length 8, as "_<dlc>".
 //
 // This is a log form, not a canonical serialization: the asc and mf4 writers
 // define their own rendering. A frame that does not Validate renders as a
@@ -192,7 +193,9 @@ func (frame Frame) String() string {
 	}
 	if frame.Flags.Has(FrameRemote) {
 		buffer = append(buffer, 'R')
-		if frame.DLC != 0 {
+		if frame.DLC > 8 {
+			buffer = append(buffer, '8', '_', hexDigits[frame.DLC])
+		} else if frame.DLC != 0 {
 			buffer = append(buffer, hexDigits[frame.DLC])
 		}
 		return string(buffer)

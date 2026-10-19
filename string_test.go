@@ -49,7 +49,8 @@ func TestFrameString(t *testing.T) {
 		{"remote with data length", testRemoteFrame(t, 0x123, 4, false), "123#R4"},
 		{"remote without data length", testRemoteFrame(t, 0x123, 0, false), "123#R"},
 		{"remote extended", testRemoteFrame(t, 0x1abcde, 8, true), "001ABCDE#R8"},
-		{"remote above eight", testRemoteFrame(t, 0x123, 9, false), "123#R9"},
+		{"remote dlc nine", testRemoteFrame(t, 0x123, 9, false), "123#R8_9"},
+		{"remote dlc fifteen", testRemoteFrame(t, 0x1abcde, 15, true), "001ABCDE#R8_F"},
 		{"classical dlc nine", rawDLCFrame(9), "123#0102030405060708_9"},
 		{"classical dlc fifteen", rawDLCFrame(15), "123#0102030405060708_F"},
 	}
