@@ -40,8 +40,9 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 // identity, so an extended message never answers a standard lookup of the same
 // numeric identifier.
 //
-// A J1939 message matches its declared identifier, including priority and
-// source; use MessagesByPGN to match by parameter group instead.
+// A J1939 message matches only its declared identifier, including priority and
+// source, so a frame from another source misses here even though Decode accepts
+// it. Use MessagesByPGN to match J1939 traffic by parameter group.
 func (database *Database) MessageByID(id uint32, extended bool) (*Message, bool) {
 	if database == nil {
 		return nil, false

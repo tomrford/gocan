@@ -307,11 +307,8 @@ func TestMessagesByPGNCanonicalisesPDU1Identifiers(t *testing.T) {
 
 func TestMessageByIDLookup(t *testing.T) {
 	database := parseFixture(t, "testdata/codec.dbc")
-	if _, ok := database.MessageByID(0x123, false); !ok {
-		t.Fatal("standard identifier 0x123 did not resolve Command")
-	}
-	if message, ok := database.MessageByID(0x123, false); ok && message.Name != "Command" {
-		t.Fatalf("standard identifier 0x123 resolved %q, want Command", message.Name)
+	if message, ok := database.MessageByID(0x123, false); !ok || message.Name != "Command" {
+		t.Fatalf("standard identifier 0x123 = %v, %t; want Command", message, ok)
 	}
 	if _, ok := database.MessageByID(0x123, true); ok {
 		t.Fatal("standard identifier 0x123 matched an extended lookup")
