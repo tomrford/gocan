@@ -36,7 +36,7 @@ func TestVCanClassicalDLCAboveEight(t *testing.T) {
 	for _, dlc := range []uint8{9, 15} {
 		data := gocan.Frame{ID: 0x6c0 + uint32(dlc), DLC: dlc}
 		copy(data.Data[:8], []byte{1, 2, 3, 4, 5, 6, 7, 8})
-		remote, err := gocan.NewRemoteFrame(0x1abc0 + uint32(dlc), dlc, true)
+		remote, err := gocan.NewRemoteFrame(0x1abc0+uint32(dlc), dlc, true)
 		if err != nil {
 			t.Fatalf("NewRemoteFrame DLC %d: %v", dlc, err)
 		}
