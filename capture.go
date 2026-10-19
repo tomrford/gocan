@@ -40,6 +40,7 @@ type Capture struct {
 
 	allocatingNext bool
 	latest         map[FrameKey]FrameEvent
+	latestStates   map[BusID]Event
 	waiters        map[FrameKey]*captureWaiter
 	length         int
 	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
@@ -63,7 +64,8 @@ func NewCapture() *Capture {
 			initialCaptureChunkRecordCapacity,
 			initialCaptureChunkPayloadCapacity,
 		),
-		latest: make(map[FrameKey]FrameEvent),
+		latest:       make(map[FrameKey]FrameEvent),
+		latestStates: make(map[BusID]Event),
 	}
 }
 
@@ -535,6 +537,9 @@ func (capture *Capture) appendEvent(event Event, live bool) error {
 	eventState.lastRecord = recordIndex
 	eventState.count++
 	chunk.eventStates[event.Bus] = eventState
+	if event.Kind == EventControllerState {
+		capture.latestStates[event.Bus] = chunk.view().eventAt(recordIndex)
+	}
 	capture.length++
 	return nil
 }
@@ -556,6 +561,19 @@ func (capture *Capture) Latest(key FrameKey) (FrameEvent, bool) {
 	defer capture.mu.RUnlock()
 
 	event, ok := capture.latest[key]
+	return event, ok
+}
+
+// LatestControllerState returns an owned copy of the latest EventControllerState
+// event from bus. Error-frame and overrun events do not replace it, so it
+// reports the controller's last known state. The capture keeps that copy, so
+// pruning the records it came from does not lose it. A bus that has reported
+// no controller state since NewCapture or Clear reports false.
+func (capture *Capture) LatestControllerState(bus BusID) (Event, bool) {
+	capture.mu.RLock()
+	defer capture.mu.RUnlock()
+
+	event, ok := capture.latestStates[bus]
 	return event, ok
 }
 
@@ -1113,6 +1131,7 @@ func (capture *Capture) Clear() {
 	capture.active = fresh
 	capture.chunks = []*captureChunk{fresh}
 	clear(capture.latest)
+	clear(capture.latestStates)
 	capture.length = 0
 	capture.pruneSeam = Cursor{}
 	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))

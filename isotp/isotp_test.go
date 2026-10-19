@@ -950,6 +950,97 @@ func TestReceiveResynchronisesAfterCaptureClear(t *testing.T) {
 	}
 }
 
+// TestReset walks one server link through Reset: a cancelled Reset never moves
+// the position even when the token is free, Reset drops captured payloads
+// without transmitting, it waits for an open Exchange, and it fails once the
+// bus has closed.
+func TestReset(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network virtual.Network
+		ecuBus, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "ecu"})
+		if err != nil {
+			t.Fatalf("Open ecu: %v", err)
+		}
+		t.Cleanup(func() { _ = ecuBus.Close() })
+		testerBus, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "tester"})
+		if err != nil {
+			t.Fatalf("Open tester: %v", err)
+		}
+		t.Cleanup(func() { _ = testerBus.Close() })
+		ecu, err := isotp.New(ecuBus, isotp.Config{TransmitID: 0x7e8, ReceiveID: 0x7e0})
+		if err != nil {
+			t.Fatalf("New ecu: %v", err)
+		}
+		tester, err := isotp.New(testerBus, isotp.Config{TransmitID: 0x7e0, ReceiveID: 0x7e8})
+		if err != nil {
+			t.Fatalf("New tester: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := tester.Send(ctx, patternedPayload(4, 0x51)); err != nil {
+			t.Fatalf("Send stale payload: %v", err)
+		}
+		synctest.Wait()
+
+		// The token is free, so acquire races the cancelled context; repeat so a
+		// Reset that wins the token cannot pass by chance.
+		position := ecu.Cursor()
+		cancelled, cancelWait := context.WithCancel(ctx)
+		cancelWait()
+		for range 32 {
+			if err := ecu.Reset(cancelled); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Reset with a cancelled context = %v, want context.Canceled", err)
+			}
+		}
+		if ecu.Cursor() != position {
+			t.Fatal("a cancelled Reset moved the receive position")
+		}
+
+		records := capture.Len()
+		if err := ecu.Reset(ctx); err != nil {
+			t.Fatalf("Reset: %v", err)
+		}
+		if capture.Len() != records {
+			t.Fatal("Reset transmitted")
+		}
+		fresh := patternedPayload(5, 0x52)
+		if err := tester.Send(ctx, fresh); err != nil {
+			t.Fatalf("Send fresh payload: %v", err)
+		}
+		if got, err := ecu.Receive(ctx); err != nil || !bytes.Equal(got, fresh) {
+			t.Fatalf("Receive after Reset = %x, %v; want %x", got, err, fresh)
+		}
+
+		exchange, err := ecu.Begin(ctx, []byte{0x3e, 0x00})
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- ecu.Reset(ctx) }()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("Reset returned %v while an exchange was open", err)
+		default:
+		}
+		exchange.Close()
+		if err := <-done; err != nil {
+			t.Fatalf("Reset after Close: %v", err)
+		}
+
+		if err := ecuBus.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		for range 32 {
+			if err := ecu.Reset(ctx); !errors.Is(err, gocan.ErrBusClosed) {
+				t.Fatalf("Reset on a closed bus = %v, want gocan.ErrBusClosed", err)
+			}
+		}
+	})
+}
+
 type gatedBus struct {
 	gocan.Bus
 	gate <-chan struct{}
