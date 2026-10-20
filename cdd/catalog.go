@@ -351,6 +351,13 @@ func directChild(parent, candidate *element) bool {
 	return false
 }
 
+// dataIdentifierSpec reports whether spec names the data identifier on
+// ReadDataByIdentifier or WriteDataByIdentifier. Vector templates use "id"
+// or "did" for that parameter.
+func dataIdentifierSpec(spec string) bool {
+	return spec == "id" || spec == "did"
+}
+
 func didIdentifier(service *Service) (*uint16, error) {
 	var identifier *uint16
 	for _, message := range []*Message{service.Request, service.PositiveResponse} {
@@ -359,7 +366,7 @@ func didIdentifier(service *Service) (*uint16, error) {
 		}
 		var count int
 		for _, parameter := range message.Parameters {
-			if parameter.Spec != "id" {
+			if !dataIdentifierSpec(parameter.Spec) {
 				continue
 			}
 			count++
