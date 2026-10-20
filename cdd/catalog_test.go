@@ -350,3 +350,100 @@ func TestSIDFailuresAreMessageDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+func TestDataIdentifierSpecDidResolvesDID(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "records.cdd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSpec := func(spec string) string {
+		source := string(data)
+		for _, old := range []string{
+			`<STATICCOMP id="readIdentifier" must="1" spec="id"`,
+			`<STATICCOMP id="writeIdentifier" must="1" spec="id"`,
+			`<SHSTATIC id="modernIdentifier" spec="id">`,
+			`<SHSTATIC id="legacyIdentifier" spec="id">`,
+		} {
+			next := strings.Replace(old, `spec="id"`, `spec="`+spec+`"`, 1)
+			updated := strings.Replace(source, old, next, 1)
+			if updated == source {
+				t.Fatalf("fixture mutation for %s did not apply", old)
+			}
+			source = updated
+		}
+		return source
+	}
+
+	t.Run("did", func(t *testing.T) {
+		database, err := parseCatalog("spec-did.cdd", []byte(withSpec("did")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		counter, ok := database.DIDByName("ReadWriteCounter")
+		if !ok || counter.Identifier != 61846 || len(counter.Read) != 1 || len(counter.Write) != 1 {
+			t.Fatalf("read/write DID marked spec=did: %#v", counter)
+		}
+		values, err := counter.Read[0].PositiveResponse.Record.Decode([]byte{9})
+		if err != nil || values["Counter"] != uint64(9) {
+			t.Fatalf("decode = %#v, %v", values, err)
+		}
+		var identifierSpecs []string
+		for _, parameter := range counter.Read[0].Request.Parameters {
+			if parameter.NumericValue != nil && *parameter.NumericValue == 61846 {
+				identifierSpecs = append(identifierSpecs, parameter.Spec)
+			}
+		}
+		if len(identifierSpecs) != 1 || identifierSpecs[0] != "did" {
+			t.Fatalf("literal identifier spec = %v", identifierSpecs)
+		}
+		nameplate, ok := database.DIDByIdentifier(0xf191)
+		if !ok || nameplate.Instance.Source.Qualifier != "Nameplate" || len(nameplate.Read) != 1 || nameplate.Read[0].PositiveResponse.Record.Length != 28 {
+			t.Fatalf("legacy DID marked spec=did: %#v", nameplate)
+		}
+		for _, diagnostic := range database.Diagnostics {
+			if diagnostic.Kind == cdd.DiagnosticDID && strings.Contains(diagnostic.Message, "no 16-bit identifier") {
+				t.Fatalf("spec=did reported as an unknown identifier: %s", diagnostic.Message)
+			}
+		}
+	})
+
+	t.Run("lid", func(t *testing.T) {
+		database, err := parseCatalog("spec-lid.cdd", []byte(withSpec("lid")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(database.DIDs) != 0 {
+			t.Fatalf("spec=lid produced %d DIDs", len(database.DIDs))
+		}
+		if _, ok := database.DIDByName("ReadWriteCounter"); ok {
+			t.Fatal("spec=lid selected a DID")
+		}
+		instance := instanceByQualifier(database, "ReadWriteCounter")
+		if instance == nil || len(instance.Services) != 2 || instance.Services[0].ServiceID == nil || *instance.Services[0].ServiceID != 0x22 {
+			t.Fatal("unrecognized identifier spec dropped the service")
+		}
+		var reports int
+		for _, diagnostic := range database.Diagnostics {
+			if diagnostic.Kind == cdd.DiagnosticDID && strings.Contains(diagnostic.Message, "no 16-bit identifier") {
+				reports++
+			}
+		}
+		if reports == 0 {
+			t.Fatalf("missing DID diagnostic: %#v", database.Diagnostics)
+		}
+	})
+}
+
+func instanceByQualifier(database *cdd.Database, qualifier string) *cdd.Instance {
+	for _, entry := range database.Entries {
+		if entry.Class == nil {
+			continue
+		}
+		for _, instance := range entry.Class.Instances {
+			if instance.Source.Qualifier == qualifier {
+				return instance
+			}
+		}
+	}
+	return nil
+}

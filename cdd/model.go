@@ -136,9 +136,13 @@ type Parameter struct {
 }
 
 // DID is a convenience view of literal SID 0x22 (Read) and 0x2e (Write) services
-// with a consistent 16-bit spec="id" parameter in REQ, POS, or both. This shape
-// does not prove that the ECU uses UDS; callers must establish the protocol
-// before using UDS helpers. Every alternative keeps its own layout/requirements.
+// with a consistent 16-bit data-identifier parameter in REQ, POS, or both.
+// Vector marks that parameter spec="id" or spec="did"; both are the same slot,
+// and Parameter.Spec keeps the literal value. Other spec values are different
+// roles. spec="did" also names the identifier of ReadScalingDataByIdentifier
+// (SID 0x24), which this view does not include. This shape does not prove that
+// the ECU uses UDS; callers must establish the protocol before using UDS helpers.
+// Every alternative keeps its own layout/requirements.
 // Read or Write is empty if no matching service is bound. Invalid layouts remain
 // represented. Instance points into Entries.
 type DID struct {
