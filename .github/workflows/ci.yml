@@ -58,9 +58,9 @@ jobs:
         run: |
           go test -race ./...
           set -o pipefail
-          go test -race -count=1 -v ./drivers/internal/socketcan -run 'TestVCanConformance/(classical_dlc_15|remote_dlc_9)$' | tee vcan-dlc.txt
-          grep -q '^--- PASS: TestVCanConformance/classical_dlc_15 ' vcan-dlc.txt
-          grep -q '^--- PASS: TestVCanConformance/remote_dlc_9 ' vcan-dlc.txt
+          go test -race -count=1 -v ./drivers/internal/socketcan -run 'TestVCanConformance/frame_shapes/(classical_dlc_15|remote_dlc_9)$' | tee vcan-dlc.txt
+          grep -q '^--- PASS: TestVCanConformance/frame_shapes/classical_dlc_15 ' vcan-dlc.txt
+          grep -q '^--- PASS: TestVCanConformance/frame_shapes/remote_dlc_9 ' vcan-dlc.txt
 
       - name: Vet
         run: go vet ./...
