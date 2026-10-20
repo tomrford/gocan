@@ -27,18 +27,40 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 7.0 Azure kernels ship vcan in linux-modules and publish no
+      # linux-modules-extra package for that version. Older kernels still
+      # keep vcan in linux-modules-extra, so install that only if modprobe fails.
       - name: Set up virtual CAN
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y "linux-modules-extra-$(uname -r)"
-          sudo modprobe vcan
+          kernel="$(uname -r)"
+          echo "kernel ${kernel}"
+          if sudo modprobe vcan; then
+            echo "loaded vcan from the running kernel"
+          else
+            echo "vcan is not loaded; installing modules for ${kernel}"
+            sudo apt-get update
+            extra="linux-modules-extra-${kernel}"
+            if sudo apt-cache show "$extra" >/dev/null 2>&1; then
+              sudo apt-get install --no-install-recommends -y "$extra"
+            else
+              echo "${extra} is not published; installing linux-modules-${kernel}"
+              sudo apt-get install --no-install-recommends -y "linux-modules-${kernel}"
+            fi
+            sudo modprobe vcan
+          fi
           sudo ip link add dev vcan0 type vcan
           sudo ip link set dev vcan0 mtu 72 up
+          ip -details link show vcan0
 
       - name: Test
         env:
           GOCAN_VCAN_INTERFACE: vcan0
-        run: go test -race ./...
+        run: |
+          go test -race ./...
+          set -o pipefail
+          go test -race -count=1 -v ./drivers/internal/socketcan -run 'TestVCanConformance/frame_shapes/(classical_dlc_15|remote_dlc_9)$' | tee vcan-dlc.txt
+          grep -q -- '--- PASS: TestVCanConformance/frame_shapes/classical_dlc_15 ' vcan-dlc.txt
+          grep -q -- '--- PASS: TestVCanConformance/frame_shapes/remote_dlc_9 ' vcan-dlc.txt
 
       - name: Vet
         run: go vet ./...
