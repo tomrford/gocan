@@ -12,6 +12,7 @@ const (
 	driverPCAN
 	driverVector
 	driverNIXNET
+	driverZLG
 )
 
 func (driver driverKind) String() string {
@@ -24,6 +25,8 @@ func (driver driverKind) String() string {
 		return "nixnet"
 	case driverVector:
 		return "vector"
+	case driverZLG:
+		return "zlg"
 	default:
 		return ""
 	}
@@ -41,7 +44,7 @@ type Channel struct {
 	supportsTermination bool
 }
 
-// Driver returns "socketcan", "pcan", "vector", or "nixnet".
+// Driver returns "socketcan", "pcan", "vector", "nixnet", or "zlg".
 func (channel Channel) Driver() string { return channel.driver.String() }
 
 // Name returns the device or interface name reported by the native stack.
@@ -66,6 +69,8 @@ func (channel Channel) Identifier() string {
 		return "nixnet:" + channel.nativeName
 	case driverVector:
 		return fmt.Sprintf("vector:%d", channel.native)
+	case driverZLG:
+		return fmt.Sprintf("zlg:%d:%d", channel.native>>32, uint32(channel.native))
 	default:
 		return ""
 	}

@@ -97,9 +97,10 @@ func main() {
 | PCAN | Windows | Yes | Yes | Physical adapters |
 | Vector | Windows x64 | Yes | Yes | Physical adapters |
 | NI-XNET | Windows x64 | Yes | Yes | PXI-8512 CAN5/CAN6, ISO FD at 500k/2M and 500k/4M |
+| ZLG | Windows x64 | Yes | No | USBCAN-I against a PCAN-USB peer |
 
 Physical channels are discovered and opened through `drivers`. SocketCAN uses
-link timing configured by Linux. PCAN, Vector and NI-XNET accept shared exact CAN FD bit
+link timing configured by Linux. ZLG supports classical CAN only. PCAN, Vector and NI-XNET accept shared exact CAN FD bit
 timing through the same public configuration.
 
 ## Driver restrictions
@@ -136,6 +137,29 @@ or send-only request, finish or recover the prior exchange before reusing that
 address. Serialized mode avoids this extra window, but neither mode can identify
 old replies still buffered in the driver or arriving late. ISO-TP cursors discard
 previously captured traffic; they do not flush the native receive queue.
+
+ZLG supports the USBCAN-I/II family (USB ID 0471:1200) through ZLG's
+`zlgcan.dll`, which is not installed system-wide. Set `GOCAN_ZLGCAN_DIR` to the
+directory holding `zlgcan.dll` and its `kerneldlls` folder, or place them
+beside the executable. The adapter needs ZLG's `usbcan.sys` driver, and the x64
+`kerneldlls\USBCAN.dll` needs the Visual C++ 2008 SP1 x64 redistributable,
+including MFC. Only ZLG's predefined classical rates are accepted, and classical
+DLC values 9–15 cannot be sent. Each native transmit call waits for its frames
+to leave the adapter (about 1 ms per call), so `Send` queues up to 256 frames
+and a driver goroutine passes all pending frames to one call. A USBCAN-I
+sustains about 2,100 8-byte frames per second this way, against about 1,000
+with one frame per call. A frame the adapter fails to transmit within its
+one-second timeout is dropped and recorded as an error-frame event. `Close`
+transmits frames already queued unless a transmission fails or the bus stopped
+with an error. Controller state is polled every 100 ms. Closing an adapter takes about one
+second inside `zlgcan.dll`, and `Discover` opens and closes each adapter that is
+not already open in this process to read its channel count. Adapters held by
+another process are omitted.
+
+ZLG hardware tests pair a ZLG channel with a PCAN reference adapter on one
+terminated bus, selected through `GOCAN_ZLG_DEVICE` (the ZLG device index, for
+example `0`) and `GOCAN_PCAN_CHANNEL` (for example `0x51`), with
+`GOCAN_ZLGCAN_DIR` set.
 
 NI-XNET hardware tests require a connected, terminated pair selected through
 `GOCAN_NIXNET_CHANNEL_A` and `GOCAN_NIXNET_CHANNEL_B` (for example `CAN5` and

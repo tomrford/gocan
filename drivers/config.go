@@ -18,7 +18,8 @@ type Config struct {
 	// Bitrate selects classical CAN, or the nominal CAN FD rate when
 	// DataBitrate is set, in bits per second. For classical CAN, PCAN accepts
 	// only its predefined rates, with fractional rates rounded to the nearest
-	// bit per second (for example 83_333).
+	// bit per second (for example 83_333). ZLG accepts only its predefined
+	// rates from 5_000 through 1_000_000.
 	Bitrate uint32
 	// DataBitrate selects CAN FD using built-in timing on PCAN, Vector, and NI-XNET.
 	// Channel.FDRatePresets lists the available rate pairs. The presets use
