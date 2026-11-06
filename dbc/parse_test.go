@@ -3,6 +3,7 @@ package dbc
 import (
 	"errors"
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -61,6 +62,19 @@ func TestParseCoreDatabase(t *testing.T) {
 	if value := db.Attributes["BusType"]; value.Text != "CAN FD" {
 		t.Fatalf("BusType = %#v, want CAN FD", value)
 	}
+
+	if db.Comment != "Core fixture" || db.Nodes[0].Comment != "Controller" ||
+		status.Comment != "Status message" || temperature.Comment != "Scaled temperature" {
+		t.Fatalf("unexpected comments: database=%q node=%q message=%q signal=%q",
+			db.Comment, db.Nodes[0].Comment, status.Comment, temperature.Comment)
+	}
+	// cantools and canmatrix unescape only \", keeping other backslashes.
+	if want := `Logged to C:\temp\new as "count"` + "\n" + `on \\logger`; counter.Comment != want {
+		t.Fatalf("Counter comment = %q, want %q", counter.Comment, want)
+	}
+	if fd.Comment != "" || db.Nodes[1].Comment != "" {
+		t.Fatalf("uncommented objects gained comments: %q, %q", fd.Comment, db.Nodes[1].Comment)
+	}
 }
 
 func TestParseMultiplexingAndJ1939(t *testing.T) {
@@ -117,6 +131,10 @@ func TestDropsDanglingRecordsWithDiagnostics(t *testing.T) {
 		"BO_ 256 Status: 8 ECU\n" +
 		" SG_ Counter : 0|8@1+ (1,0) [0|255] \"\" ECU\n" +
 		"CM_ SG_ 512 Missing \"stale comment\";\n" +
+		"CM_ EV_ Ignition \"environment comment\";\n" +
+		"CM_ SG_ 3221225472 Orphan \"orphan comment\";\n" +
+		"CM_ BO_ 256 \"first comment\";\n" +
+		"CM_ BO_ 256 \"replacement comment\";\n" +
 		"VAL_ 3221225472 Orphan 0 \"Off\";\n" +
 		"BO_TX_BU_ 512 : ECU;\n"
 
@@ -127,8 +145,17 @@ func TestDropsDanglingRecordsWithDiagnostics(t *testing.T) {
 	if len(db.Messages) != 1 || db.Messages[0].Name != "Status" {
 		t.Fatalf("unexpected messages: %#v", db.Messages)
 	}
-	if len(db.Diagnostics) != 2 {
-		t.Fatalf("unexpected diagnostics: %#v", db.Diagnostics)
+	// cantools and canmatrix both keep the last of repeated comments.
+	if db.Messages[0].Comment != "replacement comment" {
+		t.Fatalf("Status comment = %q, want the later comment", db.Messages[0].Comment)
+	}
+	var lines []int
+	for _, diagnostic := range db.Diagnostics {
+		lines = append(lines, diagnostic.Position.Line)
+	}
+	slices.Sort(lines)
+	if want := []int{2, 6, 7, 10, 12}; !slices.Equal(lines, want) {
+		t.Fatalf("diagnostic lines = %v, want %v: %#v", lines, want, db.Diagnostics)
 	}
 }
 

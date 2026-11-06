@@ -48,6 +48,7 @@ func resolve(raw rawDatabase) (*Database, error) {
 		r.resolveValueTables,
 		r.resolveAttributeDefinitions,
 		r.resolveAttributeValues,
+		r.resolveComments,
 		r.resolveTransmitters,
 		r.resolveValueLists,
 		r.resolveValueTypes,
@@ -221,7 +222,7 @@ func (r *resolver) resolveAttributeValues() error {
 			return semanticError(raw.pos, "BA_", "attribute %q: %v", raw.name, err)
 		}
 
-		target, ok := r.attributeTarget(raw)
+		target, _, ok := r.target(raw.scope, raw.messageID, raw.object, raw.pos, "BA_")
 		if !ok {
 			continue
 		}
@@ -232,6 +233,22 @@ func (r *resolver) resolveAttributeValues() error {
 			return semanticError(raw.pos, "BA_", "duplicate assignment of attribute %q", raw.name)
 		}
 		(*target)[raw.name] = value
+	}
+	return nil
+}
+
+func (r *resolver) resolveComments() error {
+	seen := make(map[*string]struct{}, len(r.raw.comments))
+	for _, raw := range r.raw.comments {
+		_, comment, ok := r.target(raw.scope, raw.messageID, raw.object, raw.pos, "CM_")
+		if !ok {
+			continue
+		}
+		if _, exists := seen[comment]; exists {
+			r.diag(raw.pos, "CM_", "comment replaced an earlier comment for the same %s", scopeName(raw.scope))
+		}
+		seen[comment] = struct{}{}
+		*comment = raw.text
 	}
 	return nil
 }
@@ -444,29 +461,31 @@ func (r *resolver) compileCodecs() error {
 	return nil
 }
 
-func (r *resolver) attributeTarget(raw rawAttributeAssignment) (*map[string]AttributeValue, bool) {
-	switch raw.scope {
+// target returns the attributes and comment of the object named by a BA_ or
+// CM_ record.
+func (r *resolver) target(scope AttributeScope, messageID uint32, object string, pos Position, keyword string) (*map[string]AttributeValue, *string, bool) {
+	switch scope {
 	case AttributeScopeNode:
-		index, exists := r.nodesByName[raw.object]
+		index, exists := r.nodesByName[object]
 		if !exists {
-			r.diag(raw.pos, "BA_", "attribute for unknown node %q was ignored", raw.object)
-			return nil, false
+			r.diag(pos, keyword, "record for unknown node %q was ignored", object)
+			return nil, nil, false
 		}
-		return &r.db.Nodes[index].Attributes, true
+		return &r.db.Nodes[index].Attributes, &r.db.Nodes[index].Comment, true
 	case AttributeScopeMessage:
-		message, _, ok := r.message(raw.messageID, raw.pos, "BA_")
+		message, _, ok := r.message(messageID, pos, keyword)
 		if !ok {
-			return nil, false
+			return nil, nil, false
 		}
-		return &message.Attributes, true
+		return &message.Attributes, &message.Comment, true
 	case AttributeScopeSignal:
-		_, signal, ok := r.signal(raw.messageID, raw.object, raw.pos, "BA_")
+		_, signal, ok := r.signal(messageID, object, pos, keyword)
 		if !ok {
-			return nil, false
+			return nil, nil, false
 		}
-		return &signal.Attributes, true
+		return &signal.Attributes, &signal.Comment, true
 	default:
-		return &r.db.Attributes, true
+		return &r.db.Attributes, &r.db.Comment, true
 	}
 }
 

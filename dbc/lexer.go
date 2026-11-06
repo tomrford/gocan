@@ -194,30 +194,13 @@ func (l *lexer) quoted() (token, error) {
 			l.column = 1
 			continue
 		}
-		if character != '\\' {
-			value.WriteByte(character)
+		// \" is the only escape, as in cantools and canmatrix; other
+		// backslashes, such as those in Windows paths, are literal.
+		if character == '\\' && l.offset+1 < len(l.input) && l.input[l.offset+1] == '"' {
 			l.advanceByte()
-			continue
+			character = '"'
 		}
-
-		l.advanceByte()
-		if l.offset >= len(l.input) {
-			break
-		}
-		escaped := l.input[l.offset]
-		switch escaped {
-		case 'n':
-			value.WriteByte('\n')
-		case 'r':
-			value.WriteByte('\r')
-		case 't':
-			value.WriteByte('\t')
-		case '"', '\\':
-			value.WriteByte(escaped)
-		default:
-			value.WriteByte('\\')
-			value.WriteByte(escaped)
-		}
+		value.WriteByte(character)
 		l.advanceByte()
 	}
 

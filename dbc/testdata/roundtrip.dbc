@@ -1,0 +1,114 @@
+VERSION ""
+
+NS_ :
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	BO_TX_BU_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: Gateway Inverter Charger Tester
+
+VAL_TABLE_ Switch 1 "On" 0 "Off" -1 "Error";
+VAL_TABLE_ Empty;
+
+BO_ 1 Mode: 2 Gateway
+ SG_ Selector M : 0|4@1+ (1,0) [0|15] "" Inverter,Charger
+ SG_ Speed m0 : 8|8@1+ (0.5,-20) [-20|107.5] "rpm" Inverter
+ SG_ Torque m1 : 8|8@1- (0.25,0) [-32|31.75] "Nm" Inverter
+ SG_ Nested m2M : 4|4@1+ (1,0) [0|15] "" Charger
+ SG_ Deep m2 : 8|8@1+ (1,0) [0|255] "" Charger
+
+BO_ 2550136832 Wide: 64 Inverter
+ SG_ Tiny : 0|16@1+ (1e-05,0) [0|0.65535] "V" Tester
+ SG_ Huge : 16|32@1+ (1000000,-1e+15) [-1e+15|4.294967295e+15] "W" Tester
+ SG_ Single : 48|32@1- (1,0) [-3.4e+38|3.4e+38] "" Tester
+ SG_ Double : 80|64@1- (1,0) [0|0] "" Tester
+ SG_ BigEndian : 151|12@0- (-0.125,0.0625) [-256|256] "°C"
+
+BO_ 2566844160 Diagnostic: 8 Tester
+ SG_ Code : 7|16@0+ (1,0) [0|65535] "" Gateway
+
+BO_ 1792 Nameless: 0 Vector__XXX
+
+BO_TX_BU_ 1 : Gateway,Charger,Tester;
+BO_TX_BU_ 2550136832 : Inverter;
+
+CM_ "Round-trip fixture with \"quotes\", C:\path\ and \\server";
+CM_ BU_ Gateway "Routes
+between buses";
+CM_ BU_ Tester "Prüfstand";
+CM_ BO_ 1 "Multiplexed mode";
+CM_ BO_ 2550136832 "";
+CM_ SG_ 1 Deep "Only when Nested is 2, see \\\"Mode\\\"";
+CM_ SG_ 2566844160 Code "DTC \\ code";
+
+BA_DEF_ "BusType" STRING;
+BA_DEF_ "ProtocolType" STRING;
+BA_DEF_ "Baudrate" INT 0 4294967295;
+BA_DEF_ "UnsetMode" ENUM "","On";
+BA_DEF_ BU_ "NodeLayerModules" STRING;
+BA_DEF_ BU_ "ILUsed" ENUM "No","Yes";
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_ "GenMsgStartValue" HEX 0 2147483647;
+BA_DEF_ BO_ "GenMsgSendType" ENUM "Cyclic","Event","IfActive";
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
+BA_DEF_ BO_ "CANFD_BRS" ENUM "0","1";
+BA_DEF_ SG_ "GenSigStartValue" FLOAT -1e+06 1e+06;
+BA_DEF_ SG_ "SPN" INT 0 524287;
+BA_DEF_ SG_ "SigLabel" STRING;
+
+BA_DEF_DEF_ "BusType" "CAN FD";
+BA_DEF_DEF_ "Baudrate" 500000;
+BA_DEF_DEF_ "UnsetMode" -1;
+BA_DEF_DEF_ "ILUsed" "Yes";
+BA_DEF_DEF_ "GenMsgCycleTime" 100;
+BA_DEF_DEF_ "GenMsgSendType" "Unlisted";
+BA_DEF_DEF_ "VFrameFormat" "StandardCAN";
+BA_DEF_DEF_ "CANFD_BRS" "1";
+BA_DEF_DEF_ "GenSigStartValue" 2.5;
+BA_DEF_DEF_ "SPN" 7;
+
+BA_ "BusType" "CAN FD";
+BA_ "Baudrate" 250000;
+BA_ "UnsetMode" -1;
+BA_ "DBName" "roundtrip";
+BA_ "Revision" 12;
+BA_ "Scale" 3;
+BA_ "Ratio" 0.75;
+BA_ "Gain" 2.0;
+BA_ "Limit" 1e+20;
+BA_ "NodeLayerModules" BU_ Gateway "CANoeILNLVector.dll";
+BA_ "ILUsed" BU_ Inverter 0;
+BA_ "GenMsgCycleTime" BO_ 1 10;
+BA_ "GenMsgStartValue" BO_ 1 255;
+BA_ "GenMsgSendType" BO_ 1 1;
+BA_ "GenMsgSendType" BO_ 2566844160 "Spontaneous";
+BA_ "GenMsgSendType" BO_ 1792 9;
+BA_ "VFrameFormat" BO_ 2550136832 15;
+BA_ "VFrameFormat" BO_ 2566844160 3;
+BA_ "GenSigStartValue" SG_ 1 Speed 40;
+BA_ "GenSigStartValue" SG_ 2550136832 Tiny -0.000125;
+BA_ "SPN" SG_ 2566844160 Code 1569;
+BA_ "SigLabel" SG_ 2550136832 BigEndian "";
+
+VAL_ 1 Selector 0 "Speed" 1 "Torque" 2 "Nested";
+VAL_ 2550136832 BigEndian -256 "Low" 255 "High";
+VAL_ 2566844160 Code 65535 "SNA";
+
+SIG_VALTYPE_ 2550136832 Single : 1;
+SIG_VALTYPE_ 2550136832 Double : 2;
+
+SIG_GROUP_ 1 Drive 1 : Speed Torque;
+SIG_GROUP_ 2550136832 Power 3 : Tiny Huge BigEndian;
+
+SG_MUL_VAL_ 1 Nested Selector 2-2;
+SG_MUL_VAL_ 1 Deep Nested 2-2;
+SG_MUL_VAL_ 1 Speed Selector 0-0, 4-6;
+SG_MUL_VAL_ 1 Torque Selector 1-1;

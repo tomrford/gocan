@@ -1,5 +1,6 @@
-// Package dbc parses CAN database files into a resolved semantic model and
-// encodes or lazily decodes raw CAN frames.
+// Package dbc parses CAN database files into a resolved semantic model,
+// writes that model back as DBC text, and encodes or lazily decodes raw CAN
+// frames.
 package dbc
 
 import (
@@ -13,6 +14,7 @@ import (
 // remain on their definitions so callers can distinguish the two.
 // Treat the database and its nested models as read-only: lookups and codecs
 // trust the model that Parse resolved, and modifications are not revalidated.
+// Use Edit to derive a changed database.
 type Database struct {
 	Version              string
 	Nodes                []Node
@@ -20,6 +22,7 @@ type Database struct {
 	ValueTables          []ValueTable
 	AttributeDefinitions []AttributeDefinition
 	Attributes           map[string]AttributeValue
+	Comment              string
 	Diagnostics          []Diagnostic
 
 	messagesByName map[string]int
@@ -45,6 +48,7 @@ func (db *Database) Source() string { return db.source }
 type Node struct {
 	Name       string
 	Attributes map[string]AttributeValue
+	Comment    string
 }
 
 // Message is one resolved BO_ definition.
@@ -57,8 +61,12 @@ type Message struct {
 	Transmitters []string
 	Signals      []Signal
 	SignalGroups []SignalGroup
-	Format       FrameFormat
-	Attributes   map[string]AttributeValue
+	// Format is derived from VFrameFormat and ProtocolType attributes and the
+	// message's identifier and length. Edit those declarations to change it;
+	// Write does not serialize Format itself.
+	Format     FrameFormat
+	Attributes map[string]AttributeValue
+	Comment    string
 
 	bitRateSwitch bool
 	codec         *messageCodec
@@ -103,6 +111,7 @@ type Signal struct {
 	IsMultiplexer bool
 	Multiplex     *MultiplexCondition
 	Attributes    map[string]AttributeValue
+	Comment       string
 }
 
 // ByteOrder is the DBC signal byte order.
@@ -205,7 +214,8 @@ type Position struct {
 
 // Diagnostic reports a record that was dropped without making the database
 // unsafe to use: unsupported record types, dangling references to unknown
-// objects, and the Vector independent-signal pseudo-message.
+// objects, the Vector independent-signal pseudo-message, and comments replaced
+// by a later comment for the same object.
 type Diagnostic struct {
 	Position Position
 	Keyword  string

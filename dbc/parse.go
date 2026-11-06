@@ -33,7 +33,7 @@ func (err *Error) Error() string {
 
 // Parse parses source into a resolved DBC model. It accepts UTF-8 text, with
 // an optional byte-order mark, and falls back to Windows-1252 for legacy
-// sources.
+// sources. In quoted strings, \" is the only escape.
 func Parse(name, source string) (*Database, error) {
 	original := source
 	source = strings.TrimPrefix(source, "\ufeff")
@@ -87,6 +87,7 @@ type rawDatabase struct {
 	attributeDefs     []rawAttributeDefinition
 	attributeDefaults []rawAttributeDefault
 	attributeValues   []rawAttributeAssignment
+	comments          []rawComment
 	diagnostics       []Diagnostic
 }
 
@@ -187,6 +188,14 @@ type rawAttributeAssignment struct {
 	pos       Position
 }
 
+type rawComment struct {
+	scope     AttributeScope
+	messageID uint32
+	object    string
+	text      string
+	pos       Position
+}
+
 type rawLiteral struct {
 	text     string
 	isString bool
@@ -246,7 +255,7 @@ func (p *parser) parse() (rawDatabase, error) {
 		case "SIG_GROUP_":
 			err = p.parseSignalGroup(keyword)
 		case "CM_":
-			p.skipRecord()
+			err = p.parseComment(keyword)
 		case "BA_DEF_":
 			err = p.parseAttributeDefinition(keyword)
 		case "BA_DEF_DEF_":
@@ -806,6 +815,57 @@ func (p *parser) parseAttributeAssignment(keyword token) error {
 		return err
 	}
 	p.raw.attributeValues = append(p.raw.attributeValues, assignment)
+	return nil
+}
+
+func (p *parser) parseComment(keyword token) error {
+	comment := rawComment{scope: AttributeScopeDatabase, pos: keyword.pos}
+	var err error
+	if p.peek().kind == tokenAtom {
+		switch p.peek().text {
+		case "BU_":
+			p.index++
+			comment.scope = AttributeScopeNode
+			object, takeErr := p.take(tokenAtom, "expected node name")
+			if takeErr != nil {
+				return takeErr
+			}
+			comment.object = object.text
+		case "BO_":
+			p.index++
+			comment.scope = AttributeScopeMessage
+			comment.messageID, err = p.parseUint32("message ID")
+		case "SG_":
+			p.index++
+			comment.scope = AttributeScopeSignal
+			comment.messageID, err = p.parseUint32("message ID")
+			if err == nil {
+				object, takeErr := p.take(tokenAtom, "expected signal name")
+				if takeErr != nil {
+					return takeErr
+				}
+				comment.object = object.text
+			}
+		case "EV_":
+			p.raw.diagnostics = append(p.raw.diagnostics, Diagnostic{
+				Position: keyword.pos, Keyword: keyword.text, Message: "environment-variable comment was ignored",
+			})
+			p.skipRecord()
+			return nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	text, err := p.take(tokenString, "expected quoted comment")
+	if err != nil {
+		return err
+	}
+	if err = p.endStatement(); err != nil {
+		return err
+	}
+	comment.text = text.text
+	p.raw.comments = append(p.raw.comments, comment)
 	return nil
 }
 
