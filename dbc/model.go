@@ -1,5 +1,6 @@
-// Package dbc parses CAN database files into a resolved semantic model and
-// encodes or lazily decodes raw CAN frames.
+// Package dbc parses CAN database files into a resolved semantic model,
+// writes that model back as DBC text, and encodes or lazily decodes raw CAN
+// frames.
 package dbc
 
 import (
@@ -13,6 +14,7 @@ import (
 // remain on their definitions so callers can distinguish the two.
 // Treat the database and its nested models as read-only: lookups and codecs
 // trust the model that Parse resolved, and modifications are not revalidated.
+// To change a database, write an edited copy and parse the text.
 type Database struct {
 	Version              string
 	Nodes                []Node

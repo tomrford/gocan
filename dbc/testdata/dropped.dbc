@@ -1,0 +1,47 @@
+VERSION "dropped"
+
+NS_ :
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	EV_DATA_
+	ENVVAR_DATA_
+	BU_SG_REL_
+
+BS_:
+
+BU_: ECU Tester
+
+BO_ 256 Status: 8 ECU
+ SG_ Counter : 0|8@1+ (1,0) [0|255] "" Tester
+
+BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
+ SG_ Orphan : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+EV_ Ignition: 0 [0|1] "" 0 1 DUMMY_NODE_VECTOR0 Vector__XXX;
+ENVVAR_DATA_ Ignition: 1;
+CAT_DEF_ 1 Powertrain 0;
+FILTER 0 1;
+
+CM_ EV_ Ignition "environment variable";
+CM_ SG_ 3221225472 Orphan "orphan signal";
+CM_ BO_ 512 "missing message";
+CM_ BO_ 256 "superseded";
+CM_ BO_ 256 "Status message";
+
+BA_DEF_ EV_ "EnvLabel" STRING;
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_REL_ BU_SG_REL_ "GenSigTimeoutTime" INT 0 65535;
+BA_DEF_DEF_ "Undefined" 0;
+BA_DEF_DEF_REL_ "GenSigTimeoutTime" 0;
+BA_ "GenMsgCycleTime" BO_ 256 100;
+BA_ "GenMsgCycleTime" BO_ 512 10;
+BA_ "EnvLabel" EV_ Ignition "label";
+BA_REL_ "GenSigTimeoutTime" BU_SG_REL_ Tester SG_ 256 Counter 500;
+BU_SG_REL_ Tester SG_ 256 Counter;
+
+VAL_ Ignition 0 "Off" 1 "On";
+VAL_ 3221225472 Orphan 0 "Off";
+VAL_ 256 Missing 0 "Off";
+SIG_GROUP_ 256 Broken 1 : Counter Missing;
