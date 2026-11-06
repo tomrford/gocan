@@ -73,6 +73,32 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	}
 	assertDevice(t, reparsed, 0xA)
 
+	// Frame format is edited through the DBC attributes that declare it.
+	fd, err := deviceA.Edit("device-A-fd.dbc", func(db *dbc.Database) {
+		db.AttributeDefinitions = append(db.AttributeDefinitions, dbc.AttributeDefinition{
+			Name: "VFrameFormat", Scope: dbc.AttributeScopeMessage, Kind: dbc.AttributeKindInteger, Maximum: 15,
+		})
+		db.Messages[1].Attributes["VFrameFormat"] = dbc.AttributeValue{Kind: dbc.AttributeKindInteger, Integer: 15}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fdSource, err := dbc.Parse("device-A-fd-source.dbc", fd.Source())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, db := range []*dbc.Database{fd, fdSource} {
+		assertDevice(t, db, 0xA)
+		control, _ := db.MessageByName("DEV_A_CTRL")
+		frame, err := control.Encode(dbc.Values{"Enable": true, "Setpoint": 12.5})
+		if err != nil || control.Format != dbc.FrameFormatExtendedCANFD || !frame.Flags.Has(gocan.FrameFD) {
+			t.Fatalf("edited CAN FD control: format=%v frame=%v error=%v", control.Format, frame, err)
+		}
+	}
+	if _, changed := deviceA.Messages[1].Attributes["VFrameFormat"]; changed || deviceA.Messages[1].Format != dbc.FrameFormatExtendedCAN {
+		t.Fatal("frame-format edit changed the original database")
+	}
+
 	// One database for every device, as a release would ship it.
 	everyDevice, err := base.Edit("device-all.dbc", func(db *dbc.Database) {
 		device0 := db.Messages
@@ -123,8 +149,13 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 		edit func(*dbc.Database)
 		want string
 	}{
-		"colliding identifiers":         {func(db *dbc.Database) { db.Messages[1].ID = db.Messages[0].ID }, "duplicate message ID"},
-		"identifier beyond 29 bits":     {func(db *dbc.Database) { db.Messages[0].ID |= 0xF << 28 }, "29-bit"},
+		"colliding identifiers":      {func(db *dbc.Database) { db.Messages[1].ID = db.Messages[0].ID }, "duplicate message ID"},
+		"identifier beyond 29 bits":  {func(db *dbc.Database) { db.Messages[0].ID |= 0xF << 28 }, "29-bit"},
+		"extended identifier bit 31": {func(db *dbc.Database) { db.Messages[0].ID |= 1 << 31 }, "29-bit"},
+		"standard identifier bit 31": {func(db *dbc.Database) {
+			db.Messages[0].Extended = false
+			db.Messages[0].ID = 0x80000001
+		}, "11-bit"},
 		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, `"DEV 0 STAT"`},
 		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, `C:\\logs\\`},
 	} {

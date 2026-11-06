@@ -61,9 +61,12 @@ type Message struct {
 	Transmitters []string
 	Signals      []Signal
 	SignalGroups []SignalGroup
-	Format       FrameFormat
-	Attributes   map[string]AttributeValue
-	Comment      string
+	// Format is derived from VFrameFormat and ProtocolType attributes and the
+	// message's identifier and length. Edit those declarations to change it;
+	// Write does not serialize Format itself.
+	Format     FrameFormat
+	Attributes map[string]AttributeValue
+	Comment    string
 
 	bitRateSwitch bool
 	codec         *messageCodec

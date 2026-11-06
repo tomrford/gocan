@@ -52,6 +52,7 @@ CM_ SG_ 2566844160 Code "DTC \\ code";
 BA_DEF_ "BusType" STRING;
 BA_DEF_ "ProtocolType" STRING;
 BA_DEF_ "Baudrate" INT 0 4294967295;
+BA_DEF_ "UnsetMode" ENUM "","On";
 BA_DEF_ BU_ "NodeLayerModules" STRING;
 BA_DEF_ BU_ "ILUsed" ENUM "No","Yes";
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
@@ -65,6 +66,7 @@ BA_DEF_ SG_ "SigLabel" STRING;
 
 BA_DEF_DEF_ "BusType" "CAN FD";
 BA_DEF_DEF_ "Baudrate" 500000;
+BA_DEF_DEF_ "UnsetMode" -1;
 BA_DEF_DEF_ "ILUsed" "Yes";
 BA_DEF_DEF_ "GenMsgCycleTime" 100;
 BA_DEF_DEF_ "GenMsgSendType" "Unlisted";
@@ -75,6 +77,7 @@ BA_DEF_DEF_ "SPN" 7;
 
 BA_ "BusType" "CAN FD";
 BA_ "Baudrate" 250000;
+BA_ "UnsetMode" -1;
 BA_ "DBName" "roundtrip";
 BA_ "Revision" 12;
 BA_ "Scale" 3;

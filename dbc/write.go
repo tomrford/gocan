@@ -16,8 +16,10 @@ import (
 // any parsed database, its lookups and codecs follow the edits, and Source
 // returns the written text. db is not changed.
 //
-// edit may change any exported field, including adding or removing nodes,
-// messages and signals. Lookups on the copy describe it before edit ran.
+// edit may change DBC declarations, including adding or removing nodes,
+// messages and signals. Message.Format is derived from VFrameFormat and
+// ProtocolType attributes; edit those attributes to change the frame format.
+// Diagnostics are also derived. Lookups on the copy describe it before edit ran.
 func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
 	var text strings.Builder
 	if err := db.Write(&text); err != nil {
@@ -35,14 +37,15 @@ func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
 	return Parse(name, text.String())
 }
 
-// Write writes db as UTF-8 DBC text. Parsing the text yields a database equal
-// to db apart from Diagnostics and Source: records that Parse dropped are not
-// written, and source formatting, number spelling and encoding are not kept.
-// Equal databases write equal text.
+// Write writes db as UTF-8 DBC text. For a parsed database, parsing the text
+// yields a database equal to db apart from Diagnostics and Source: records
+// that Parse dropped are not written, and source formatting, number spelling
+// and encoding are not kept. Equal databases write equal text.
 //
-// Write reads only exported fields, so it also accepts a copy whose exported
-// fields were edited, as Edit does. It writes nothing and returns an error
-// when a name, string or number cannot be represented in DBC text; other
+// Write reads the exported DBC declarations, so it also accepts an edited
+// copy, as Edit does. Message.Format is derived from attributes and is not
+// written. It writes nothing and returns an error for an out-of-range CAN
+// identifier or an unrepresentable name, string or number. Other
 // inconsistencies are reported when the text is parsed.
 //
 // To write Windows-1252, wrap w with charmap.Windows1252.NewEncoder().Writer
@@ -89,7 +92,8 @@ func (db *Database) Write(w io.Writer) error {
 		case AttributeKindString:
 			return quote(v.Text)
 		case AttributeKindEnum:
-			if v.Integer == -1 {
+			// A numeric -1 has empty Text, even if the enum has an empty label.
+			if v.Integer == -1 && v.Text != "" {
 				return quote(v.Text)
 			}
 			return strconv.FormatInt(v.Integer, 10)
@@ -106,7 +110,13 @@ func (db *Database) Write(w io.Writer) error {
 	}
 	rawID := func(message *Message) uint32 {
 		if message.Extended {
+			if message.ID > 0x1fffffff {
+				fail("message %q extended identifier %#x exceeds the 29-bit CAN ID", message.Name, message.ID)
+			}
 			return message.ID | 0x80000000
+		}
+		if message.ID > 0x7ff {
+			fail("message %q standard identifier %#x exceeds the 11-bit CAN ID", message.Name, message.ID)
 		}
 		return message.ID
 	}
