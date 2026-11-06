@@ -20,6 +20,7 @@ type Database struct {
 	ValueTables          []ValueTable
 	AttributeDefinitions []AttributeDefinition
 	Attributes           map[string]AttributeValue
+	Comment              string
 	Diagnostics          []Diagnostic
 
 	messagesByName map[string]int
@@ -45,6 +46,7 @@ func (db *Database) Source() string { return db.source }
 type Node struct {
 	Name       string
 	Attributes map[string]AttributeValue
+	Comment    string
 }
 
 // Message is one resolved BO_ definition.
@@ -59,6 +61,7 @@ type Message struct {
 	SignalGroups []SignalGroup
 	Format       FrameFormat
 	Attributes   map[string]AttributeValue
+	Comment      string
 
 	bitRateSwitch bool
 	codec         *messageCodec
@@ -103,6 +106,7 @@ type Signal struct {
 	IsMultiplexer bool
 	Multiplex     *MultiplexCondition
 	Attributes    map[string]AttributeValue
+	Comment       string
 }
 
 // ByteOrder is the DBC signal byte order.
@@ -205,7 +209,8 @@ type Position struct {
 
 // Diagnostic reports a record that was dropped without making the database
 // unsafe to use: unsupported record types, dangling references to unknown
-// objects, and the Vector independent-signal pseudo-message.
+// objects, the Vector independent-signal pseudo-message, and comments replaced
+// by a later comment for the same object.
 type Diagnostic struct {
 	Position Position
 	Keyword  string

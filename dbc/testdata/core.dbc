@@ -34,6 +34,8 @@ CM_ "Core fixture";
 CM_ BU_ ECU "Controller";
 CM_ BO_ 256 "Status message";
 CM_ SG_ 256 Temperature "Scaled temperature";
+CM_ SG_ 256 Counter "Logged to C:\temp\new as \"count\"
+on \\logger";
 
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 60000;
 BA_DEF_ BO_ "GenMsgSendType" ENUM "Cyclic","Event";
