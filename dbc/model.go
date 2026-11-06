@@ -14,7 +14,7 @@ import (
 // remain on their definitions so callers can distinguish the two.
 // Treat the database and its nested models as read-only: lookups and codecs
 // trust the model that Parse resolved, and modifications are not revalidated.
-// To change a database, write an edited copy and parse the text.
+// Use Edit to derive a changed database.
 type Database struct {
 	Version              string
 	Nodes                []Node

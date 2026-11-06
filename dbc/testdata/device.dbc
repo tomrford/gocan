@@ -1,0 +1,33 @@
+VERSION ""
+
+NS_ :
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+
+BS_:
+
+BU_: Device Control
+
+BO_ 2416316419 DEV_0_STAT: 8 Device
+ SG_ State : 0|4@1+ (1,0) [0|15] "" Control
+ SG_ Coolant : 8|8@1+ (1,-40) [-40|215] "°C" Control
+
+BO_ 2416324609 DEV_0_CTRL: 2 Control
+ SG_ Enable : 0|1@1+ (1,0) [0|1] "" Device
+ SG_ Setpoint : 8|8@1+ (0.5,0) [0|127.5] "A" Device
+
+BO_ 2416312320 DEV_0_VERSION: 4 Device
+ SG_ Major : 0|8@1+ (1,0) [0|255] "" Control
+ SG_ Minor : 8|8@1+ (1,0) [0|255] "" Control
+
+CM_ "Synthetic device interface for device ID 0; the device ID occupies identifier bits 8-11.";
+CM_ BO_ 2416316419 "Device status";
+CM_ SG_ 2416316419 Coolant "Kühlmittel inlet";
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 10000;
+BA_ "GenMsgCycleTime" BO_ 2416316419 100;
+BA_ "GenMsgCycleTime" BO_ 2416324609 20;
+
+VAL_ 2416316419 State 0 "Off" 1 "Run" 15 "Fault";

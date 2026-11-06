@@ -11,15 +11,39 @@ import (
 	"unicode/utf8"
 )
 
+// Edit returns a new database made by applying edit to a copy of db. The copy
+// is written as DBC text and parsed as name, so the result is validated like
+// any parsed database, its lookups and codecs follow the edits, and Source
+// returns the written text. db is not changed.
+//
+// edit may change any exported field, including adding or removing nodes,
+// messages and signals. Lookups on the copy describe it before edit ran.
+func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
+	var text strings.Builder
+	if err := db.Write(&text); err != nil {
+		return nil, err
+	}
+	edited, err := Parse(name, text.String())
+	if err != nil {
+		return nil, err
+	}
+	edit(edited)
+	text.Reset()
+	if err := edited.Write(&text); err != nil {
+		return nil, err
+	}
+	return Parse(name, text.String())
+}
+
 // Write writes db as UTF-8 DBC text. Parsing the text yields a database equal
 // to db apart from Diagnostics and Source: records that Parse dropped are not
 // written, and source formatting, number spelling and encoding are not kept.
 // Equal databases write equal text.
 //
 // Write reads only exported fields, so it also accepts a copy whose exported
-// fields were edited. It writes nothing and returns an error when a name,
-// string or number cannot be represented in DBC text; other inconsistencies
-// are reported when the text is parsed.
+// fields were edited, as Edit does. It writes nothing and returns an error
+// when a name, string or number cannot be represented in DBC text; other
+// inconsistencies are reported when the text is parsed.
 //
 // To write Windows-1252, wrap w with charmap.Windows1252.NewEncoder().Writer
 // from golang.org/x/text/encoding/charmap.
