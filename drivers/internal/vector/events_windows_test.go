@@ -193,6 +193,11 @@ func TestVectorFDCollisionBusOffEvents(t *testing.T) {
 			t.Fatalf("send from collision winner: %v", err)
 		}
 		if err := loser.Send(context.Background(), loserFrame); err != nil {
+			// Retransmissions can reach the expected terminal state before
+			// this goroutine finishes queuing the remaining collisions.
+			if errors.Is(err, gocan.ErrBusOff) {
+				break
+			}
 			t.Fatalf("send from collision loser: %v", err)
 		}
 	}
