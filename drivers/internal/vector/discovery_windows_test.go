@@ -13,22 +13,35 @@ import (
 
 func TestMapXLDriverConfig(t *testing.T) {
 	var driver xlDriverConfig
-	binary.LittleEndian.PutUint32(driver[xlDriverChannelCountOffset:], 3)
-	setXLDriverChannel(&driver, 0, discoveryChannel(
+	binary.LittleEndian.PutUint32(driver[xlDriverChannelCountOffset:], 5)
+	fdOnBus := discoveryChannel(
 		"Example FD 1\x00ignored", 9, 2, 1001,
 		xlBusActiveCapabilityCAN,
 		xlChannelCapabilityCANFDISO|0x20000000,
-	))
+	)
+	setBusParams(&fdOnBus, true, xlBusTypeCAN, 500_000, 2_000_000, xlCANOpModeCANFD)
+	setXLDriverChannel(&driver, 0, fdOnBus)
 	setXLDriverChannel(&driver, 1, discoveryChannel(
 		"FlexRay", 10, 0, 1002,
 		0x00040000,
 		0,
 	))
-	setXLDriverChannel(&driver, 2, discoveryChannel(
+	// Classic parameters leave reserved bytes where CAN FD keeps its data rate.
+	classicOnBus := discoveryChannel(
 		"Virtual CAN", 3, 0, 0,
 		xlBusActiveCapabilityCAN,
 		0x20000000,
-	))
+	)
+	setBusParams(&classicOnBus, true, xlBusTypeCAN, 250_000, 0xffffffff, xlCANOpModeCAN20)
+	setXLDriverChannel(&driver, 2, classicOnBus)
+	// Some interfaces, such as CANcaseXL, report no operating mode.
+	noMode := discoveryChannel("CANcaseXL 1", 4, 0, 1003, xlBusActiveCapabilityCAN, 0)
+	setBusParams(&noMode, true, xlBusTypeCAN, 500_000, 0, 0)
+	setXLDriverChannel(&driver, 3, noMode)
+	// An idle channel keeps the parameters it last ran with.
+	idle := discoveryChannel("Example FD 2", 10, 3, 1001, xlBusActiveCapabilityCAN, xlChannelCapabilityCANFDISO)
+	setBusParams(&idle, false, xlBusTypeCAN, 125_000, 1_000_000, xlCANOpModeCANFD)
+	setXLDriverChannel(&driver, 4, idle)
 
 	got, err := mapXLDriverConfig(&driver)
 	if err != nil {
@@ -41,12 +54,31 @@ func TestMapXLDriverConfig(t *testing.T) {
 			SerialNumber:    1001,
 			HardwareChannel: 2,
 			SupportsFD:      true,
+			OnBus:           true,
+			Bitrate:         500_000,
+			DataBitrate:     2_000_000,
 		},
 		{
 			ChannelIndex:    3,
 			Name:            "Virtual CAN",
 			HardwareChannel: 0,
 			SupportsFD:      false,
+			OnBus:           true,
+			Bitrate:         250_000,
+		},
+		{
+			ChannelIndex: 4,
+			Name:         "CANcaseXL 1",
+			SerialNumber: 1003,
+			OnBus:        true,
+			Bitrate:      500_000,
+		},
+		{
+			ChannelIndex:    10,
+			Name:            "Example FD 2",
+			SerialNumber:    1001,
+			HardwareChannel: 3,
+			SupportsFD:      true,
 		},
 	}
 	if len(got) != len(want) {
@@ -112,6 +144,16 @@ func discoveryChannel(
 	binary.LittleEndian.PutUint32(channel[xlChannelBusCapabilitiesOffset:], busCapabilities)
 	binary.LittleEndian.PutUint32(channel[xlChannelCapabilitiesOffset:], channelCapabilities)
 	return channel
+}
+
+func setBusParams(channel *xlChannelConfig, onBus bool, busType, bitrate, dataBitrate uint32, mode uint8) {
+	if onBus {
+		channel[xlChannelIsOnBusOffset] = 1
+	}
+	binary.LittleEndian.PutUint32(channel[xlChannelBusTypeOffset:], busType)
+	binary.LittleEndian.PutUint32(channel[xlChannelBitrateOffset:], bitrate)
+	binary.LittleEndian.PutUint32(channel[xlChannelDataBitrateOffset:], dataBitrate)
+	channel[xlChannelCANOpModeOffset] = mode
 }
 
 func setXLDriverChannel(driver *xlDriverConfig, index int, channel xlChannelConfig) {

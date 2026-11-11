@@ -25,6 +25,10 @@ func nativeVectorConfig(channel Channel, config Config, fd bool) (vector.Config,
 		ID:           config.ID,
 		Name:         config.Name,
 		ChannelIndex: vector.ChannelIndex(channel.native),
+		Join:         config.External,
+	}
+	if config.External {
+		return native, nil
 	}
 	if !fd {
 		native.Bitrate = config.Bitrate

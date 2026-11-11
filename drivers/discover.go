@@ -38,6 +38,8 @@ type Channel struct {
 	native              uint64
 	supportsFD          bool
 	external            bool
+	externalBitrate     uint32
+	externalDataBitrate uint32
 	supportsTermination bool
 }
 
@@ -50,9 +52,19 @@ func (channel Channel) Name() string { return channel.name }
 // SupportsFD reports whether the channel supports CAN FD.
 func (channel Channel) SupportsFD() bool { return channel.supportsFD }
 
-// ExternallyConfigured reports whether the operating system, rather than
-// gocan, owns the channel's bit timing.
+// ExternallyConfigured reports whether something other than gocan owns the
+// channel's bit timing: Linux for SocketCAN, or, for Vector, another port
+// that had the channel on the bus when Discover ran. That includes ports this
+// process opened.
 func (channel Channel) ExternallyConfigured() bool { return channel.external }
+
+// ExternalBitrates reports the nominal and CAN FD data rates in bits per
+// second of an externally configured Vector channel. Zero means unknown; a
+// zero data rate also means classical CAN or an interface that does not report
+// its CAN FD mode.
+func (channel Channel) ExternalBitrates() (bitrate, dataBitrate uint32) {
+	return channel.externalBitrate, channel.externalDataBitrate
+}
 
 // Identifier returns a session-local display key which distinguishes channels
 // that have the same driver and name. Pass Channel itself to Open.
