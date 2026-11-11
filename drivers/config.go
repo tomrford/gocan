@@ -28,7 +28,11 @@ type Config struct {
 	DataBitrate uint32
 	// FDTiming selects programmable CAN FD with exact bit timing.
 	FDTiming FDTiming
-	// External selects timing already configured by the operating system.
+	// External selects timing already configured outside gocan, on channels
+	// whose ExternallyConfigured method returns true. On Vector it joins the
+	// channel without changing the timing of the application that owns it;
+	// Open checks that the channel is on the bus before joining, but cannot
+	// prevent the owner from closing or changing timing during the open.
 	External bool
 	// Termination selects switchable bus termination on supported channels.
 	// Default leaves the driver default; unsupported explicit choices are rejected.

@@ -40,12 +40,22 @@ const (
 	xlChannelIndexOffset           = 41
 	xlChannelCapabilitiesOffset    = 50
 	xlChannelBusCapabilitiesOffset = 54
-	xlChannelSerialNumberOffset    = 147
-	xlDriverChannelCountOffset     = 4
-	xlDriverChannelsOffset         = 48
+	xlChannelIsOnBusOffset         = 58
+	// XLbusParams: busType, then the CAN or CAN FD parameter union. Both
+	// union members keep the nominal rate and operating mode at the same offset.
+	xlChannelBusTypeOffset      = 63
+	xlChannelBitrateOffset      = 67
+	xlChannelDataBitrateOffset  = 79
+	xlChannelCANOpModeOffset    = 83
+	xlChannelSerialNumberOffset = 147
+	xlDriverChannelCountOffset  = 4
+	xlDriverChannelsOffset      = 48
 
 	xlBusActiveCapabilityCAN    uint32 = 0x00010000
 	xlChannelCapabilityCANFDISO uint32 = 0x80000000
+
+	xlCANOpModeCAN20 = 1
+	xlCANOpModeCANFD = 2
 )
 
 var processXLDriver xlDriverProcess
@@ -62,6 +72,13 @@ type ChannelInfo struct {
 	SerialNumber    uint32
 	HardwareChannel uint8
 	SupportsFD      bool
+	// OnBus reports that an application has the channel active. Bitrate and,
+	// for CAN FD, DataBitrate report its current rates; both are zero when the
+	// channel is not on the bus, and DataBitrate is zero when the interface does
+	// not report CAN FD operation.
+	OnBus       bool
+	Bitrate     uint32
+	DataBitrate uint32
 }
 
 // xlChannelConfig is the packed XLchannelConfig ABI from vxlapi.h. Its
@@ -106,6 +123,10 @@ func Discover() (channels []ChannelInfo, err error) {
 		err = errors.Join(err, releaseErr)
 	}()
 
+	return api.channels()
+}
+
+func (api *xlAPI) channels() ([]ChannelInfo, error) {
 	var config xlDriverConfig
 	result, _, _ := api.getDriverConfig.Call(uintptr(unsafe.Pointer(&config[0])))
 	if status := xlStatus(result); status != xlSuccess {
@@ -136,13 +157,23 @@ func mapXLChannelConfig(config *xlChannelConfig) ChannelInfo {
 	if end := bytes.IndexByte(name, 0); end >= 0 {
 		name = name[:end]
 	}
-	return ChannelInfo{
+	info := ChannelInfo{
 		ChannelIndex:    ChannelIndex(config[xlChannelIndexOffset]),
 		Name:            string(name),
 		SerialNumber:    config.uint32(xlChannelSerialNumberOffset),
 		HardwareChannel: config[xlChannelHardwareChannelOffset],
 		SupportsFD:      config.uint32(xlChannelCapabilitiesOffset)&xlChannelCapabilityCANFDISO != 0,
+		OnBus:           config[xlChannelIsOnBusOffset] != 0,
 	}
+	if info.OnBus && config.uint32(xlChannelBusTypeOffset) == xlBusTypeCAN {
+		info.Bitrate = config.uint32(xlChannelBitrateOffset)
+		// The classic member keeps reserved bytes where CAN FD keeps its data
+		// rate. Some interfaces report no operating mode; treat them as classic.
+		if config[xlChannelCANOpModeOffset]&xlCANOpModeCANFD != 0 {
+			info.DataBitrate = config.uint32(xlChannelDataBitrateOffset)
+		}
+	}
+	return info
 }
 
 func (driver *xlDriverProcess) acquire(open func() error) error {
@@ -183,6 +214,8 @@ func (driver *xlDriverProcess) release(close func() error) error {
 }
 
 // Open initializes one Vector CAN or CAN FD channel and starts capturing frames.
+// With Config.Join it instead joins a channel that another application has on
+// the bus, leaving that application's timing in place.
 // Context controls opening only; canceling it after Open returns does not stop
 // the bus. Native calls cannot be interrupted, so Open checks ctx between them.
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus *Bus, err error) {
@@ -191,11 +224,15 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if config.ChannelIndex >= 64 {
 		return nil, fmt.Errorf("Vector channel index %d exceeds 63", config.ChannelIndex)
 	}
+	if config.Join && (config.Bitrate != 0 || config.fd()) {
+		return nil, errors.New("joining a Vector channel keeps its timing; Bitrate and FDTiming must be zero")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	api, err := loadXLAPI(config.fd())
+	fd := config.fd()
+	api, err := loadXLAPI(fd)
 	if err != nil {
 		return nil, err
 	}
@@ -245,9 +282,22 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	}
 
 	permission := access
+	if config.Join {
+		// Request no initialization access, so the owner keeps it.
+		permission = 0
+		fd, err = joinableChannel(api, config.ChannelIndex)
+		if err != nil {
+			return nil, err
+		}
+		if fd {
+			if err := api.resolve(true); err != nil {
+				return nil, err
+			}
+		}
+	}
 	application := []byte(vectorApplication)
 	interfaceVersion := uintptr(xlInterfaceVersion)
-	if config.fd() {
+	if fd {
 		interfaceVersion = xlInterfaceVersionFD
 	}
 	result, _, _ := api.openPort.Call(
@@ -266,11 +316,11 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if permission&access != access {
-		return nil, errors.New("open Vector port: channel initialization access was not granted")
-	}
-
-	if config.fd() {
+	switch {
+	case config.Join:
+	case permission&access != access:
+		return nil, errors.New("open Vector port: another application has configured the channel; join it instead")
+	case fd:
 		fdConfig := newXLCanFDConfig(config)
 		result, _, _ = api.setFDConfiguration.Call(
 			portArgument(port),
@@ -280,7 +330,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		if status := xlStatus(result); status != xlSuccess {
 			return nil, api.statusError("set Vector CAN FD configuration", status)
 		}
-	} else {
+	default:
 		result, _, _ = api.setBitrate.Call(portArgument(port), uintptr(access), uintptr(config.Bitrate))
 		if status := xlStatus(result); status != xlSuccess {
 			return nil, api.statusError("set Vector channel bitrate", status)
@@ -340,7 +390,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		port:         port,
 		access:       access,
 		api:          api,
-		fd:           config.fd(),
+		fd:           fd,
 		receiveEvent: receiveEvent,
 		stopEvent:    stopEvent,
 		lifecycle: driverstate.New(func() {
@@ -407,6 +457,14 @@ func loadXLAPI(fd bool) (*xlAPI, error) {
 		transmit:           dll.NewProc("xlCanTransmit"),
 		transmitFD:         dll.NewProc("xlCanTransmitEx"),
 	}
+	if err := api.resolve(fd); err != nil {
+		return nil, err
+	}
+	return api, nil
+}
+
+// resolve checks that the procedures for classic or CAN FD access exist.
+func (api *xlAPI) resolve(fd bool) error {
 	procedures := []*windows.LazyProc{
 		api.openDriver,
 		api.closeDriver,
@@ -426,10 +484,32 @@ func loadXLAPI(fd bool) (*xlAPI, error) {
 	}
 	for _, procedure := range procedures {
 		if err := procedure.Find(); err != nil {
-			return nil, fmt.Errorf("resolve vxlapi64.dll %s: %w", procedure.Name, err)
+			return fmt.Errorf("resolve vxlapi64.dll %s: %w", procedure.Name, err)
 		}
 	}
-	return api, nil
+	return nil
+}
+
+// joinableChannel checks that another application has the channel on the
+// bus and reports whether to use the CAN FD interface. CAN FD-capable channels
+// always use it: it carries classic frames, and the owner's mode decides which
+// frames the controller accepts. The owner may still leave the bus before this
+// port activates the channel, which would then run at its last settings.
+func joinableChannel(api *xlAPI, index ChannelIndex) (bool, error) {
+	channels, err := api.channels()
+	if err != nil {
+		return false, err
+	}
+	for _, channel := range channels {
+		if channel.ChannelIndex != index {
+			continue
+		}
+		if !channel.OnBus {
+			return false, fmt.Errorf("join Vector channel %d: no application has it on the bus", index)
+		}
+		return channel.SupportsFD, nil
+	}
+	return false, fmt.Errorf("join Vector channel %d: channel not found", index)
 }
 
 func (api *xlAPI) statusError(operation string, status xlStatus) error {

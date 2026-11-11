@@ -9,10 +9,13 @@ func discoverVector() ([]Channel, error) {
 	channels := make([]Channel, 0, len(vectorChannels))
 	for _, channel := range vectorChannels {
 		channels = append(channels, Channel{
-			driver:     driverVector,
-			name:       channel.Name,
-			native:     uint64(channel.ChannelIndex),
-			supportsFD: channel.SupportsFD,
+			driver:              driverVector,
+			name:                channel.Name,
+			native:              uint64(channel.ChannelIndex),
+			supportsFD:          channel.SupportsFD,
+			external:            channel.OnBus,
+			externalBitrate:     channel.Bitrate,
+			externalDataBitrate: channel.DataBitrate,
 		})
 	}
 	return channels, err

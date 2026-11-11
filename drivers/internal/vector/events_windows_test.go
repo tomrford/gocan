@@ -129,27 +129,99 @@ func TestVectorFDMismatchedDataBitrateEvents(t *testing.T) {
 	waitForVectorEvents(t, capture, receiver.ID(), cursor, func(event gocan.Event) bool {
 		return event.Kind == gocan.EventErrorFrame
 	})
+	waitForVectorEvents(t, capture, sender.ID(), cursor, func(event gocan.Event) bool {
+		return event.Kind == gocan.EventErrorFrame
+	})
 	select {
 	case <-receiver.Done():
 		t.Fatalf("Vector receiver stopped after an FD receive error: %v", receiver.Err())
 	default:
 	}
+}
+
+// Two nodes that start the same identifier together collide on the first data
+// bit where they differ. The node sending recessive there takes a bit error on
+// every collision, so its transmit error counter keeps rising after both nodes
+// are error-passive, and it goes bus-off. Error-passive retransmissions can
+// drift apart and let a pair through uncontested, so both nodes queue enough
+// pairs for collisions to resume. Mismatched timing cannot reach bus-off with
+// two nodes: once the receiver is error-passive the sender sees only missing
+// acknowledgements, which leave an error-passive transmitter's counter
+// unchanged.
+func TestVectorFDCollisionBusOffEvents(t *testing.T) {
+	vectorA, vectorB := vectorPairIndexes(t)
+	dataBitrate := vectorFDDataBitrate(t)
+
+	capture := gocan.NewCapture()
+	loser, err := Open(context.Background(), capture, Config{
+		ID: 1, Name: "vector-fd-collision-loser", ChannelIndex: vectorA,
+		FDTiming: vectorFDTiming(dataBitrate),
+	})
+	if err != nil {
+		t.Fatalf("open Vector FD loser: %v", err)
+	}
+	t.Cleanup(func() { _ = loser.Close() })
+	winner, err := Open(context.Background(), capture, Config{
+		ID: 2, Name: "vector-fd-collision-winner", ChannelIndex: vectorB,
+		FDTiming: vectorFDTiming(dataBitrate),
+	})
+	if err != nil {
+		t.Fatalf("open Vector FD winner: %v", err)
+	}
+	t.Cleanup(func() { _ = winner.Close() })
+
+	// A 64-byte frame without bit-rate switching holds the bus for over a
+	// millisecond, so the first colliding pair queues behind it and starts
+	// together after its interframe space.
+	blocker, err := vectorEventFrame(0x5a6, 64, 0, gocan.FrameFD)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	winnerFrame, err := vectorEventFrame(0x5a7, 12, 0x00, gocan.FrameFD|gocan.FrameBitRateSwitch)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	loserFrame, err := vectorEventFrame(0x5a7, 12, 0x80, gocan.FrameFD|gocan.FrameBitRateSwitch)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	if err := winner.Send(context.Background(), blocker); err != nil {
+		t.Fatalf("send blocker: %v", err)
+	}
+	for range 32 {
+		if err := winner.Send(context.Background(), winnerFrame); err != nil {
+			t.Fatalf("send from collision winner: %v", err)
+		}
+		if err := loser.Send(context.Background(), loserFrame); err != nil {
+			// Retransmissions can reach the expected terminal state before
+			// this goroutine finishes queuing the remaining collisions.
+			if errors.Is(err, gocan.ErrBusOff) {
+				break
+			}
+			t.Fatalf("send from collision loser: %v", err)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	select {
-	case <-sender.Done():
+	case <-loser.Done():
 	case <-ctx.Done():
-		t.Fatal("Vector sender did not enter bus-off with mismatched FD data timing")
+		t.Fatal("Vector collision loser did not enter bus-off")
 	}
-	if !errors.Is(sender.Err(), gocan.ErrBusOff) {
-		t.Fatalf("Vector sender Err() = %v, want ErrBusOff", sender.Err())
+	if !errors.Is(loser.Err(), gocan.ErrBusOff) {
+		t.Fatalf("Vector collision loser Err() = %v, want ErrBusOff", loser.Err())
+	}
+	select {
+	case <-winner.Done():
+		t.Fatalf("Vector collision winner stopped: %v", winner.Err())
+	default:
 	}
 
-	senderEvents := capture.BusEvents(sender.ID())
+	loserEvents := capture.BusEvents(loser.ID())
 	seenError := false
 	seenBusOff := false
-	for _, event := range senderEvents {
+	for _, event := range loserEvents {
 		switch event.Kind {
 		case gocan.EventErrorFrame:
 			seenError = true
@@ -163,12 +235,12 @@ func TestVectorFDMismatchedDataBitrateEvents(t *testing.T) {
 		}
 	}
 	if !seenError || !seenBusOff {
-		t.Fatalf("Vector sender events omit error or bus-off: %+v", senderEvents)
+		t.Fatalf("Vector collision loser events omit error or bus-off: %+v", loserEvents)
 	}
-	lastEvent := senderEvents[len(senderEvents)-1]
+	lastEvent := loserEvents[len(loserEvents)-1]
 	if lastEvent.Kind != gocan.EventControllerState ||
 		lastEvent.ControllerState != gocan.ControllerBusOff {
-		t.Fatalf("last Vector sender event = %+v, want bus-off", lastEvent)
+		t.Fatalf("last Vector collision loser event = %+v, want bus-off", lastEvent)
 	}
 }
 

@@ -19,6 +19,10 @@ type Config struct {
 	Bitrate      uint32
 	// FDTiming selects ISO CAN FD with exact native timing.
 	FDTiming FDTiming
+	// Join opens the channel without initialization access, keeping the
+	// timing of the application that has it on the bus. Bitrate and FDTiming
+	// must be zero.
+	Join bool
 }
 
 type FDTiming struct {
