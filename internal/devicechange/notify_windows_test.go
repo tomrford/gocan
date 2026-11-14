@@ -74,7 +74,7 @@ func newUnregisteredTestWatcher(t *testing.T) *Watcher {
 	watcher := &Watcher{
 		events:    make(chan Event, watcherBuffer),
 		contextID: nextWatcherContext.Add(1),
-		prefix:    `USB\VID_0C72&`,
+		prefixes:  []string{`USB\VID_0C72&`},
 	}
 	watcherContexts.Store(watcher.contextID, watcher)
 	t.Cleanup(func() { watcherContexts.Delete(watcher.contextID) })

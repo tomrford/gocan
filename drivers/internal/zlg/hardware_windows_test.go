@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,24 +16,27 @@ import (
 )
 
 // The hardware tests pair a ZLG channel with a PCAN reference adapter on one
-// terminated 500 kbit/s bus. GOCAN_ZLG_DEVICE selects the ZLG device index
-// (channel 0) and GOCAN_PCAN_CHANNEL the PCAN handle; GOCAN_ZLGCAN_DIR must
-// hold zlgcan.dll.
+// terminated 500 kbit/s classical bus. GOCAN_ZLG_DEVICE selects the ZLG device
+// type and index (channel 0), for example 4:0 for a USBCAN-I or 41:0 for a
+// USBCANFD-200U, and GOCAN_PCAN_CHANNEL the PCAN handle; GOCAN_ZLGCAN_DIR
+// must hold zlgcan.dll.
 func hardwarePair(t testing.TB) (Config, pcan.Config) {
 	t.Helper()
 	device, peer := os.Getenv("GOCAN_ZLG_DEVICE"), os.Getenv("GOCAN_PCAN_CHANNEL")
 	if device == "" || peer == "" {
 		t.Skip("GOCAN_ZLG_DEVICE and GOCAN_PCAN_CHANNEL are not set")
 	}
-	index, err := strconv.ParseUint(device, 0, 32)
-	if err != nil {
-		t.Fatalf("GOCAN_ZLG_DEVICE=%q: %v", device, err)
+	deviceType, index, found := strings.Cut(device, ":")
+	parsedType, typeErr := strconv.ParseUint(deviceType, 0, 32)
+	parsedIndex, indexErr := strconv.ParseUint(index, 0, 16)
+	if !found || typeErr != nil || indexErr != nil {
+		t.Fatalf("GOCAN_ZLG_DEVICE=%q is not a device type and index such as 4:0", device)
 	}
 	channel, err := strconv.ParseUint(peer, 0, 16)
 	if err != nil || channel == 0 {
 		t.Fatalf("GOCAN_PCAN_CHANNEL=%q is not a nonzero PCAN handle", peer)
 	}
-	return Config{ID: 1, Name: "zlg", Device: uint32(index), Bitrate: 500_000},
+	return Config{ID: 1, Name: "zlg", DeviceType: uint32(parsedType), Device: uint32(parsedIndex), Bitrate: 500_000},
 		pcan.Config{ID: 2, Name: "pcan", Channel: pcan.Channel(channel), Bitrate: 500_000}
 }
 

@@ -30,12 +30,16 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 	case driverVector:
 		return openVector(ctx, capture, channel, config, fd)
 	case driverZLG:
+		deviceType, device, index := zlgSelector(channel.native)
 		return zlg.Open(ctx, capture, zlg.Config{
-			ID:      config.ID,
-			Name:    config.Name,
-			Device:  uint32(channel.native >> 32),
-			Channel: uint32(channel.native),
-			Bitrate: config.Bitrate,
+			ID:          config.ID,
+			Name:        config.Name,
+			DeviceType:  deviceType,
+			Device:      device,
+			Channel:     index,
+			Bitrate:     config.Bitrate,
+			DataBitrate: config.DataBitrate,
+			Termination: uint8(config.Termination),
 		})
 	default:
 		return nil, fmt.Errorf("driver %q is not available on Windows", channel.Driver())

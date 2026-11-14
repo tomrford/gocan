@@ -82,7 +82,8 @@ func (channel Channel) Identifier() string {
 	case driverVector:
 		return fmt.Sprintf("vector:%d", channel.native)
 	case driverZLG:
-		return fmt.Sprintf("zlg:%d:%d", channel.native>>32, uint32(channel.native))
+		deviceType, device, index := zlgSelector(channel.native)
+		return fmt.Sprintf("zlg:%d:%d:%d", deviceType, device, index)
 	default:
 		return ""
 	}

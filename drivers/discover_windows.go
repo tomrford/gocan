@@ -11,9 +11,9 @@ import (
 )
 
 // Discover reports the attached PCAN channels followed by the CAN-capable
-// Vector, NI-XNET, and ZLG channels, each in native driver order. ZLG adds
-// about one second per attached adapter, which it opens and closes to read its
-// channel count; adapters held by another process are omitted. A vendor stack that is not
+// Vector, NI-XNET, and ZLG channels, each in native driver order. ZLG opens
+// and closes each attached adapter to read its channel count, about one second
+// per USBCAN; adapters held by another process are omitted. A vendor stack that is not
 // installed contributes neither channels nor an error; an installed stack
 // that fails to answer contributes no channels and joins its error into the
 // returned error alongside the other driver's channels.
@@ -48,10 +48,12 @@ func Discover() ([]Channel, error) {
 	channels = append(channels, nixnetChannels...)
 	for _, channel := range zlgChannels {
 		channels = append(channels, Channel{
-			driver:     driverZLG,
-			name:       channel.HardwareType,
-			nativeName: channel.Serial,
-			native:     uint64(channel.Device)<<32 | uint64(channel.Channel),
+			driver:              driverZLG,
+			name:                channel.HardwareType,
+			nativeName:          channel.Serial,
+			native:              zlgNative(channel.DeviceType, channel.Device, channel.Channel),
+			supportsFD:          channel.SupportsFD,
+			supportsTermination: channel.SupportsFD,
 		})
 	}
 	return channels, errors.Join(pcanErr, vectorErr, nixnetErr, zlgErr)

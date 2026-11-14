@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,53 +27,78 @@ import (
 // deployment layout.
 const LibraryDirEnv = "GOCAN_ZLGCAN_DIR"
 
-const usbcanInstancePrefix = `USB\VID_0471&PID_1200\`
+// A family is a set of adapters sharing a kernel DLL. USBCANFD-100U, 200U and
+// MINI share USB IDs, so Discover tries each of their device types.
+type family struct {
+	instancePrefixes []string
+	deviceTypes      []uint32
+}
 
-// A ZLG USBCAN removal stops every open ZLG bus: device indices are assigned
+var families = [...]family{
+	{[]string{`USB\VID_0471&PID_1200\`}, []uint32{deviceTypeUSBCAN2}},
+	{[]string{`USB\VID_3068&PID_0009\`, `USB\VID_04CC&PID_1240\`}, []uint32{deviceTypeUSBCANFD200U, deviceTypeUSBCANFD100U, deviceTypeUSBCANFDMini}},
+}
+
+// A ZLG adapter removal stops every open ZLG bus: device indices are assigned
 // by the driver and cannot be mapped to one Windows device instance.
-var processZLGDevices = devicechange.NewMonitor(usbcanInstancePrefix, "ZLG USBCAN")
+var processZLGDevices = devicechange.NewMonitor("ZLG USB",
+	slices.Concat(families[0].instancePrefixes, families[1].instancePrefixes)...)
 
 const (
 	receiveIdle         = time.Millisecond
 	statePollTime       = 100 * time.Millisecond
 	transmitQueueFrames = 256
 	transmitBatchFrames = 16
+	receiveBatchFrames  = 64
 )
 
 type ChannelInfo struct {
+	DeviceType   uint32
 	Device       uint32
 	Channel      uint32
 	HardwareType string
 	Serial       string
+	// SupportsFD also reports switchable termination.
+	SupportsFD bool
 }
 
-// Discover reports the channels of attached USBCAN-I/II adapters. Probing
-// opens each adapter briefly, so adapters held by another process are omitted;
-// adapters open in this process are reported from their open handle.
+// Discover reports the channels of attached USBCAN-I/II and USBCANFD
+// adapters. Probing opens each adapter briefly, so adapters held by another
+// process are omitted; adapters open in this process are reported from their
+// open handle.
 func Discover() ([]ChannelInfo, error) {
 	api, err := loadAPI()
 	if err != nil {
 		return nil, err
 	}
-	count, err := attachedUSBCANCount()
+	counts, err := attachedCounts()
 	if err != nil {
 		return nil, err
 	}
 	devices.Lock()
 	defer devices.Unlock()
 	var channels []ChannelInfo
-	for index := range count {
-		info, ok := api.probeLocked(index)
-		if !ok {
-			continue
-		}
-		for channel := range uint32(info.channels) {
-			channels = append(channels, ChannelInfo{
-				Device:       index,
-				Channel:      channel,
-				HardwareType: cString(info.hardwareType[:]),
-				Serial:       cString(info.serial[:]),
-			})
+	for familyIndex, family := range families {
+		seen := map[string]bool{}
+		for _, deviceType := range family.deviceTypes {
+			for index := range counts[familyIndex] {
+				info, ok := api.probeLocked(deviceKey{deviceType, index})
+				serial := cString(info.serial[:])
+				if !ok || serial != "" && seen[serial] {
+					continue
+				}
+				seen[serial] = true
+				for channel := range uint32(info.channels) {
+					channels = append(channels, ChannelInfo{
+						DeviceType:   deviceType,
+						Device:       index,
+						Channel:      channel,
+						HardwareType: cString(info.hardwareType[:]),
+						Serial:       serial,
+						SupportsFD:   isFDDevice(deviceType),
+					})
+				}
+			}
 		}
 	}
 	return channels, nil
@@ -84,9 +111,8 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	timing, ok := sja1000Timings[config.Bitrate]
-	if !ok {
-		return nil, fmt.Errorf("ZLG classical bitrate %d is not a ZLG predefined rate", config.Bitrate)
+	if err := validateConfig(config); err != nil {
+		return nil, err
 	}
 	api, err := loadAPI()
 	if err != nil {
@@ -102,26 +128,32 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		}
 	}()
 
-	device, err := api.acquire(config.Device, config.Channel)
+	key := deviceKey{config.DeviceType, config.Device}
+	device, err := api.acquire(key, config.Channel)
 	if err != nil {
 		return nil, err
 	}
-	init := initConfig{accMask: 0xffffffff, timing0: timing[0], timing1: timing[1]}
-	channel, _, _ := api.initCAN.Call(device.handle, uintptr(config.Channel), uintptr(unsafe.Pointer(&init)))
-	if channel == 0 {
-		return nil, errors.Join(
-			fmt.Errorf("initialize ZLG device %d channel %d", config.Device, config.Channel),
-			api.release(config.Device, config.Channel),
-		)
+	channel, err := api.initChannel(device, config)
+	if err != nil {
+		return nil, errors.Join(err, api.release(key, config.Channel))
 	}
 	bus := &Bus{
 		config:    config,
 		capture:   capture,
 		api:       api,
 		channel:   channel,
+		fdDevice:  isFDDevice(config.DeviceType),
+		fd:        config.DataBitrate != 0,
 		txQueue:   make(chan gocan.Frame, transmitQueueFrames),
 		txDone:    make(chan struct{}),
 		lifecycle: driverstate.New(nil),
+	}
+	if config.Termination != 0 {
+		// ZLG applies termination after InitCAN and spells the property this way.
+		value := strconv.Itoa(int(config.Termination - 1))
+		if err := api.setValue(device.handle, fmt.Sprintf("%d/initenal_resistance", config.Channel), value); err != nil {
+			return nil, errors.Join(err, bus.cleanup())
+		}
 	}
 	for _, step := range []struct {
 		proc      *windows.Proc
@@ -141,10 +173,43 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	return bus, nil
 }
 
+// initChannel configures and initializes a channel. USBCANFD adapters take
+// their rates as properties set before ZCAN_InitCAN, and always initialize as
+// ISO CAN FD controllers; a classical bus sets the data rate to 1 Mbit/s, at
+// or above every nominal rate.
+func (api *api) initChannel(device *device, config Config) (uintptr, error) {
+	var init unsafe.Pointer
+	if isFDDevice(config.DeviceType) {
+		dataBitrate := config.DataBitrate
+		if dataBitrate == 0 {
+			dataBitrate = 1_000_000
+		}
+		for _, property := range [...]struct{ name, value string }{
+			{"canfd_standard", "0"},
+			{"canfd_abit_baud_rate", strconv.FormatUint(uint64(config.Bitrate), 10)},
+			{"canfd_dbit_baud_rate", strconv.FormatUint(uint64(dataBitrate), 10)},
+		} {
+			if err := api.setValue(device.handle, fmt.Sprintf("%d/%s", config.Channel, property.name), property.value); err != nil {
+				return 0, err
+			}
+		}
+		init = unsafe.Pointer(&initFDConfig{canType: canTypeFD, accMask: 0xffffffff})
+	} else {
+		timing := sja1000Timings[config.Bitrate]
+		init = unsafe.Pointer(&initConfig{accMask: 0xffffffff, timing0: timing[0], timing1: timing[1]})
+	}
+	channel, _, _ := api.initCAN.Call(device.handle, uintptr(config.Channel), uintptr(init))
+	if channel == 0 {
+		return 0, fmt.Errorf("initialize ZLG device type %d index %d channel %d", config.DeviceType, config.Device, config.Channel)
+	}
+	return channel, nil
+}
+
 type api struct {
-	openDevice, closeDevice, deviceInfo               *windows.Proc
+	openDevice, closeDevice, deviceInfo, setValueProc *windows.Proc
 	initCAN, startCAN, resetCAN, clearBuffer          *windows.Proc
-	transmit, receive, readErrorInfo, readChannelInfo *windows.Proc
+	transmit, receive, transmitFD, receiveFD          *windows.Proc
+	readErrorInfo, readChannelInfo                    *windows.Proc
 }
 
 var loadAPI = sync.OnceValues(func() (*api, error) {
@@ -175,12 +240,15 @@ var loadAPI = sync.OnceValues(func() (*api, error) {
 		{&a.openDevice, "ZCAN_OpenDevice"},
 		{&a.closeDevice, "ZCAN_CloseDevice"},
 		{&a.deviceInfo, "ZCAN_GetDeviceInf"},
+		{&a.setValueProc, "ZCAN_SetValue"},
 		{&a.initCAN, "ZCAN_InitCAN"},
 		{&a.startCAN, "ZCAN_StartCAN"},
 		{&a.resetCAN, "ZCAN_ResetCAN"},
 		{&a.clearBuffer, "ZCAN_ClearBuffer"},
 		{&a.transmit, "ZCAN_Transmit"},
 		{&a.receive, "ZCAN_Receive"},
+		{&a.transmitFD, "ZCAN_TransmitFD"},
+		{&a.receiveFD, "ZCAN_ReceiveFD"},
 		{&a.readErrorInfo, "ZCAN_ReadChannelErrInfo"},
 		{&a.readChannelInfo, "ZCAN_ReadChannelStatus"},
 	} {
@@ -191,11 +259,31 @@ var loadAPI = sync.OnceValues(func() (*api, error) {
 	return a, nil
 })
 
+func (api *api) setValue(handle uintptr, path, value string) error {
+	nativePath, err := windows.BytePtrFromString(path)
+	if err != nil {
+		return err
+	}
+	nativeValue, err := windows.BytePtrFromString(value)
+	if err != nil {
+		return err
+	}
+	if result, _, _ := api.setValueProc.Call(handle, uintptr(unsafe.Pointer(nativePath)), uintptr(unsafe.Pointer(nativeValue))); result != statusOK {
+		return fmt.Errorf("set ZLG property %s to %s: status %d", path, value, result)
+	}
+	return nil
+}
+
+type deviceKey struct {
+	deviceType uint32
+	index      uint32
+}
+
 // zlgcan.dll admits one handle per device, which its channels share.
 var devices = struct {
 	sync.Mutex
-	open map[uint32]*device
-}{open: map[uint32]*device{}}
+	open map[deviceKey]*device
+}{open: map[deviceKey]*device{}}
 
 type device struct {
 	handle   uintptr
@@ -203,57 +291,57 @@ type device struct {
 	channels map[uint32]bool
 }
 
-func (api *api) acquire(index, channel uint32) (*device, error) {
+func (api *api) acquire(key deviceKey, channel uint32) (*device, error) {
 	devices.Lock()
 	defer devices.Unlock()
-	opened := devices.open[index]
+	opened := devices.open[key]
 	if opened == nil {
-		handle, _, _ := api.openDevice.Call(deviceTypeUSBCAN2, uintptr(index), 0)
+		handle, _, _ := api.openDevice.Call(uintptr(key.deviceType), uintptr(key.index), 0)
 		if handle == 0 {
-			return nil, fmt.Errorf("open ZLG device %d: absent, in use by another process, or its kernel DLL failed to load", index)
+			return nil, fmt.Errorf("open ZLG device type %d index %d: absent, in use by another process, or its kernel DLL failed to load", key.deviceType, key.index)
 		}
 		opened = &device{handle: handle, channels: map[uint32]bool{}}
 		if result, _, _ := api.deviceInfo.Call(handle, uintptr(unsafe.Pointer(&opened.info))); result != statusOK {
 			_, _, _ = api.closeDevice.Call(handle)
-			return nil, fmt.Errorf("read ZLG device %d information: status %d", index, result)
+			return nil, fmt.Errorf("read ZLG device type %d index %d information: status %d", key.deviceType, key.index, result)
 		}
-		devices.open[index] = opened
+		devices.open[key] = opened
 	}
 	switch {
 	case channel >= uint32(opened.info.channels):
-		err := fmt.Errorf("ZLG device %d has %d channels; channel %d does not exist", index, opened.info.channels, channel)
-		return nil, errors.Join(err, api.releaseLocked(index, channel))
+		err := fmt.Errorf("ZLG device type %d index %d has %d channels; channel %d does not exist", key.deviceType, key.index, opened.info.channels, channel)
+		return nil, errors.Join(err, api.releaseLocked(key, channel))
 	case opened.channels[channel]:
-		return nil, fmt.Errorf("ZLG device %d channel %d is already open", index, channel)
+		return nil, fmt.Errorf("ZLG device type %d index %d channel %d is already open", key.deviceType, key.index, channel)
 	}
 	opened.channels[channel] = true
 	return opened, nil
 }
 
-func (api *api) release(index, channel uint32) error {
+func (api *api) release(key deviceKey, channel uint32) error {
 	devices.Lock()
 	defer devices.Unlock()
-	return api.releaseLocked(index, channel)
+	return api.releaseLocked(key, channel)
 }
 
-func (api *api) releaseLocked(index, channel uint32) error {
-	opened := devices.open[index]
+func (api *api) releaseLocked(key deviceKey, channel uint32) error {
+	opened := devices.open[key]
 	delete(opened.channels, channel)
 	if len(opened.channels) != 0 {
 		return nil
 	}
-	delete(devices.open, index)
+	delete(devices.open, key)
 	if result, _, _ := api.closeDevice.Call(opened.handle); result != statusOK {
-		return fmt.Errorf("close ZLG device %d: status %d", index, result)
+		return fmt.Errorf("close ZLG device type %d index %d: status %d", key.deviceType, key.index, result)
 	}
 	return nil
 }
 
-func (api *api) probeLocked(index uint32) (deviceInfo, bool) {
-	if opened := devices.open[index]; opened != nil {
+func (api *api) probeLocked(key deviceKey) (deviceInfo, bool) {
+	if opened := devices.open[key]; opened != nil {
 		return opened.info, true
 	}
-	handle, _, _ := api.openDevice.Call(deviceTypeUSBCAN2, uintptr(index), 0)
+	handle, _, _ := api.openDevice.Call(uintptr(key.deviceType), uintptr(key.index), 0)
 	if handle == 0 {
 		return deviceInfo{}, false
 	}
@@ -263,27 +351,33 @@ func (api *api) probeLocked(index uint32) (deviceInfo, bool) {
 	return info, result == statusOK
 }
 
-func attachedUSBCANCount() (uint32, error) {
+// attachedCounts returns the number of present USB devices in each family.
+func attachedCounts() ([len(families)]uint32, error) {
+	var counts [len(families)]uint32
 	set, err := windows.SetupDiGetClassDevsEx(nil, "USB", 0, windows.DIGCF_PRESENT|windows.DIGCF_ALLCLASSES, 0, "")
 	if err != nil {
-		return 0, fmt.Errorf("enumerate USB devices: %w", err)
+		return counts, fmt.Errorf("enumerate USB devices: %w", err)
 	}
 	defer set.Close()
-	var count uint32
 	for index := 0; ; index++ {
 		data, err := set.EnumDeviceInfo(index)
 		if errors.Is(err, windows.ERROR_NO_MORE_ITEMS) {
-			return count, nil
+			return counts, nil
 		}
 		if err != nil {
-			return 0, fmt.Errorf("enumerate USB devices: %w", err)
+			return counts, fmt.Errorf("enumerate USB devices: %w", err)
 		}
 		id, err := set.DeviceInstanceID(data)
 		if err != nil {
-			return 0, fmt.Errorf("read USB device instance: %w", err)
+			return counts, fmt.Errorf("read USB device instance: %w", err)
 		}
-		if strings.HasPrefix(strings.ToUpper(id), usbcanInstancePrefix) {
-			count++
+		id = strings.ToUpper(id)
+		for familyIndex, family := range families {
+			for _, prefix := range family.instancePrefixes {
+				if strings.HasPrefix(id, prefix) {
+					counts[familyIndex]++
+				}
+			}
 		}
 	}
 }
@@ -296,10 +390,12 @@ func cString(value []byte) string {
 }
 
 type Bus struct {
-	config  Config
-	capture *gocan.Capture
-	api     *api
-	channel uintptr
+	config   Config
+	capture  *gocan.Capture
+	api      *api
+	channel  uintptr
+	fdDevice bool
+	fd       bool
 
 	txMu      sync.Mutex
 	txQueue   chan gocan.Frame
@@ -307,6 +403,12 @@ type Bus struct {
 	txDone    chan struct{}
 	lifecycle *driverstate.Lifecycle
 	lastState gocan.Event
+
+	// Native buffers owned by the transmit and receive goroutines.
+	txFrames   [transmitBatchFrames]transmitData
+	txFDFrames [transmitBatchFrames]transmitFDData
+	rxFrames   [receiveBatchFrames]receiveData
+	rxFDFrames [receiveBatchFrames]receiveFDData
 
 	deviceSubscription *devicechange.Subscription
 	cleanupErr         error
@@ -333,7 +435,7 @@ func (bus *Bus) Close() error {
 // frames are pending. A queued frame the adapter fails to transmit is dropped
 // and reported as an error-frame event.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
-	if err := validateSendFrame(frame); err != nil {
+	if err := validateSendFrame(frame, bus.fd); err != nil {
 		return err
 	}
 	if err := bus.sendable(ctx); err != nil {
@@ -371,16 +473,16 @@ func (bus *Bus) sendable(ctx context.Context) error {
 	}
 }
 
-// transmitLoop passes every pending frame to the adapter in one call: each
-// ZCAN_Transmit call waits for its frames to leave the adapter, about 1 ms per
-// call plus 0.45 ms per frame on a USBCAN-I (October 2026).
+// transmitLoop passes pending frames to the adapter in as few calls as
+// possible: each ZCAN_Transmit call on a USBCAN-I waits for its frames to
+// leave the adapter, about 1 ms per call plus 0.45 ms per frame (October 2026).
 func (bus *Bus) transmitLoop() {
 	defer close(bus.txDone)
-	batch := make([]transmitData, 0, transmitBatchFrames)
+	batch := make([]gocan.Frame, 0, transmitBatchFrames)
 	for {
 		select {
 		case frame := <-bus.txQueue:
-			batch = append(batch[:0], transmitData{frame: encodeFrame(frame)})
+			batch = append(batch[:0], frame)
 		case <-bus.lifecycle.StopSignal():
 			bus.drain(batch)
 			return
@@ -393,11 +495,11 @@ func (bus *Bus) transmitLoop() {
 	}
 }
 
-func (bus *Bus) fillBatch(batch []transmitData) []transmitData {
+func (bus *Bus) fillBatch(batch []gocan.Frame) []gocan.Frame {
 	for len(batch) < cap(batch) {
 		select {
 		case frame := <-bus.txQueue:
-			batch = append(batch, transmitData{frame: encodeFrame(frame)})
+			batch = append(batch, frame)
 		default:
 			return batch
 		}
@@ -406,7 +508,7 @@ func (bus *Bus) fillBatch(batch []transmitData) []transmitData {
 }
 
 // drain transmits the frames accepted before a normal Close.
-func (bus *Bus) drain(batch []transmitData) {
+func (bus *Bus) drain(batch []gocan.Frame) {
 	bus.txMu.Lock()
 	bus.txClosed = true
 	bus.txMu.Unlock()
@@ -421,14 +523,21 @@ func (bus *Bus) drain(batch []transmitData) {
 	}
 }
 
-// transmit sends batch, dropping each frame the adapter fails to send. The
-// adapter abandons the rest of a call after a failure, so they are resent.
-func (bus *Bus) transmit(batch []transmitData) (bool, error) {
+// transmit sends batch in runs of classical or CAN FD frames, dropping each
+// frame the adapter fails to send. The adapter abandons the rest of a call
+// after a failure, so they are resent.
+func (bus *Bus) transmit(batch []gocan.Frame) (bool, error) {
 	failed := false
 	for len(batch) != 0 {
-		sent, _, _ := bus.api.transmit.Call(bus.channel, uintptr(unsafe.Pointer(&batch[0])), uintptr(len(batch)))
-		if int(sent) >= len(batch) {
-			break
+		fd := batch[0].Flags.Has(gocan.FrameFD)
+		run := 1
+		for run < len(batch) && batch[run].Flags.Has(gocan.FrameFD) == fd {
+			run++
+		}
+		sent := bus.transmitRun(batch[:run], fd)
+		if sent >= run {
+			batch = batch[run:]
+			continue
 		}
 		failed = true
 		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
@@ -437,6 +546,22 @@ func (bus *Bus) transmit(batch []transmitData) (bool, error) {
 		batch = batch[sent+1:]
 	}
 	return failed, nil
+}
+
+func (bus *Bus) transmitRun(frames []gocan.Frame, fd bool) int {
+	var sent uintptr
+	if fd {
+		for index, frame := range frames {
+			bus.txFDFrames[index] = transmitFDData{frame: encodeFDFrame(frame)}
+		}
+		sent, _, _ = bus.api.transmitFD.Call(bus.channel, uintptr(unsafe.Pointer(&bus.txFDFrames[0])), uintptr(len(frames)))
+	} else {
+		for index, frame := range frames {
+			bus.txFrames[index] = transmitData{frame: encodeFrame(frame)}
+		}
+		sent, _, _ = bus.api.transmit.Call(bus.channel, uintptr(unsafe.Pointer(&bus.txFrames[0])), uintptr(len(frames)))
+	}
+	return int(sent)
 }
 
 func (bus *Bus) receiveLoop() {
@@ -451,7 +576,7 @@ func (bus *Bus) receiveLoop() {
 			return
 		default:
 		}
-		more, err := bus.receiveOne()
+		more, err := bus.receiveBatch()
 		if err == nil && !time.Now().Before(nextState) {
 			err = bus.checkState()
 			nextState = time.Now().Add(statePollTime)
@@ -472,28 +597,53 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-func (bus *Bus) receiveOne() (bool, error) {
-	var native receiveData
-	if received, _, _ := bus.api.receive.Call(bus.channel, uintptr(unsafe.Pointer(&native)), 1, 0); received == 0 {
-		return false, nil
+// receiveBatch reads classical and, on USBCANFD adapters, CAN FD frames from
+// their separate native queues and records them in native timestamp order.
+func (bus *Bus) receiveBatch() (bool, error) {
+	received, _, _ := bus.api.receive.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFrames[0])), receiveBatchFrames, 0)
+	var receivedFD uintptr
+	if bus.fdDevice {
+		receivedFD, _, _ = bus.api.receiveFD.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFDFrames[0])), receiveBatchFrames, 0)
 	}
-	frame, err := decodeFrame(native.frame)
-	if err != nil {
-		return false, err
+	classic, fd := bus.rxFrames[:received], bus.rxFDFrames[:receivedFD]
+	for len(classic) != 0 || len(fd) != 0 {
+		var frame gocan.Frame
+		var err error
+		if len(fd) == 0 || len(classic) != 0 && classic[0].timestamp <= fd[0].timestamp {
+			frame, err = decodeFrame(classic[0].frame)
+			classic = classic[1:]
+		} else {
+			frame, err = decodeFDFrame(fd[0].frame)
+			fd = fd[1:]
+		}
+		if err != nil {
+			return false, err
+		}
+		if err := bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+			return false, err
+		}
 	}
-	return true, bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame})
+	return received == receiveBatchFrames || receivedFD == receiveBatchFrames, nil
 }
 
+// checkState polls controller state. USBCANFD state reads are unverified on
+// hardware, so a failed read there skips the poll instead of stopping the bus.
 func (bus *Bus) checkState() error {
 	var errorInfo channelErrorInfo
 	if result, _, _ := bus.api.readErrorInfo.Call(bus.channel, uintptr(unsafe.Pointer(&errorInfo))); result != statusOK {
+		if bus.fdDevice {
+			return nil
+		}
 		return fmt.Errorf("read ZLG channel error information: status %d", result)
 	}
-	var status channelStatus
-	if result, _, _ := bus.api.readChannelInfo.Call(bus.channel, uintptr(unsafe.Pointer(&status))); result != statusOK {
-		return fmt.Errorf("read ZLG channel status: status %d", result)
+	status := &channelStatus{}
+	if result, _, _ := bus.api.readChannelInfo.Call(bus.channel, uintptr(unsafe.Pointer(status))); result != statusOK {
+		if !bus.fdDevice {
+			return fmt.Errorf("read ZLG channel status: status %d", result)
+		}
+		status = nil
 	}
-	event, terminal := controllerEvent(bus.ID(), status, errorInfo.code)
+	event, terminal := controllerEvent(bus.ID(), status, errorInfo.code, !bus.fdDevice)
 	if event != bus.lastState || terminal != nil {
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
@@ -517,5 +667,5 @@ func (bus *Bus) cleanup() error {
 	if result, _, _ := bus.api.resetCAN.Call(bus.channel); result != statusOK {
 		cleanupErr = fmt.Errorf("reset ZLG channel: status %d", result)
 	}
-	return errors.Join(cleanupErr, bus.api.release(bus.config.Device, bus.config.Channel))
+	return errors.Join(cleanupErr, bus.api.release(deviceKey{bus.config.DeviceType, bus.config.Device}, bus.config.Channel))
 }
