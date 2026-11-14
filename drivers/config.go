@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/tomrford/gocan"
 )
@@ -18,11 +19,14 @@ type Config struct {
 	// Bitrate selects classical CAN, or the nominal CAN FD rate when
 	// DataBitrate is set, in bits per second. For classical CAN, PCAN accepts
 	// only its predefined rates, with fractional rates rounded to the nearest
-	// bit per second (for example 83_333).
+	// bit per second (for example 83_333). ZLG accepts only its predefined
+	// rates: 5_000 through 1_000_000 on USBCAN, and 50_000 through 1_000_000
+	// on USBCANFD.
 	Bitrate uint32
-	// DataBitrate selects CAN FD using built-in timing on PCAN, Vector, and NI-XNET.
-	// Channel.FDRatePresets lists the available rate pairs. The presets use
-	// an 80% sample point in both phases.
+	// DataBitrate selects CAN FD using built-in timing on PCAN, Vector,
+	// NI-XNET, and ZLG USBCANFD. Channel.FDRatePresets lists the available rate
+	// pairs. The presets use an 80% sample point in both phases, except ZLG's
+	// 5 Mbit/s data rate at 75%.
 	// Zero selects classical CAN when Bitrate is set. Use FDTiming instead
 	// when the network requires other rates or specific timing.
 	DataBitrate uint32
@@ -103,6 +107,9 @@ var fdPresets = [...]fdPreset{
 // available; use SupportsFD to check hardware capability. Config.FDTiming allows
 // custom timing on programmable channels.
 func (channel Channel) FDRatePresets() []FDRatePreset {
+	if channel.driver == driverZLG && channel.supportsFD {
+		return slices.Clone(zlgFDRates[:])
+	}
 	var rates []FDRatePreset
 	for _, preset := range channel.fdPresets() {
 		rates = append(rates, preset.rate)
@@ -195,6 +202,12 @@ func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config
 	if fd || config.DataBitrate != 0 {
 		if !channel.supportsFD {
 			return Config{}, fmt.Errorf("%s does not support CAN FD", channel.Identifier())
+		}
+		if channel.driver == driverZLG {
+			if fd || !slices.Contains(zlgFDRates[:], FDRatePreset{config.Bitrate, config.DataBitrate}) {
+				return Config{}, fmt.Errorf("%s accepts only its CAN FD rate presets", channel.Identifier())
+			}
+			return config, nil
 		}
 		if config.DataBitrate != 0 {
 			var err error

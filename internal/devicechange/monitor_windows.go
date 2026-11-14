@@ -34,9 +34,9 @@ type Monitor struct {
 	subscribers map[*Subscription]struct{}
 }
 
-func NewMonitor(prefix, description string) *Monitor {
+func NewMonitor(description string, prefixes ...string) *Monitor {
 	return newMonitor(description, func() (instanceWatcher, error) {
-		return WatchRemovals(prefix)
+		return WatchRemovals(prefixes...)
 	})
 }
 

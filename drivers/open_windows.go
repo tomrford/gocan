@@ -8,6 +8,7 @@ import (
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/internal/pcan"
+	"github.com/tomrford/gocan/drivers/internal/zlg"
 )
 
 // Open configures and opens a discovered physical CAN channel. Context
@@ -28,6 +29,18 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 		return openNIXNET(ctx, capture, channel, config, fd)
 	case driverVector:
 		return openVector(ctx, capture, channel, config, fd)
+	case driverZLG:
+		deviceType, device, index := zlgSelector(channel.native)
+		return zlg.Open(ctx, capture, zlg.Config{
+			ID:          config.ID,
+			Name:        config.Name,
+			DeviceType:  deviceType,
+			Device:      device,
+			Channel:     index,
+			Bitrate:     config.Bitrate,
+			DataBitrate: config.DataBitrate,
+			Termination: uint8(config.Termination),
+		})
 	default:
 		return nil, fmt.Errorf("driver %q is not available on Windows", channel.Driver())
 	}

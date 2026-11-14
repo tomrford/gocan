@@ -4,13 +4,17 @@ package drivers
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/internal/pcan"
+	"github.com/tomrford/gocan/drivers/internal/zlg"
 )
 
 // Discover reports the attached PCAN channels followed by the CAN-capable
-// Vector and NI-XNET channels, each in native driver order. A vendor stack that is not
+// Vector, NI-XNET, and ZLG channels, each in native driver order. ZLG opens
+// and closes each attached adapter to read its channel count, about one second
+// per USBCAN; adapters held by another process are omitted. A vendor stack that is not
 // installed contributes neither channels nor an error; an installed stack
 // that fails to answer contributes no channels and joins its error into the
 // returned error alongside the other driver's channels.
@@ -18,6 +22,7 @@ func Discover() ([]Channel, error) {
 	pcanChannels, pcanErr := pcan.Discover()
 	vectorChannels, vectorErr := discoverVector()
 	nixnetChannels, nixnetErr := discoverNIXNET()
+	zlgChannels, zlgErr := zlg.Discover()
 	if errors.Is(nixnetErr, gocan.ErrDriverUnavailable) {
 		nixnetErr = nil
 	}
@@ -27,17 +32,30 @@ func Discover() ([]Channel, error) {
 	if errors.Is(vectorErr, gocan.ErrDriverUnavailable) {
 		vectorErr = nil
 	}
+	if errors.Is(zlgErr, gocan.ErrDriverUnavailable) {
+		zlgErr = nil
+	}
 
-	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels)+len(nixnetChannels))
+	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels)+len(nixnetChannels)+len(zlgChannels))
 	for _, channel := range pcanChannels {
 		channels = append(channels, Channel{
 			driver:     driverPCAN,
-			name:       channel.Name,
+			name:       fmt.Sprintf("%s (%d)", channel.Name, channel.Channel.Bus()),
 			native:     uint64(channel.Channel),
 			supportsFD: channel.SupportsFD,
 		})
 	}
 	channels = append(channels, vectorChannels...)
 	channels = append(channels, nixnetChannels...)
-	return channels, errors.Join(pcanErr, vectorErr, nixnetErr)
+	for _, channel := range zlgChannels {
+		channels = append(channels, Channel{
+			driver:              driverZLG,
+			name:                fmt.Sprintf("%s (%d:%d)", channel.HardwareType, channel.Device, channel.Channel),
+			nativeName:          channel.Serial,
+			native:              zlgNative(channel.DeviceType, channel.Device, channel.Channel),
+			supportsFD:          channel.SupportsFD,
+			supportsTermination: channel.SupportsFD,
+		})
+	}
+	return channels, errors.Join(pcanErr, vectorErr, nixnetErr, zlgErr)
 }

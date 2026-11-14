@@ -97,10 +97,12 @@ func main() {
 | PCAN | Windows | Yes | Yes | Physical adapters |
 | Vector | Windows x64 | Yes | Yes | Physical adapters |
 | NI-XNET | Windows x64 | Yes | Yes | PXI-8512 CAN5/CAN6, ISO FD at 500k/2M and 500k/4M |
+| ZLG | Windows x64 | Yes | USBCANFD | USBCAN-I against a PCAN-USB peer; USBCANFD unqualified |
 
 Physical channels are discovered and opened through `drivers`. SocketCAN uses
-link timing configured by Linux. PCAN, Vector and NI-XNET accept shared exact CAN FD bit
-timing through the same public configuration.
+link timing configured by Linux. PCAN, Vector and NI-XNET accept shared exact
+CAN FD bit timing through the same public configuration; ZLG accepts only its
+own rate presets.
 
 ## Driver restrictions
 
@@ -140,6 +142,34 @@ or send-only request, finish or recover the prior exchange before reusing that
 address. Serialized mode avoids this extra window, but neither mode can identify
 old replies still buffered in the driver or arriving late. ISO-TP cursors discard
 previously captured traffic; they do not flush the native receive queue.
+
+ZLG supports USBCAN-I/II and USBCANFD-100U/200U/MINI through
+[`bundled vendor libraries`](drivers/internal/zlg/bundle/README.md), which
+retain their own licensing. Install the adapter's ZLG USB driver and the
+Visual C++ 2008 SP1 x64 redistributable; USBCANFD also needs Visual C++ 2013
+x64. The libraries are unpacked to `%LOCALAPPDATA%\gocan\zlg\<version>` when
+a ZLG adapter is first discovered. This folder must remain writable because
+the SDK saves settings there; default termination retains the last setting.
+Missing runtimes can cause discovery to omit ZLG channels. Discovery opens
+and closes unused adapters, taking about one second per USBCAN, and omits
+adapters held by another process.
+
+Only ZLG's rate presets are accepted. Classical DLC 9–15 cannot be sent.
+USBCANFD uses ISO CAN FD, cannot transmit the error-state indicator, and
+supports `Config.Termination`. USBCANFD has not been qualified on hardware;
+the bundled SDK provides error information but no controller status or error
+counters for it. `Send` captures and queues up to 256 frames. Unconfirmed
+transmissions produce error-frame events and are never retried, because the
+SDK can under-report frames that reached the wire. `Close` drains accepted
+frames unless a transmission fails or the bus stops with an error. Native
+transmit failures and adapter closing can each take about one second.
+
+ZLG hardware tests pair a ZLG channel with a PCAN reference adapter on one
+terminated classical bus, selected through `GOCAN_ZLG_DEVICE` (the ZLG device
+type and index, for example `4:0` for a USBCAN-I or `41:0` for a
+USBCANFD-200U) and `GOCAN_PCAN_CHANNEL` (for example `0x51`). Setting
+`GOCAN_ZLG_SOAK` to a duration such as `10m` repeats opening, bidirectional
+sequenced traffic and closing until it elapses.
 
 NI-XNET hardware tests require a connected, terminated pair selected through
 `GOCAN_NIXNET_CHANNEL_A` and `GOCAN_NIXNET_CHANNEL_B` (for example `CAN5` and

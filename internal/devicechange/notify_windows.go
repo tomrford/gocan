@@ -4,6 +4,7 @@ package devicechange
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,14 +71,14 @@ func dispatchNotification(
 	return 0
 }
 
-// Watcher observes removals of device instances whose IDs match one prefix.
-// The Windows registration still sees every device-instance transition in the
-// session, but only matching removals enter the finite Events queue, so
-// unrelated Plug and Play churn cannot overrun it.
+// Watcher observes removals of device instances whose IDs match one of its
+// prefixes. The Windows registration still sees every device-instance
+// transition in the session, but only matching removals enter the finite Events
+// queue, so unrelated Plug and Play churn cannot overrun it.
 type Watcher struct {
 	handle    uintptr
 	contextID uintptr
-	prefix    string
+	prefixes  []string
 	events    chan Event
 	lost      atomic.Bool
 
@@ -86,12 +87,12 @@ type Watcher struct {
 }
 
 // WatchRemovals registers for removals of Windows device instances whose IDs
-// start with prefix, compared case-insensitively.
-func WatchRemovals(prefix string) (*Watcher, error) {
+// start with any of prefixes, compared case-insensitively.
+func WatchRemovals(prefixes ...string) (*Watcher, error) {
 	watcher := &Watcher{
 		events:    make(chan Event, watcherBuffer),
 		contextID: nextWatcherContext.Add(1),
-		prefix:    prefix,
+		prefixes:  prefixes,
 	}
 	watcherContexts.Store(watcher.contextID, watcher)
 
@@ -142,7 +143,7 @@ func (watcher *Watcher) notify(action Action, eventData unsafe.Pointer, eventDat
 		return
 	}
 	instanceID, ok := decodeInstanceID(eventData, eventDataSize)
-	if !ok || !matchesPrefix(instanceID, watcher.prefix) {
+	if !ok || !slices.ContainsFunc(watcher.prefixes, func(prefix string) bool { return matchesPrefix(instanceID, prefix) }) {
 		return
 	}
 	select {
