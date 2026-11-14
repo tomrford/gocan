@@ -71,6 +71,7 @@ func TestZLGCloseTransmitsQueuedFramesHardware(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = bus.Close() })
 	const queued = transmitQueueFrames
 	for sequence := range queued {
 		frame, err := gocan.NewFrame(0x540, []byte{byte(sequence >> 8), byte(sequence)}, 0)
@@ -117,55 +118,61 @@ func TestZLGSoakHardware(t *testing.T) {
 	deadline := time.Now().Add(duration)
 	cycles := 0
 	for ; time.Now().Before(deadline); cycles++ {
-		capture := gocan.NewCapture()
-		peer, err := pcan.Open(context.Background(), capture, pcanConfig)
-		if err != nil {
-			t.Fatalf("cycle %d: open PCAN: %v", cycles, err)
-		}
-		bus, err := Open(context.Background(), capture, zlgConfig)
-		if err != nil {
-			_ = peer.Close()
-			t.Fatalf("cycle %d: open ZLG: %v", cycles, err)
-		}
-		sent := make(chan error, 2)
-		for _, sender := range []struct {
-			bus gocan.Bus
-			id  uint32
-		}{{bus, 0x5a0}, {peer, 0x5a1}} {
-			go func() {
-				for sequence := range frames {
-					frame, err := gocan.NewFrame(sender.id, []byte{byte(sequence >> 8), byte(sequence)}, 0)
-					if err == nil {
-						err = gocan.Send(context.Background(), sender.bus, frame, time.Second)
-					}
-					if err != nil {
-						sent <- err
-						return
-					}
-				}
-				sent <- nil
-			}()
-		}
-		for range 2 {
-			if err := <-sent; err != nil {
-				t.Fatalf("cycle %d: send: %v", cycles, err)
-			}
-		}
-		expectSequence(t, cycles, capture, peer.ID(), 0x5a0, frames)
-		expectSequence(t, cycles, capture, bus.ID(), 0x5a1, frames)
-		if err := bus.Close(); err != nil {
-			t.Fatalf("cycle %d: close ZLG: %v", cycles, err)
-		}
-		if err := peer.Close(); err != nil {
-			t.Fatalf("cycle %d: close PCAN: %v", cycles, err)
-		}
-		for _, event := range capture.Events() {
-			if event.Kind != gocan.EventControllerState || event.ControllerState != gocan.ControllerActive {
-				t.Fatalf("cycle %d: bus %d reported %+v", cycles, event.Bus, event)
-			}
-		}
+		runSoakCycle(t, cycles, frames, zlgConfig, pcanConfig)
 	}
 	t.Logf("%d cycles of %d frames each way in %v", cycles, frames, duration)
+}
+
+func runSoakCycle(t *testing.T, cycle, frames int, zlgConfig Config, pcanConfig pcan.Config) {
+	t.Helper()
+	capture := gocan.NewCapture()
+	peer, err := pcan.Open(context.Background(), capture, pcanConfig)
+	if err != nil {
+		t.Fatalf("cycle %d: open PCAN: %v", cycle, err)
+	}
+	defer peer.Close()
+	bus, err := Open(context.Background(), capture, zlgConfig)
+	if err != nil {
+		t.Fatalf("cycle %d: open ZLG: %v", cycle, err)
+	}
+	defer bus.Close()
+	sent := make(chan error, 2)
+	for _, sender := range []struct {
+		bus gocan.Bus
+		id  uint32
+	}{{bus, 0x5a0}, {peer, 0x5a1}} {
+		go func() {
+			for sequence := range frames {
+				frame, err := gocan.NewFrame(sender.id, []byte{byte(sequence >> 8), byte(sequence)}, 0)
+				if err == nil {
+					err = gocan.Send(context.Background(), sender.bus, frame, time.Second)
+				}
+				if err != nil {
+					sent <- err
+					return
+				}
+			}
+			sent <- nil
+		}()
+	}
+	for range 2 {
+		if err := <-sent; err != nil {
+			t.Fatalf("cycle %d: send: %v", cycle, err)
+		}
+	}
+	expectSequence(t, cycle, capture, peer.ID(), 0x5a0, frames)
+	expectSequence(t, cycle, capture, bus.ID(), 0x5a1, frames)
+	if err := bus.Close(); err != nil {
+		t.Fatalf("cycle %d: close ZLG: %v", cycle, err)
+	}
+	if err := peer.Close(); err != nil {
+		t.Fatalf("cycle %d: close PCAN: %v", cycle, err)
+	}
+	for _, event := range capture.Events() {
+		if event.Kind != gocan.EventControllerState || event.ControllerState != gocan.ControllerActive {
+			t.Fatalf("cycle %d: bus %d reported %+v", cycle, event.Bus, event)
+		}
+	}
 }
 
 func expectSequence(t *testing.T, cycle int, capture *gocan.Capture, bus gocan.BusID, id uint32, frames int) {
@@ -188,7 +195,8 @@ func expectSequence(t *testing.T, cycle int, capture *gocan.Capture, bus gocan.B
 func TestZLGUnknownChannelHardware(t *testing.T) {
 	zlgConfig, _ := hardwarePair(t)
 	zlgConfig.Channel = 7
-	if _, err := Open(context.Background(), gocan.NewCapture(), zlgConfig); err == nil {
+	if bus, err := Open(context.Background(), gocan.NewCapture(), zlgConfig); err == nil {
+		_ = bus.Close()
 		t.Fatal("opened a channel the device lacks")
 	}
 	// The failed open must release the device for the next one.
