@@ -4,6 +4,7 @@ package drivers
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/drivers/internal/pcan"
@@ -39,7 +40,7 @@ func Discover() ([]Channel, error) {
 	for _, channel := range pcanChannels {
 		channels = append(channels, Channel{
 			driver:     driverPCAN,
-			name:       channel.Name,
+			name:       fmt.Sprintf("%s (%d)", channel.Name, channel.Channel.Bus()),
 			native:     uint64(channel.Channel),
 			supportsFD: channel.SupportsFD,
 		})
@@ -49,7 +50,7 @@ func Discover() ([]Channel, error) {
 	for _, channel := range zlgChannels {
 		channels = append(channels, Channel{
 			driver:              driverZLG,
-			name:                channel.HardwareType,
+			name:                fmt.Sprintf("%s (%d:%d)", channel.HardwareType, channel.Device, channel.Channel),
 			nativeName:          channel.Serial,
 			native:              zlgNative(channel.DeviceType, channel.Device, channel.Channel),
 			supportsFD:          channel.SupportsFD,

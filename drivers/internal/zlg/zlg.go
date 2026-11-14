@@ -117,8 +117,6 @@ const (
 	canFDErrorState    = 0x02
 
 	errorControllerOverflow = 0x0001
-	errorWarning            = 0x0002
-	errorPassive            = 0x0004
 	errorBusOff             = 0x0020
 	errorBufferOverflow     = 0x0040
 	errorDeviceOverflow     = 0x0800
@@ -266,9 +264,12 @@ func encodeFDFrame(frame gocan.Frame) canFDFrame {
 	return native
 }
 
+// errErrorFrame marks a received frame carrying ZLG's error flag.
+var errErrorFrame = errors.New("ZLG error frame")
+
 func decodeID(id uint32) (gocan.Frame, error) {
 	if id&canErrorFlag != 0 {
-		return gocan.Frame{}, fmt.Errorf("unsupported ZLG error frame %#08x", id)
+		return gocan.Frame{}, errErrorFrame
 	}
 	frame := gocan.Frame{ID: id &^ (canExtendedFlag | canRemoteFlag)}
 	if id&canExtendedFlag != 0 {
@@ -292,7 +293,7 @@ func decodeFrame(native canFrame) (gocan.Frame, error) {
 		copy(frame.Data[:], native.data[:native.dlc])
 	}
 	if err := frame.Validate(); err != nil {
-		return gocan.Frame{}, fmt.Errorf("decode ZLG frame: %w", err)
+		return gocan.Frame{}, fmt.Errorf("decode ZLG frame (id %#08x, DLC %d, data % x): %w", native.id, native.dlc, native.data, err)
 	}
 	return frame, nil
 }
@@ -321,27 +322,27 @@ func decodeFDFrame(native canFDFrame) (gocan.Frame, error) {
 
 // controllerEvent maps a polled controller status and the accumulated error
 // code, which reading clears, so terminal conditions are reported once. Only
-// SJA1000-based USBCAN adapters report a bus status bit. A nil status leaves
-// the error counters unknown and takes the state from the error code.
+// SJA1000-based USBCAN adapters report a bus status bit. Without a status the
+// error counters are unknown, so only terminal conditions produce an event;
+// otherwise the returned event has no Kind.
 func controllerEvent(bus gocan.BusID, status *channelStatus, errorCode uint32, sja1000 bool) (gocan.Event, error) {
 	if errorCode&(errorControllerOverflow|errorBufferOverflow|errorDeviceOverflow) != 0 {
 		return gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun},
 			fmt.Errorf("%w: ZLG error code %#04x", gocan.ErrReceiveOverrun, errorCode)
 	}
 	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState}
-	passive, warning := errorCode&errorPassive != 0, errorCode&errorWarning != 0
 	if status != nil {
 		event.TXErrorCount, event.RXErrorCount, event.ErrorCountsKnown = status.txErrorCount, status.rxErrorCount, true
-		passive = status.txErrorCount >= 128 || status.rxErrorCount >= 128
-		warning = status.txErrorCount >= 96 || status.rxErrorCount >= 96
 	}
 	switch {
 	case errorCode&errorBusOff != 0 || sja1000 && status != nil && status.status&sja1000BusStatus != 0:
 		event.ControllerState = gocan.ControllerBusOff
 		return event, fmt.Errorf("%w: ZLG controller entered bus-off", gocan.ErrBusOff)
-	case passive:
+	case status == nil:
+		return gocan.Event{}, nil
+	case status.txErrorCount >= 128 || status.rxErrorCount >= 128:
 		event.ControllerState = gocan.ControllerPassive
-	case warning:
+	case status.txErrorCount >= 96 || status.rxErrorCount >= 96:
 		event.ControllerState = gocan.ControllerWarning
 	default:
 		event.ControllerState = gocan.ControllerActive

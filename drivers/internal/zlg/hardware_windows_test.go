@@ -18,8 +18,7 @@ import (
 // The hardware tests pair a ZLG channel with a PCAN reference adapter on one
 // terminated 500 kbit/s classical bus. GOCAN_ZLG_DEVICE selects the ZLG device
 // type and index (channel 0), for example 4:0 for a USBCAN-I or 41:0 for a
-// USBCANFD-200U, and GOCAN_PCAN_CHANNEL the PCAN handle; GOCAN_ZLGCAN_DIR
-// must hold zlgcan.dll.
+// USBCANFD-200U, and GOCAN_PCAN_CHANNEL the PCAN handle.
 func hardwarePair(t testing.TB) (Config, pcan.Config) {
 	t.Helper()
 	device, peer := os.Getenv("GOCAN_ZLG_DEVICE"), os.Getenv("GOCAN_PCAN_CHANNEL")
@@ -95,6 +94,92 @@ func TestZLGCloseTransmitsQueuedFramesHardware(t *testing.T) {
 		}
 		if got := int(event.Frame.Data[0])<<8 | int(event.Frame.Data[1]); got != sequence {
 			t.Fatalf("frame %d arrived as sequence %d", sequence, got)
+		}
+		cursor = next
+	}
+}
+
+// The soak repeats a full lifecycle until GOCAN_ZLG_SOAK (a duration such as
+// 10m) elapses: open both adapters, exchange sequenced frames in both
+// directions at once, then close. Every frame must arrive once and in order,
+// with no error frames, overruns, or controller state other than active.
+func TestZLGSoakHardware(t *testing.T) {
+	zlgConfig, pcanConfig := hardwarePair(t)
+	setting := os.Getenv("GOCAN_ZLG_SOAK")
+	if setting == "" {
+		t.Skip("GOCAN_ZLG_SOAK is not set")
+	}
+	duration, err := time.ParseDuration(setting)
+	if err != nil {
+		t.Fatalf("GOCAN_ZLG_SOAK=%q: %v", setting, err)
+	}
+	const frames = 1000
+	deadline := time.Now().Add(duration)
+	cycles := 0
+	for ; time.Now().Before(deadline); cycles++ {
+		capture := gocan.NewCapture()
+		peer, err := pcan.Open(context.Background(), capture, pcanConfig)
+		if err != nil {
+			t.Fatalf("cycle %d: open PCAN: %v", cycles, err)
+		}
+		bus, err := Open(context.Background(), capture, zlgConfig)
+		if err != nil {
+			_ = peer.Close()
+			t.Fatalf("cycle %d: open ZLG: %v", cycles, err)
+		}
+		sent := make(chan error, 2)
+		for _, sender := range []struct {
+			bus gocan.Bus
+			id  uint32
+		}{{bus, 0x5a0}, {peer, 0x5a1}} {
+			go func() {
+				for sequence := range frames {
+					frame, err := gocan.NewFrame(sender.id, []byte{byte(sequence >> 8), byte(sequence)}, 0)
+					if err == nil {
+						err = gocan.Send(context.Background(), sender.bus, frame, time.Second)
+					}
+					if err != nil {
+						sent <- err
+						return
+					}
+				}
+				sent <- nil
+			}()
+		}
+		for range 2 {
+			if err := <-sent; err != nil {
+				t.Fatalf("cycle %d: send: %v", cycles, err)
+			}
+		}
+		expectSequence(t, cycles, capture, peer.ID(), 0x5a0, frames)
+		expectSequence(t, cycles, capture, bus.ID(), 0x5a1, frames)
+		if err := bus.Close(); err != nil {
+			t.Fatalf("cycle %d: close ZLG: %v", cycles, err)
+		}
+		if err := peer.Close(); err != nil {
+			t.Fatalf("cycle %d: close PCAN: %v", cycles, err)
+		}
+		for _, event := range capture.Events() {
+			if event.Kind != gocan.EventControllerState || event.ControllerState != gocan.ControllerActive {
+				t.Fatalf("cycle %d: bus %d reported %+v", cycles, event.Bus, event)
+			}
+		}
+	}
+	t.Logf("%d cycles of %d frames each way in %v", cycles, frames, duration)
+}
+
+func expectSequence(t *testing.T, cycle int, capture *gocan.Capture, bus gocan.BusID, id uint32, frames int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var cursor gocan.Cursor
+	for sequence := range frames {
+		event, next, err := capture.Next(ctx, gocan.FrameKey{Bus: bus, ID: id, Direction: gocan.DirectionReceive}, cursor)
+		if err != nil {
+			t.Fatalf("cycle %d: bus %d received %d of %d frames %#x: %v; events %+v", cycle, bus, sequence, frames, id, err, capture.Events())
+		}
+		if got := int(event.Frame.Data[0])<<8 | int(event.Frame.Data[1]); got != sequence {
+			t.Fatalf("cycle %d: bus %d frame %d of %#x arrived as sequence %d; events %+v", cycle, bus, sequence, id, got, capture.Events())
 		}
 		cursor = next
 	}

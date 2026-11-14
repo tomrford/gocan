@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -21,11 +20,6 @@ import (
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
 )
-
-// LibraryDirEnv names the directory holding zlgcan.dll and its kerneldlls
-// folder. When unset, the executable's directory is used, matching ZLG's
-// deployment layout.
-const LibraryDirEnv = "GOCAN_ZLGCAN_DIR"
 
 // A family is a set of adapters sharing a kernel DLL. USBCANFD-100U, 200U and
 // MINI share USB IDs, so Discover tries each of their device types.
@@ -44,12 +38,15 @@ var families = [...]family{
 var processZLGDevices = devicechange.NewMonitor("ZLG USB",
 	slices.Concat(families[0].instancePrefixes, families[1].instancePrefixes)...)
 
+// USBCAN.dll returned a record misaligned by one byte when asked for 64 frames
+// per call under bidirectional load (November 2026), so each receive call reads
+// one frame; a buffered read costs about 1 µs.
 const (
 	receiveIdle         = time.Millisecond
 	statePollTime       = 100 * time.Millisecond
 	transmitQueueFrames = 256
 	transmitBatchFrames = 16
-	receiveBatchFrames  = 64
+	receiveBatchFrames  = 1
 )
 
 type ChannelInfo struct {
@@ -65,13 +62,17 @@ type ChannelInfo struct {
 // Discover reports the channels of attached USBCAN-I/II and USBCANFD
 // adapters. Probing opens each adapter briefly, so adapters held by another
 // process are omitted; adapters open in this process are reported from their
-// open handle.
+// open handle. ZLG's libraries are unpacked and loaded only once an adapter is
+// attached.
 func Discover() ([]ChannelInfo, error) {
-	api, err := loadAPI()
+	counts, err := attachedCounts()
 	if err != nil {
 		return nil, err
 	}
-	counts, err := attachedCounts()
+	if counts == [len(families)]uint32{} {
+		return nil, nil
+	}
+	api, err := loadAPI()
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +83,13 @@ func Discover() ([]ChannelInfo, error) {
 		seen := map[string]bool{}
 		for _, deviceType := range family.deviceTypes {
 			for index := range counts[familyIndex] {
+				// Closing a probe of another type could release a handle
+				// this process holds if the DLL tracks devices by index alone.
+				if slices.ContainsFunc(family.deviceTypes, func(openType uint32) bool {
+					return openType != deviceType && devices.open[deviceKey{openType, index}] != nil
+				}) {
+					continue
+				}
 				info, ok := api.probeLocked(deviceKey{deviceType, index})
 				serial := cString(info.serial[:])
 				if !ok || serial != "" && seen[serial] {
@@ -212,24 +220,20 @@ type api struct {
 	readErrorInfo, readChannelInfo                    *windows.Proc
 }
 
+// loadAPI unpacks and loads the bundled zlgcan.dll once per process. A load
+// failure, usually a missing Visual C++ 2008 runtime, reports the driver
+// unavailable.
 var loadAPI = sync.OnceValues(func() (*api, error) {
-	directory := os.Getenv(LibraryDirEnv)
-	if directory == "" {
-		executable, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("locate zlgcan.dll beside the executable: %w", err)
-		}
-		directory = filepath.Dir(executable)
+	directory, err := unpackBundle()
+	if err != nil {
+		return nil, fmt.Errorf("%w: unpack ZLG libraries: %v", gocan.ErrDriverUnavailable, err)
 	}
 	path := filepath.Join(directory, "zlgcan.dll")
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", gocan.ErrDriverUnavailable, path, err)
-	}
 	// The altered search path resolves zlgcan.dll's dependencies beside it
 	// without changing the process DLL search path.
 	module, err := windows.LoadLibraryEx(path, 0, windows.LOAD_WITH_ALTERED_SEARCH_PATH)
 	if err != nil {
-		return nil, fmt.Errorf("load %s: %w", path, err)
+		return nil, fmt.Errorf("%w: load %s (requires the Visual C++ 2008 SP1 x64 redistributable): %v", gocan.ErrDriverUnavailable, path, err)
 	}
 	dll := &windows.DLL{Name: path, Handle: module}
 	a := &api{}
@@ -298,7 +302,7 @@ func (api *api) acquire(key deviceKey, channel uint32) (*device, error) {
 	if opened == nil {
 		handle, _, _ := api.openDevice.Call(uintptr(key.deviceType), uintptr(key.index), 0)
 		if handle == 0 {
-			return nil, fmt.Errorf("open ZLG device type %d index %d: absent, in use by another process, or its kernel DLL failed to load", key.deviceType, key.index)
+			return nil, fmt.Errorf("open ZLG device type %d index %d: absent, in use by another process, or its kernel DLL failed to load (USBCANFD needs the Visual C++ 2013 x64 redistributable)", key.deviceType, key.index)
 		}
 		opened = &device{handle: handle, channels: map[uint32]bool{}}
 		if result, _, _ := api.deviceInfo.Call(handle, uintptr(unsafe.Pointer(&opened.info))); result != statusOK {
@@ -432,8 +436,10 @@ func (bus *Bus) Close() error {
 
 // Send records frame and queues it for the transmit goroutine without waiting
 // for the adapter. It returns ErrTransmitQueueFull while transmitQueueFrames
-// frames are pending. A queued frame the adapter fails to transmit is dropped
-// and reported as an error-frame event.
+// frames are pending. A queued frame the adapter does not confirm is dropped
+// and reported as an error-frame event. Frames still queued when the bus stops
+// with an error, or after a failed transmission during Close, are discarded
+// without an event.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := validateSendFrame(frame, bus.fd); err != nil {
 		return err
@@ -523,9 +529,11 @@ func (bus *Bus) drain(batch []gocan.Frame) {
 	}
 }
 
-// transmit sends batch in runs of classical or CAN FD frames, dropping each
-// frame the adapter fails to send. The adapter abandons the rest of a call
-// after a failure, so they are resent.
+// transmit sends batch in runs of classical or CAN FD frames. When a call
+// reports fewer frames sent than requested, every unconfirmed frame of that
+// run is dropped and reported as an error-frame event, never resent: USBCAN.dll
+// has under-reported a frame that reached the wire, so a resend could
+// duplicate it. A failing call costs the adapter's one-second timeout.
 func (bus *Bus) transmit(batch []gocan.Frame) (bool, error) {
 	failed := false
 	for len(batch) != 0 {
@@ -534,16 +542,13 @@ func (bus *Bus) transmit(batch []gocan.Frame) (bool, error) {
 		for run < len(batch) && batch[run].Flags.Has(gocan.FrameFD) == fd {
 			run++
 		}
-		sent := bus.transmitRun(batch[:run], fd)
-		if sent >= run {
-			batch = batch[run:]
-			continue
+		for range run - min(bus.transmitRun(batch[:run], fd), run) {
+			failed = true
+			if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
+				return failed, err
+			}
 		}
-		failed = true
-		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame}); err != nil {
-			return failed, err
-		}
-		batch = batch[sent+1:]
+		batch = batch[run:]
 	}
 	return failed, nil
 }
@@ -605,6 +610,7 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	if bus.fdDevice {
 		receivedFD, _, _ = bus.api.receiveFD.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFDFrames[0])), receiveBatchFrames, 0)
 	}
+	received, receivedFD = min(received, receiveBatchFrames), min(receivedFD, receiveBatchFrames)
 	classic, fd := bus.rxFrames[:received], bus.rxFDFrames[:receivedFD]
 	for len(classic) != 0 || len(fd) != 0 {
 		var frame gocan.Frame
@@ -616,10 +622,13 @@ func (bus *Bus) receiveBatch() (bool, error) {
 			frame, err = decodeFDFrame(fd[0].frame)
 			fd = fd[1:]
 		}
-		if err != nil {
-			return false, err
+		switch {
+		case errors.Is(err, errErrorFrame):
+			err = bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame})
+		case err == nil:
+			err = bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame})
 		}
-		if err := bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame}); err != nil {
+		if err != nil {
 			return false, err
 		}
 	}
@@ -644,7 +653,7 @@ func (bus *Bus) checkState() error {
 		status = nil
 	}
 	event, terminal := controllerEvent(bus.ID(), status, errorInfo.code, !bus.fdDevice)
-	if event != bus.lastState || terminal != nil {
+	if event.Kind != 0 && (event != bus.lastState || terminal != nil) {
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
 		}

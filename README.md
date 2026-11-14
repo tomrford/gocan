@@ -145,13 +145,19 @@ previously captured traffic; they do not flush the native receive queue.
 
 ZLG supports the USBCAN-I/II family (USB ID 0471:1200) and the
 USBCANFD-100U, 200U and MINI (USB IDs 3068:0009 and 04CC:1240) through ZLG's
-`zlgcan.dll`, which is not installed system-wide. Set `GOCAN_ZLGCAN_DIR` to the
-directory holding `zlgcan.dll` and its `kerneldlls` folder, or place them
-beside the executable. `zlgcan.dll` needs the Visual C++ 2008 SP1 x64
-redistributable. USBCAN adapters need ZLG's `usbcan.sys` driver, and
-`kerneldlls\USBCAN.dll` needs that redistributable's MFC. USBCANFD adapters
-need ZLG's USBCANFD driver, and `kerneldlls\USBCANFD.dll` needs the Visual
-C++ 2013 x64 redistributable. Only ZLG's predefined rates are accepted, and
+`zlgcan.dll`. ZLG installs no system-wide 64-bit library, so Windows builds of
+gocan embed ZLG's libraries
+([`drivers/internal/zlg/bundle`](drivers/internal/zlg/bundle/README.md), about
+4 MB, not covered by gocan's licence). When `Discover` first finds a ZLG
+adapter, gocan unpacks them to `%LOCALAPPDATA%\gocan\zlg\<version>` and loads
+them from there. `zlgcan.dll` saves each adapter's last settings in that
+folder, so termination left at its default keeps the last setting. The
+libraries need runtimes that gocan does not ship: every ZLG adapter needs the
+Visual C++ 2008 SP1 x64 redistributable, and USBCANFD adapters also the Visual
+C++ 2013 x64 redistributable. Without the 2008 runtime, ZLG reports itself
+unavailable and `Discover` lists no ZLG channels. USBCAN adapters need ZLG's
+`usbcan.sys` driver and USBCANFD adapters ZLG's USBCANFD driver. Only ZLG's
+predefined rates are accepted, and
 classical DLC values 9–15 cannot be sent. USBCANFD channels use ISO CAN FD,
 cannot transmit the error-state indicator, and switch their internal
 terminator through `Config.Termination`. USBCANFD-100U and MINI share the
@@ -161,10 +167,13 @@ controller-state reads skip a poll instead of stopping the bus when they fail.
 Each native transmit call on a USBCAN waits for its frames to leave the
 adapter (about 1 ms per call), so `Send` queues up to 256 frames and a driver
 goroutine passes all pending frames of one kind, classical or CAN FD, to one
-call. A USBCAN-I
-sustains about 2,100 8-byte frames per second this way, against about 1,000
-with one frame per call. A frame the adapter fails to transmit within its
-one-second timeout is dropped and recorded as an error-frame event. `Close`
+call. A USBCAN-I sustains about 2,000 8-byte frames per second this way,
+against about 1,000 with one frame per call. A call that fails takes the
+adapter's one-second timeout; every frame it did not confirm is dropped and
+recorded as an error-frame event, never resent, because `USBCAN.dll` can
+under-report frames that did reach the bus. Transmitted frames are captured
+when `Send` queues them. Received frames are read one per native call, because
+multi-frame reads returned corrupted records under load. `Close`
 transmits frames already queued unless a transmission fails or the bus stopped
 with an error. Controller state is polled every 100 ms. Closing a USBCAN takes
 about one second inside `zlgcan.dll`, and `Discover` opens and closes each
@@ -174,8 +183,9 @@ Adapters held by another process are omitted.
 ZLG hardware tests pair a ZLG channel with a PCAN reference adapter on one
 terminated classical bus, selected through `GOCAN_ZLG_DEVICE` (the ZLG device
 type and index, for example `4:0` for a USBCAN-I or `41:0` for a
-USBCANFD-200U) and `GOCAN_PCAN_CHANNEL` (for example `0x51`), with
-`GOCAN_ZLGCAN_DIR` set.
+USBCANFD-200U) and `GOCAN_PCAN_CHANNEL` (for example `0x51`). Setting
+`GOCAN_ZLG_SOAK` to a duration such as `10m` repeats opening, bidirectional
+sequenced traffic and closing until it elapses.
 
 NI-XNET hardware tests require a connected, terminated pair selected through
 `GOCAN_NIXNET_CHANNEL_A` and `GOCAN_NIXNET_CHANNEL_B` (for example `CAN5` and
