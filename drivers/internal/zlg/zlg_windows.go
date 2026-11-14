@@ -635,8 +635,8 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	return received == receiveBatchFrames || receivedFD == receiveBatchFrames, nil
 }
 
-// checkState polls controller state. USBCANFD state reads are unverified on
-// hardware, so a failed read there skips the poll instead of stopping the bus.
+// checkState polls controller state. The bundled USBCANFD.dll does not
+// implement ReadChannelStatus, so its error information is used on its own.
 func (bus *Bus) checkState() error {
 	var errorInfo channelErrorInfo
 	if result, _, _ := bus.api.readErrorInfo.Call(bus.channel, uintptr(unsafe.Pointer(&errorInfo))); result != statusOK {

@@ -289,8 +289,8 @@ func decodeFrame(native canFrame) (gocan.Frame, error) {
 		return gocan.Frame{}, err
 	}
 	frame.DLC = native.dlc
-	if !frame.Flags.Has(gocan.FrameRemote) && native.dlc <= 8 {
-		copy(frame.Data[:], native.data[:native.dlc])
+	if !frame.Flags.Has(gocan.FrameRemote) {
+		copy(frame.Data[:], native.data[:frame.DataLength()])
 	}
 	if err := frame.Validate(); err != nil {
 		return gocan.Frame{}, fmt.Errorf("decode ZLG frame (id %#08x, DLC %d, data % x): %w", native.id, native.dlc, native.data, err)

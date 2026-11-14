@@ -143,42 +143,26 @@ address. Serialized mode avoids this extra window, but neither mode can identify
 old replies still buffered in the driver or arriving late. ISO-TP cursors discard
 previously captured traffic; they do not flush the native receive queue.
 
-ZLG supports the USBCAN-I/II family (USB ID 0471:1200) and the
-USBCANFD-100U, 200U and MINI (USB IDs 3068:0009 and 04CC:1240) through ZLG's
-`zlgcan.dll`. ZLG installs no system-wide 64-bit library, so Windows builds of
-gocan embed ZLG's libraries
-([`drivers/internal/zlg/bundle`](drivers/internal/zlg/bundle/README.md), about
-4 MB, not covered by gocan's licence). When `Discover` first finds a ZLG
-adapter, gocan unpacks them to `%LOCALAPPDATA%\gocan\zlg\<version>` and loads
-them from there. `zlgcan.dll` saves each adapter's last settings in that
-folder, so termination left at its default keeps the last setting. The
-libraries need runtimes that gocan does not ship: every ZLG adapter needs the
-Visual C++ 2008 SP1 x64 redistributable, and USBCANFD adapters also the Visual
-C++ 2013 x64 redistributable. Without the 2008 runtime, ZLG reports itself
-unavailable and `Discover` lists no ZLG channels. USBCAN adapters need ZLG's
-`usbcan.sys` driver and USBCANFD adapters ZLG's USBCANFD driver. Only ZLG's
-predefined rates are accepted, and
-classical DLC values 9–15 cannot be sent. USBCANFD channels use ISO CAN FD,
-cannot transmit the error-state indicator, and switch their internal
-terminator through `Config.Termination`. USBCANFD-100U and MINI share the
-200U's USB IDs, so `Discover` probes each USBCANFD device type and lists each
-serial number once. USBCANFD support has not been run on hardware, so its
-controller-state reads skip a poll instead of stopping the bus when they fail.
-Each native transmit call on a USBCAN waits for its frames to leave the
-adapter (about 1 ms per call), so `Send` queues up to 256 frames and a driver
-goroutine passes all pending frames of one kind, classical or CAN FD, to one
-call. A USBCAN-I sustains about 2,000 8-byte frames per second this way,
-against about 1,000 with one frame per call. A call that fails takes the
-adapter's one-second timeout; every frame it did not confirm is dropped and
-recorded as an error-frame event, never resent, because `USBCAN.dll` can
-under-report frames that did reach the bus. Transmitted frames are captured
-when `Send` queues them. Received frames are read one per native call, because
-multi-frame reads returned corrupted records under load. `Close`
-transmits frames already queued unless a transmission fails or the bus stopped
-with an error. Controller state is polled every 100 ms. Closing a USBCAN takes
-about one second inside `zlgcan.dll`, and `Discover` opens and closes each
-adapter that is not already open in this process to read its channel count.
-Adapters held by another process are omitted.
+ZLG supports USBCAN-I/II and USBCANFD-100U/200U/MINI through
+[`bundled vendor libraries`](drivers/internal/zlg/bundle/README.md), which
+retain their own licensing. Install the adapter's ZLG USB driver and the
+Visual C++ 2008 SP1 x64 redistributable; USBCANFD also needs Visual C++ 2013
+x64. The libraries are unpacked to `%LOCALAPPDATA%\gocan\zlg\<version>` when
+a ZLG adapter is first discovered. This folder must remain writable because
+the SDK saves settings there; default termination retains the last setting.
+Missing runtimes can cause discovery to omit ZLG channels. Discovery opens
+and closes unused adapters, taking about one second per USBCAN, and omits
+adapters held by another process.
+
+Only ZLG's rate presets are accepted. Classical DLC 9–15 cannot be sent.
+USBCANFD uses ISO CAN FD, cannot transmit the error-state indicator, and
+supports `Config.Termination`. USBCANFD has not been qualified on hardware;
+the bundled SDK provides error information but no controller status or error
+counters for it. `Send` captures and queues up to 256 frames. Unconfirmed
+transmissions produce error-frame events and are never retried, because the
+SDK can under-report frames that reached the wire. `Close` drains accepted
+frames unless a transmission fails or the bus stops with an error. Native
+transmit failures and adapter closing can each take about one second.
 
 ZLG hardware tests pair a ZLG channel with a PCAN reference adapter on one
 terminated classical bus, selected through `GOCAN_ZLG_DEVICE` (the ZLG device
