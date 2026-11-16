@@ -160,11 +160,11 @@ a machine:
 2. Install the Visual C++ 2013 x64 redistributable and, for USBCAN-I/II, the
    Visual C++ 2008 SP1 x64 redistributable (MFC security update), both listed
    by [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
-3. Download ZLG's development library,
-   [`CAN_lib.zip`](https://www.zlg.cn/data/upload/software/Can/CAN_lib.zip)
-   ("CAN(FD)接口卡二次开发接口函数库" on ZLG's CAN download page), and copy the
-   contents of its `zlgcan_x64` folder (`zlgcan.dll` and the `kerneldlls`
-   folder) beside the executable or into a folder on `PATH`. ZLG saves adapter
+3. Download the latest library (最新函数库, for example `zlgcan(260813).zip`)
+   from ZLG's [library downloads](https://manual.zlg.cn/web/#/152?page_id=5332)
+   ("函数库/例程下载"), and copy the contents of its `zlgcan_x64` folder
+   (`zlgcan.dll` and the `kerneldlls` folder) beside the executable or into a
+   folder on `PATH`. ZLG saves adapter
    settings in that folder, so it must be writable by the user, which rules
    out `Program Files`.
 
