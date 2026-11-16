@@ -6,8 +6,6 @@ ISO-TP and UDS, with semantic codecs for DBC and CANdela diagnostic data.
 
 ## Install
 
-The module requires Go 1.25 or newer.
-
 ```sh
 go get github.com/tomrford/gocan
 ```
@@ -93,111 +91,18 @@ func main() {
 | Driver | Platform | CAN | CAN FD | Qualification |
 | --- | --- | --- | --- | --- |
 | Virtual | Portable, including macOS | Yes | Yes | Development and tests |
-| SocketCAN | Linux | Yes | Yes | Software and virtual interfaces |
-| PCAN | Windows | Yes | Yes | Physical adapters |
-| Vector | Windows x64 | Yes | Yes | Physical adapters |
-| NI-XNET | Windows x64 | Yes | Yes | PXI-8512 CAN5/CAN6, ISO FD at 500k/2M and 500k/4M |
-| ZLG | Windows x64 | Yes | USBCANFD | USBCAN-I against a PCAN-USB peer; USBCANFD unqualified |
+| [SocketCAN](docs/drivers/socketcan.md) | Linux | Yes | Yes | Software and virtual interfaces |
+| [PCAN](docs/drivers/pcan.md) | Windows | Yes | Yes | Physical adapters |
+| [Vector](docs/drivers/vector.md) | Windows x64 | Yes | Yes | Physical adapters |
+| [NI-XNET](docs/drivers/nixnet.md) | Windows x64 | Yes | Yes | PXI-8512 CAN5/CAN6, ISO FD at 500k/2M and 500k/4M |
+| [ZLG](docs/drivers/zlg.md) | Windows x64 | Yes | USBCANFD | USBCAN-I tested; receive loss under load; USBCANFD unqualified |
 
 Physical channels are discovered and opened through `drivers`. SocketCAN uses
 link timing configured by Linux. PCAN, Vector and NI-XNET accept shared exact
 CAN FD bit timing through the same public configuration; ZLG accepts only its
 own rate presets.
 
-## Driver restrictions
-
-SocketCAN carries classical DLC values 9–15 only on interfaces configured with
-`cc-len8-dlc on` (vcan passes them through). Without it, the controller sends
-those frames as DLC 8 and received frames report DLC 8.
-
-The PCAN classical API cannot transmit classical DLC values 9–15. PCAN-Basic
-cannot select ISO or non-ISO CAN FD framing, so the adapter's stored mode must
-match its peers.
-
-Vector CAN FD uses an 80 MHz clock and ISO framing. Transmitting the error-state
-indicator is not supported. A Vector channel that another application, such as
-CANoe, has on the bus is discovered as externally configured with its current
-rates; open it with `Config.External` to join without changing its timing.
-gocan must join second. Keep the owner's measurement and timing stable while
-flashing; discovery and the on-bus check cannot reserve that configuration.
-
-NI-XNET uses fixed high-speed transceivers and ISO FD framing. It cannot
-preserve classical DLC values 9–15 or report received error-state indicators;
-transmit ESI requests are rejected. Exact timing must use multiples of 25 ns.
-Above 1 Mbit/s in the data phase, transmitter delay compensation is enabled
-with its offset derived from the data sample point. Switchable termination is
-available through `Config.Termination` on channels whose `SupportsTermination`
-method returns true; the default leaves NI's default setting.
-
-NI-XNET serializes native reads and capture appends with transmission by default.
-Set `drivers.Config.NIXNETConcurrentIO` to `true` when opening a bus to let
-native reads run concurrently with sends and reduce send delays. Capture batches
-remain serialized with sends, timestamps remain in host capture order, and Send
-still returns when NI accepts the frame into its transmit queue.
-
-In concurrent mode, an old reply fetched before a new request can be captured
-after that request. Use it for fully awaited exchanges without stale or
-unsolicited replies on the same receive address. After a timeout, cancellation,
-or send-only request, finish or recover the prior exchange before reusing that
-address. Serialized mode avoids this extra window, but neither mode can identify
-old replies still buffered in the driver or arriving late. ISO-TP cursors discard
-previously captured traffic; they do not flush the native receive queue.
-
-NI-XNET hardware tests require a connected, terminated pair selected through
-`GOCAN_NIXNET_CHANNEL_A` and `GOCAN_NIXNET_CHANNEL_B` (for example `CAN5` and
-`CAN6`). They enable each endpoint's internal terminator and exercise classic
-CAN and ISO FD at 500k/2M and 500k/4M. The driver requires the installed NI-XNET
-runtime, with no C compiler or Python dependency in applications.
-
-ZLG supports USBCAN-I/II and USBCANFD-100U/200U/MINI. gocan loads ZLG's
-`zlgcan.dll` at run time; ZLG's driver installers do not provide it. To set up
-a machine:
-
-1. Install the adapter's USB driver from ZLG's
-   [driver downloads](https://manual.zlg.cn/web/#/146) ("驱动下载"):
-   `USBCAN_AllInOne_x86_x64` for USBCAN-I/II or `USBCANFD_AllInOne_x86_x64`
-   for USBCANFD-100U/200U/MINI. Unzip it and run the installer.
-2. Install the Visual C++ 2013 x64 redistributable and, for USBCAN-I/II, the
-   Visual C++ 2008 SP1 x64 redistributable (MFC security update), both listed
-   by [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
-3. Download the latest library (最新函数库, for example `zlgcan(260813).zip`)
-   from ZLG's [library downloads](https://manual.zlg.cn/web/#/152?page_id=5332)
-   ("函数库/例程下载"), and copy the contents of its `zlgcan_x64` folder
-   (`zlgcan.dll` and the `kerneldlls` folder) beside the executable or into a
-   folder on `PATH`. ZLG saves adapter settings in that folder, so it must be
-   writable by the user, which rules out `Program Files`.
-
-gocan has been tested with `zlgcan.dll` releases from 2022, July 2025 and
-August 2026. Without `zlgcan.dll` or its runtimes, discovery omits ZLG
-channels. Discovery opens and closes unused adapters, taking about one second
-per USBCAN, and omits adapters held by another process.
-
-Only ZLG's rate presets are accepted. Classical DLC 9–15 cannot be sent.
-USBCANFD uses ISO CAN FD, cannot transmit the error-state indicator, and
-supports `Config.Termination`; `TerminationDefault` keeps the setting ZLG last
-saved for the adapter. USBCANFD has not been qualified on hardware; its
-`USBCANFD.dll` has provided error information but no controller status or
-error counters. `Send` captures and queues up to 256 frames. Unconfirmed
-transmissions produce error-frame events and are never retried, because the
-SDK can under-report frames that reached the wire. `Close` drains accepted
-frames unless a transmission fails or the bus stops with an error. Native
-transmit failures and adapter closing can each take about one second. With
-every tested ZLG library, a USBCAN-I that transmits while receiving near full
-bus load occasionally loses a run of about ten received frames without
-reporting an error.
-
-ZLG hardware tests pair a ZLG channel with a PCAN reference adapter on one
-terminated classical bus, with ZLG's `zlgcan_x64` folder on `PATH`. Select
-them through `GOCAN_ZLG_DEVICE` (the ZLG device type and index, for example
-`4:0` for a USBCAN-I or `41:0` for a USBCANFD-200U) and `GOCAN_PCAN_CHANNEL`
-(for example `0x51`). Setting `GOCAN_ZLG_SOAK` to a duration such as `10m`
-repeats opening, bidirectional sequenced traffic at full bus load and closing
-until it elapses, failing on any lost frame. On a USBCAN-I it can therefore
-expose the receive loss above, about once per 1,000 cycles.
-
 ## Development
-
-The module requires Go 1.25 or newer:
 
 ```sh
 go test -race ./...

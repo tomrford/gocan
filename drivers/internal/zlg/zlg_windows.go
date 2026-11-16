@@ -567,6 +567,9 @@ func (bus *Bus) drain(batch []gocan.Frame) error {
 func (bus *Bus) transmit(batch []gocan.Frame) (bool, error) {
 	failed := false
 	for len(batch) != 0 {
+		if bus.lifecycle.Err() != nil || failed && bus.stopping() {
+			return failed, nil
+		}
 		fd := batch[0].Flags.Has(gocan.FrameFD)
 		run := 1
 		for run < len(batch) && batch[run].Flags.Has(gocan.FrameFD) == fd {
