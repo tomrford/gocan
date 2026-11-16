@@ -81,6 +81,7 @@ const (
 
 const (
 	pcanReceiveEvent      = 0x03
+	pcanListenOnly        = 0x08
 	pcanAllowStatusFrames = 0x1e
 	pcanAllowErrorFrames  = 0x20
 	pcanAttachedCount     = 0x2a

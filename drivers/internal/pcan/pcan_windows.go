@@ -95,27 +95,27 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		}
 	}()
 
-	var (
-		result uintptr
-		status pcanStatus
-	)
-	if fd {
-		timing := append([]byte(config.FDBitrate), 0)
-		result, _, _ = api.initializeFD.Call(
-			uintptr(config.Channel),
-			uintptr(unsafe.Pointer(&timing[0])),
-		)
-		status = pcanStatus(result)
-	} else {
-		result, _, _ = api.initialize.Call(
-			uintptr(config.Channel),
-			uintptr(bitrateCode),
-			0,
-			0,
-			0,
-		)
-		status = pcanStatus(result)
+	timing := append([]byte(config.FDBitrate), 0)
+	initialize := func() pcanStatus {
+		var result uintptr
+		if fd {
+			result, _, _ = api.initializeFD.Call(
+				uintptr(config.Channel),
+				uintptr(unsafe.Pointer(&timing[0])),
+			)
+		} else {
+			result, _, _ = api.initialize.Call(
+				uintptr(config.Channel),
+				uintptr(bitrateCode),
+				0,
+				0,
+				0,
+			)
+		}
+		return pcanStatus(result)
 	}
+	var result uintptr
+	status := initialize()
 	if status != pcanStatusOK {
 		initializationError := api.statusError("initialize PCAN channel", status)
 		if status == pcanStatusCaution {
@@ -204,6 +204,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		channel:      config.Channel,
 		fd:           fd,
 		api:          api,
+		initialize:   initialize,
 		receiveEvent: receiveEvent,
 		stopEvent:    stopEvent,
 		lifecycle: driverstate.New(func() {
@@ -371,6 +372,8 @@ type Bus struct {
 	channel Channel
 	fd      bool
 	api     *pcanAPI
+	// initialize starts the channel with the timing it was opened with.
+	initialize func() pcanStatus
 
 	receiveEvent windows.Handle
 	stopEvent    windows.Handle
@@ -658,6 +661,10 @@ func (bus *Bus) cleanup() error {
 	result, _, _ = bus.api.uninitialize.Call(uintptr(bus.channel))
 	if status := pcanStatus(result); status != pcanStatusOK {
 		cleanupErrors = append(cleanupErrors, bus.api.statusError("uninitialize PCAN channel", status))
+	} else if !errors.Is(bus.lifecycle.Err(), gocan.ErrHardwareDisconnected) {
+		if err := bus.discardTransmitBacklog(); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
 	}
 	if err := windows.CloseHandle(bus.receiveEvent); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("close PCAN receive event: %w", err))
@@ -666,6 +673,44 @@ func (bus *Bus) cleanup() error {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("close PCAN stop event: %w", err))
 	}
 	return errors.Join(cleanupErrors...)
+}
+
+// discardTransmitBacklog empties the frames a PCAN-USB still holds after
+// CAN_Uninitialize, which it would otherwise transmit when the channel is next
+// initialized, possibly by another process. A listen-only initialization
+// cannot transmit and discards them (PCAN-USB firmware 2.8.1, November 2026).
+func (bus *Bus) discardTransmitBacklog() error {
+	on, off := uint32(1), uint32(0)
+	result, _, _ := bus.api.setValue.Call(
+		uintptr(bus.channel),
+		pcanListenOnly,
+		uintptr(unsafe.Pointer(&on)),
+		unsafe.Sizeof(on),
+	)
+	if status := pcanStatus(result); status != pcanStatusOK {
+		return bus.api.statusError("select PCAN listen-only mode", status)
+	}
+	var discardErrors []error
+	status := bus.initialize()
+	if status != pcanStatusOK {
+		discardErrors = append(discardErrors, bus.api.statusError("initialize PCAN channel to discard its transmit backlog", status))
+	}
+	if status == pcanStatusOK || status == pcanStatusCaution {
+		result, _, _ = bus.api.uninitialize.Call(uintptr(bus.channel))
+		if status := pcanStatus(result); status != pcanStatusOK {
+			discardErrors = append(discardErrors, bus.api.statusError("uninitialize PCAN channel after discarding its transmit backlog", status))
+		}
+	}
+	result, _, _ = bus.api.setValue.Call(
+		uintptr(bus.channel),
+		pcanListenOnly,
+		uintptr(unsafe.Pointer(&off)),
+		unsafe.Sizeof(off),
+	)
+	if status := pcanStatus(result); status != pcanStatusOK {
+		discardErrors = append(discardErrors, bus.api.statusError("clear PCAN listen-only mode", status))
+	}
+	return errors.Join(discardErrors...)
 }
 
 func (bus *Bus) operationError() error {
