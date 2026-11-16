@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -25,10 +24,6 @@ import (
 // PCAN-Basic can silently lose the first received frame. It exposes no
 // readiness signal, so retain margin over the observed roughly 3 ms window.
 const channelSettleDelay = 25 * time.Millisecond
-
-// The default adds margin over the roughly 90 ms of delayed traffic observed
-// on a PCAN-USB. It is a drain opportunity, not a transmit-completion signal.
-const defaultCloseGracePeriod = 100 * time.Millisecond
 
 // A PEAK USB removal is one shared PCAN process failure domain: every open
 // PCAN bus stops, because a classic PCAN-USB handle cannot be reliably mapped
@@ -73,10 +68,6 @@ func Discover() ([]ChannelInfo, error) {
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus *Bus, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
-	}
-	closeGracePeriod := config.CloseGracePeriod
-	if closeGracePeriod == 0 {
-		closeGracePeriod = defaultCloseGracePeriod
 	}
 	fd := config.FDBitrate != ""
 	var bitrateCode uint16
@@ -207,15 +198,14 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	}
 
 	bus := &Bus{
-		id:               config.ID,
-		name:             config.Name,
-		capture:          capture,
-		channel:          config.Channel,
-		fd:               fd,
-		api:              api,
-		closeGracePeriod: closeGracePeriod,
-		receiveEvent:     receiveEvent,
-		stopEvent:        stopEvent,
+		id:           config.ID,
+		name:         config.Name,
+		capture:      capture,
+		channel:      config.Channel,
+		fd:           fd,
+		api:          api,
+		receiveEvent: receiveEvent,
+		stopEvent:    stopEvent,
 		lifecycle: driverstate.New(func() {
 			_ = windows.SetEvent(stopEvent)
 		}),
@@ -385,13 +375,8 @@ type Bus struct {
 	receiveEvent windows.Handle
 	stopEvent    windows.Handle
 
-	ioMu sync.Mutex
-	// sent is guarded by ioMu.
-	sent      bool
+	ioMu      sync.Mutex
 	lifecycle *driverstate.Lifecycle
-
-	closeGracePeriod time.Duration
-	closeDeadline    atomic.Pointer[time.Time]
 
 	deviceSubscription *devicechange.Subscription
 	cleanupErr         error
@@ -461,7 +446,6 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		}
 		return err
 	}
-	bus.sent = true
 
 	if err := bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
@@ -483,8 +467,6 @@ func (bus *Bus) Err() error {
 }
 
 func (bus *Bus) Close() error {
-	deadline := time.Now().Add(bus.closeGracePeriod)
-	bus.closeDeadline.CompareAndSwap(nil, &deadline)
 	bus.stopWithError(nil)
 	<-bus.lifecycle.Done()
 	return bus.cleanupErr
@@ -672,11 +654,6 @@ func (bus *Bus) cleanup() error {
 	)
 	if status := pcanStatus(result); status != pcanStatusOK {
 		cleanupErrors = append(cleanupErrors, bus.api.statusError("disable PCAN receive event", status))
-	}
-	if bus.sent && bus.lifecycle.Err() == nil {
-		if deadline := bus.closeDeadline.Load(); deadline != nil {
-			time.Sleep(time.Until(*deadline))
-		}
 	}
 	result, _, _ = bus.api.uninitialize.Call(uintptr(bus.channel))
 	if status := pcanStatus(result); status != pcanStatusOK {

@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/tomrford/gocan"
 )
@@ -59,9 +58,6 @@ type Config struct {
 	Bitrate uint32
 	// FDBitrate is the vendor-native CAN FD timing string.
 	FDBitrate string
-	// CloseGracePeriod is additional drain time from Close. Zero selects
-	// 100 ms; a negative value disables the added wait.
-	CloseGracePeriod time.Duration
 }
 
 type pcanStatus uint32

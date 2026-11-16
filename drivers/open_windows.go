@@ -48,10 +48,9 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 
 func nativePCANConfig(channel Channel, config Config, fd bool) pcan.Config {
 	native := pcan.Config{
-		ID:               config.ID,
-		Name:             config.Name,
-		Channel:          pcan.Channel(channel.native),
-		CloseGracePeriod: config.PCANCloseGracePeriod,
+		ID:      config.ID,
+		Name:    config.Name,
+		Channel: pcan.Channel(channel.native),
 	}
 	if fd {
 		native.FDBitrate = pcanFDBitrate(config.FDTiming)
