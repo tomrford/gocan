@@ -51,7 +51,6 @@ func Discover() ([]Channel, error) {
 		channels = append(channels, Channel{
 			driver:              driverZLG,
 			name:                fmt.Sprintf("%s (%d:%d)", channel.HardwareType, channel.Device, channel.Channel),
-			nativeName:          channel.Serial,
 			native:              zlgNative(channel.DeviceType, channel.Device, channel.Channel),
 			supportsFD:          channel.SupportsFD,
 			supportsTermination: channel.SupportsFD,

@@ -143,6 +143,12 @@ address. Serialized mode avoids this extra window, but neither mode can identify
 old replies still buffered in the driver or arriving late. ISO-TP cursors discard
 previously captured traffic; they do not flush the native receive queue.
 
+NI-XNET hardware tests require a connected, terminated pair selected through
+`GOCAN_NIXNET_CHANNEL_A` and `GOCAN_NIXNET_CHANNEL_B` (for example `CAN5` and
+`CAN6`). They enable each endpoint's internal terminator and exercise classic
+CAN and ISO FD at 500k/2M and 500k/4M. The driver requires the installed NI-XNET
+runtime, with no C compiler or Python dependency in applications.
+
 ZLG supports USBCAN-I/II and USBCANFD-100U/200U/MINI. gocan loads ZLG's
 `zlgcan.dll` at run time; ZLG's driver installers do not provide it. To set up
 a machine:
@@ -155,9 +161,9 @@ a machine:
    [`CAN_lib.zip`](https://www.zlg.cn/data/upload/software/Can/CAN_lib.zip)
    ("CAN(FD)接口卡二次开发接口函数库" on ZLG's CAN download page), and copy the
    contents of its `zlgcan_x64` folder (`zlgcan.dll` and the `kerneldlls`
-   folder) beside the executable or into a folder on `PATH`. The folder must
-   stay writable because ZLG saves adapter settings there; default termination
-   retains the last setting.
+   folder) beside the executable or into a folder on `PATH`. ZLG saves adapter
+   settings in that folder, so it must be writable by the user, which rules
+   out `Program Files`.
 
 gocan has been tested with `zlgcan.dll` releases from 2022, July 2025 and
 August 2026. Without `zlgcan.dll` or its runtimes, discovery omits ZLG
@@ -166,8 +172,9 @@ per USBCAN, and omits adapters held by another process.
 
 Only ZLG's rate presets are accepted. Classical DLC 9–15 cannot be sent.
 USBCANFD uses ISO CAN FD, cannot transmit the error-state indicator, and
-supports `Config.Termination`. USBCANFD has not been qualified on hardware;
-its `USBCANFD.dll` has provided error information but no controller status or
+supports `Config.Termination`; `TerminationDefault` keeps the setting ZLG last
+saved for the adapter. USBCANFD has not been qualified on hardware; its
+`USBCANFD.dll` has provided error information but no controller status or
 error counters. `Send` captures and queues up to 256 frames. Unconfirmed
 transmissions produce error-frame events and are never retried, because the
 SDK can under-report frames that reached the wire. `Close` drains accepted
@@ -181,15 +188,10 @@ ZLG hardware tests pair a ZLG channel with a PCAN reference adapter on one
 terminated classical bus, with ZLG's `zlgcan_x64` folder on `PATH`. Select
 them through `GOCAN_ZLG_DEVICE` (the ZLG device type and index, for example
 `4:0` for a USBCAN-I or `41:0` for a USBCANFD-200U) and `GOCAN_PCAN_CHANNEL`
-(for example `0x51`). Setting
-`GOCAN_ZLG_SOAK` to a duration such as `10m` repeats opening, bidirectional
-sequenced traffic and closing until it elapses.
-
-NI-XNET hardware tests require a connected, terminated pair selected through
-`GOCAN_NIXNET_CHANNEL_A` and `GOCAN_NIXNET_CHANNEL_B` (for example `CAN5` and
-`CAN6`). They enable each endpoint's internal terminator and exercise classic
-CAN and ISO FD at 500k/2M and 500k/4M. The driver requires the installed NI-XNET
-runtime, with no C compiler or Python dependency in applications.
+(for example `0x51`). Setting `GOCAN_ZLG_SOAK` to a duration such as `10m`
+repeats opening, bidirectional sequenced traffic at full bus load and closing
+until it elapses, failing on any lost frame. On a USBCAN-I it can therefore
+expose the receive loss above, about once per 1,000 cycles.
 
 ## Development
 

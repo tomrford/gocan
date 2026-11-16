@@ -37,15 +37,11 @@ var families = [...]family{
 var processZLGDevices = devicechange.NewMonitor("ZLG USB",
 	slices.Concat(families[0].instancePrefixes, families[1].instancePrefixes)...)
 
-// USBCAN.dll returned a record misaligned by one byte when asked for 64 frames
-// per call under bidirectional load (November 2026), so each receive call reads
-// one frame; a buffered read costs about 1 µs.
 const (
 	receiveIdle         = time.Millisecond
 	statePollTime       = 100 * time.Millisecond
 	transmitQueueFrames = 256
 	transmitBatchFrames = 16
-	receiveBatchFrames  = 1
 )
 
 type ChannelInfo struct {
@@ -53,7 +49,6 @@ type ChannelInfo struct {
 	Device       uint32
 	Channel      uint32
 	HardwareType string
-	Serial       string
 	// SupportsFD also reports switchable termination.
 	SupportsFD bool
 }
@@ -61,7 +56,8 @@ type ChannelInfo struct {
 // Discover reports the channels of attached USBCAN-I/II and USBCANFD
 // adapters. Probing opens each adapter briefly, so adapters held by another
 // process are omitted; adapters open in this process are reported from their
-// open handle. zlgcan.dll is loaded only once an adapter is attached.
+// open handle. Opening and closing ZLG buses waits while probing runs.
+// zlgcan.dll is loaded only once an adapter is attached.
 func Discover() ([]ChannelInfo, error) {
 	counts, err := attachedCounts()
 	if err != nil {
@@ -100,7 +96,6 @@ func Discover() ([]ChannelInfo, error) {
 						Device:       index,
 						Channel:      channel,
 						HardwareType: cString(info.hardwareType[:]),
-						Serial:       serial,
 						SupportsFD:   isFDDevice(deviceType),
 					})
 				}
@@ -168,6 +163,9 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		if result, _, _ := step.proc.Call(channel); result != statusOK {
 			return nil, errors.Join(fmt.Errorf("%s: status %d", step.operation, result), bus.cleanup())
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, bus.cleanup())
 	}
 	subscription, err := deviceHold.Bind(bus.lifecycle.Stop)
 	if err != nil {
@@ -250,7 +248,8 @@ var loadAPI = sync.OnceValues(func() (*api, error) {
 		{&a.readChannelInfo, "ZCAN_ReadChannelStatus"},
 	} {
 		if *procedure.proc, err = dll.FindProc(procedure.name); err != nil {
-			return nil, fmt.Errorf("resolve %s: %w", procedure.name, err)
+			_ = windows.FreeLibrary(module)
+			return nil, fmt.Errorf("%w: resolve %s in %s: %v", gocan.ErrDriverUnavailable, procedure.name, libraryName, err)
 		}
 	}
 	return a, nil
@@ -416,7 +415,6 @@ type Bus struct {
 
 	txMu      sync.Mutex
 	txQueue   chan gocan.Frame
-	txClosed  bool
 	txDone    chan struct{}
 	lifecycle *driverstate.Lifecycle
 	lastState gocan.Event
@@ -424,10 +422,11 @@ type Bus struct {
 	// Native buffers owned by the transmit and receive goroutines.
 	txFrames   [transmitBatchFrames]transmitData
 	txFDFrames [transmitBatchFrames]transmitFDData
-	rxFrames   [receiveBatchFrames]receiveData
-	rxFDFrames [receiveBatchFrames]receiveFDData
+	rxFrame    receiveData
+	rxFDFrame  receiveFDData
 
 	deviceSubscription *devicechange.Subscription
+	drainErr           error
 	cleanupErr         error
 }
 
@@ -465,9 +464,6 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := bus.sendable(ctx); err != nil {
 		return err
 	}
-	if bus.txClosed {
-		return bus.lifecycle.OperationError()
-	}
 	if len(bus.txQueue) == cap(bus.txQueue) {
 		return fmt.Errorf("%w: ZLG transmit queue holds %d frames", gocan.ErrTransmitQueueFull, cap(bus.txQueue))
 	}
@@ -499,18 +495,37 @@ func (bus *Bus) transmitLoop() {
 	defer close(bus.txDone)
 	batch := make([]gocan.Frame, 0, transmitBatchFrames)
 	for {
-		select {
-		case frame := <-bus.txQueue:
-			batch = append(batch[:0], frame)
-		case <-bus.lifecycle.StopSignal():
-			bus.drain(batch)
+		// select picks randomly among ready cases, so a stop is checked before
+		// every batch.
+		if bus.stopping() {
+			bus.drainErr = bus.drain(batch)
 			return
 		}
-		batch = bus.fillBatch(batch)
-		if _, err := bus.transmit(batch); err != nil {
+		select {
+		case frame := <-bus.txQueue:
+			batch = bus.fillBatch(append(batch[:0], frame))
+		case <-bus.lifecycle.StopSignal():
+			continue
+		}
+		failed, err := bus.transmit(batch)
+		if err != nil {
 			bus.lifecycle.Stop(err)
 			return
 		}
+		// Close stops at a failed transmission, including one already in
+		// flight when Close began.
+		if failed && bus.stopping() {
+			return
+		}
+	}
+}
+
+func (bus *Bus) stopping() bool {
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return true
+	default:
+		return false
 	}
 }
 
@@ -526,20 +541,22 @@ func (bus *Bus) fillBatch(batch []gocan.Frame) []gocan.Frame {
 	return batch
 }
 
-// drain transmits the frames accepted before a normal Close.
-func (bus *Bus) drain(batch []gocan.Frame) {
+// drain transmits the frames accepted before a normal Close, stopping at the
+// first failed transmission, and returns any capture error.
+func (bus *Bus) drain(batch []gocan.Frame) error {
+	// Send checks for a stop while holding txMu, so no frame is queued after
+	// this barrier.
 	bus.txMu.Lock()
-	bus.txClosed = true
 	bus.txMu.Unlock()
 	if bus.lifecycle.Err() != nil {
-		return
+		return nil
 	}
 	for len(bus.txQueue) != 0 {
-		batch = bus.fillBatch(batch[:0])
-		if failed, err := bus.transmit(batch); failed || err != nil {
-			return
+		if failed, err := bus.transmit(bus.fillBatch(batch[:0])); failed || err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 // transmit sends batch in runs of classical or CAN FD frames. When a call
@@ -594,7 +611,7 @@ func (bus *Bus) receiveLoop() {
 			return
 		default:
 		}
-		more, err := bus.receiveBatch()
+		more, err := bus.receive()
 		if err == nil && !time.Now().Before(nextState) {
 			err = bus.checkState()
 			nextState = time.Now().Add(statePollTime)
@@ -615,43 +632,52 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-// receiveBatch reads classical and, on USBCANFD adapters, CAN FD frames from
-// their separate native queues and records them in native timestamp order.
-// As ZLG's manual advises, ZCAN_Receive is called only after
-// ZCAN_GetReceiveNum reports waiting frames.
-func (bus *Bus) receiveBatch() (bool, error) {
-	var received, receivedFD uintptr
-	if waiting, _, _ := bus.api.receiveNum.Call(bus.channel, typeCAN); waiting != 0 {
-		received, _, _ = bus.api.receive.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFrames[0])), min(waiting, receiveBatchFrames), 0)
-	}
-	if bus.fdDevice {
-		if waiting, _, _ := bus.api.receiveNum.Call(bus.channel, typeCANFD); waiting != 0 {
-			receivedFD, _, _ = bus.api.receiveFD.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFDFrames[0])), min(waiting, receiveBatchFrames), 0)
-		}
-	}
-	received, receivedFD = min(received, receiveBatchFrames), min(receivedFD, receiveBatchFrames)
-	classic, fd := bus.rxFrames[:received], bus.rxFDFrames[:receivedFD]
-	for len(classic) != 0 || len(fd) != 0 {
-		var frame gocan.Frame
-		var err error
-		if len(fd) == 0 || len(classic) != 0 && classic[0].timestamp <= fd[0].timestamp {
-			frame, err = decodeFrame(classic[0].frame)
-			classic = classic[1:]
-		} else {
-			frame, err = decodeFDFrame(fd[0].frame)
-			fd = fd[1:]
-		}
-		switch {
-		case errors.Is(err, errErrorFrame):
-			err = bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame})
-		case err == nil:
-			err = bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame})
-		}
-		if err != nil {
+// receive reads at most one classical and, on USBCANFD adapters, one CAN FD
+// frame from their separate native queues, records them in native timestamp
+// order, and reports whether it read any. Each call reads a single frame:
+// USBCAN.dll returned a record misaligned by one byte when asked for 64 frames
+// per call under bidirectional load (November 2026), and a buffered read costs
+// about 1 µs.
+func (bus *Bus) receive() (bool, error) {
+	classic := bus.receiveOne(bus.api.receive, typeCAN, unsafe.Pointer(&bus.rxFrame))
+	fd := bus.fdDevice && bus.receiveOne(bus.api.receiveFD, typeCANFD, unsafe.Pointer(&bus.rxFDFrame))
+	fdFirst := fd && classic && bus.rxFDFrame.timestamp < bus.rxFrame.timestamp
+	if fdFirst {
+		if err := bus.recordReceived(decodeFDFrame(bus.rxFDFrame.frame)); err != nil {
 			return false, err
 		}
 	}
-	return received == receiveBatchFrames || receivedFD == receiveBatchFrames, nil
+	if classic {
+		if err := bus.recordReceived(decodeFrame(bus.rxFrame.frame)); err != nil {
+			return false, err
+		}
+	}
+	if fd && !fdFirst {
+		if err := bus.recordReceived(decodeFDFrame(bus.rxFDFrame.frame)); err != nil {
+			return false, err
+		}
+	}
+	return classic || fd, nil
+}
+
+// receiveOne reads one frame of frameType into record. As ZLG's manual advises,
+// ZCAN_Receive is called only after ZCAN_GetReceiveNum reports waiting frames.
+func (bus *Bus) receiveOne(receive *windows.Proc, frameType uintptr, record unsafe.Pointer) bool {
+	if waiting, _, _ := bus.api.receiveNum.Call(bus.channel, frameType); waiting == 0 {
+		return false
+	}
+	received, _, _ := receive.Call(bus.channel, uintptr(record), 1, 0)
+	return received != 0
+}
+
+func (bus *Bus) recordReceived(frame gocan.Frame, err error) error {
+	switch {
+	case errors.Is(err, errErrorFrame):
+		return bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventErrorFrame})
+	case err != nil:
+		return err
+	}
+	return bus.capture.RecordFrame(gocan.FrameEvent{Bus: bus.ID(), Direction: gocan.DirectionReceive, Frame: frame})
 }
 
 // checkState polls controller state. USBCANFD.dll has not implemented
@@ -686,7 +712,7 @@ func (bus *Bus) checkState() error {
 func (bus *Bus) finish() {
 	<-bus.txDone
 	detachErr := bus.deviceSubscription.Cancel()
-	bus.cleanupErr = errors.Join(detachErr, bus.cleanup())
+	bus.cleanupErr = errors.Join(bus.drainErr, detachErr, bus.cleanup())
 	bus.lifecycle.MarkDone()
 }
 

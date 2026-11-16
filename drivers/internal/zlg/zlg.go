@@ -69,13 +69,10 @@ var sja1000Timings = map[uint32][2]uint8{
 	1_000_000: {0x00, 0x14},
 }
 
-// USBCANFD.dll's canfd_abit_baud_rate and canfd_dbit_baud_rate choices for its
-// 60 MHz clock, from ZLG's devices_property/usbcanfd-200u.xml. Every rate
-// samples at 80% except 5 Mbit/s data at 75%.
-var (
-	usbcanfdNominalRates = []uint32{50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000}
-	usbcanfdDataRates    = []uint32{100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000, 2_000_000, 4_000_000, 5_000_000}
-)
+// USBCANFD.dll's canfd_abit_baud_rate choices for its 60 MHz clock, from ZLG's
+// devices_property/usbcanfd-200u.xml. The drivers package admits only its
+// preset data rates.
+var usbcanfdNominalRates = []uint32{50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000}
 
 func validateConfig(config Config) error {
 	if !isFDDevice(config.DeviceType) {
@@ -96,8 +93,6 @@ func validateConfig(config Config) error {
 	switch {
 	case !slices.Contains(usbcanfdNominalRates, config.Bitrate):
 		return fmt.Errorf("ZLG USBCANFD bitrate %d is not a ZLG predefined rate", config.Bitrate)
-	case config.DataBitrate != 0 && (!slices.Contains(usbcanfdDataRates, config.DataBitrate) || config.DataBitrate < config.Bitrate):
-		return fmt.Errorf("ZLG USBCANFD data bitrate %d is not a ZLG predefined rate at or above %d", config.DataBitrate, config.Bitrate)
 	case config.Termination > 2:
 		return fmt.Errorf("invalid ZLG termination choice %d", config.Termination)
 	}
@@ -291,9 +286,7 @@ func decodeFrame(native canFrame) (gocan.Frame, error) {
 		return gocan.Frame{}, err
 	}
 	frame.DLC = native.dlc
-	if !frame.Flags.Has(gocan.FrameRemote) {
-		copy(frame.Data[:], native.data[:frame.DataLength()])
-	}
+	copy(frame.Data[:], native.data[:frame.DataLength()])
 	if err := frame.Validate(); err != nil {
 		return gocan.Frame{}, fmt.Errorf("decode ZLG frame (id %#08x, DLC %d, data % x): %w", native.id, native.dlc, native.data, err)
 	}
