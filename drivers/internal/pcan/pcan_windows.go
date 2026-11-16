@@ -28,7 +28,7 @@ const channelSettleDelay = 25 * time.Millisecond
 // A PEAK USB removal is one shared PCAN process failure domain: every open
 // PCAN bus stops, because a classic PCAN-USB handle cannot be reliably mapped
 // to one Windows device instance.
-var processPCANDevices = devicechange.NewMonitor(`USB\VID_0C72&`, "PEAK USB")
+var processPCANDevices = devicechange.NewMonitor("PEAK USB", `USB\VID_0C72&`)
 
 type ChannelCondition uint32
 

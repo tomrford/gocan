@@ -17,6 +17,16 @@ const (
 	ChannelUSB2 Channel = 0x52
 )
 
+// Bus returns the channel's one-based number within its PCAN bus type, as in
+// PCAN_USBBUS1. PCANBasic.h numbers buses 1–8 in the handle's low nibble and
+// buses 9–16 in the low byte of a 0x?xx handle.
+func (channel Channel) Bus() int {
+	if channel > 0xff {
+		return int(channel & 0xff)
+	}
+	return int(channel & 0x0f)
+}
+
 // classicalBitrates maps a classical bitrate in bits per second to the
 // PCAN-Basic predefined BTR0BTR1 code (PCANBasic.h PCAN_BAUD_*). BTR0BTR1
 // divides the SJA1000's 8 MHz quantum clock, so four PEAK rates are not

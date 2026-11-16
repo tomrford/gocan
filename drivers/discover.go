@@ -12,6 +12,7 @@ const (
 	driverPCAN
 	driverVector
 	driverNIXNET
+	driverZLG
 )
 
 func (driver driverKind) String() string {
@@ -24,6 +25,8 @@ func (driver driverKind) String() string {
 		return "nixnet"
 	case driverVector:
 		return "vector"
+	case driverZLG:
+		return "zlg"
 	default:
 		return ""
 	}
@@ -43,10 +46,14 @@ type Channel struct {
 	supportsTermination bool
 }
 
-// Driver returns "socketcan", "pcan", "vector", or "nixnet".
+// Driver returns "socketcan", "pcan", "vector", "nixnet", or "zlg".
 func (channel Channel) Driver() string { return channel.driver.String() }
 
 // Name returns the device or interface name reported by the native stack.
+// PCAN and ZLG report one name per device, so their names append a number
+// unique within the driver: the PCAN bus number, as in "PCAN-USB (1)" for
+// PCAN_USBBUS1, or the ZLG device index and channel, as in
+// "USBCANFD-200U (0:1)".
 func (channel Channel) Name() string { return channel.name }
 
 // SupportsFD reports whether the channel supports CAN FD.
@@ -78,6 +85,9 @@ func (channel Channel) Identifier() string {
 		return "nixnet:" + channel.nativeName
 	case driverVector:
 		return fmt.Sprintf("vector:%d", channel.native)
+	case driverZLG:
+		deviceType, device, index := zlgSelector(channel.native)
+		return fmt.Sprintf("zlg:%d:%d:%d", deviceType, device, index)
 	default:
 		return ""
 	}
@@ -86,8 +96,8 @@ func (channel Channel) Identifier() string {
 // SupportsTermination reports whether gocan can switch the channel's bus termination.
 func (channel Channel) SupportsTermination() bool { return channel.supportsTermination }
 
-// String returns the channel's driver, native name, and identifier, for example
-// "pcan PCAN_USBBUS1 (pcan:0x51)".
+// String returns the channel's driver, name, and identifier, for example
+// "pcan PCAN-USB (1) (pcan:0x51)".
 func (channel Channel) String() string {
 	return fmt.Sprintf("%s %s (%s)", channel.Driver(), channel.Name(), channel.Identifier())
 }
