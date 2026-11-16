@@ -164,9 +164,8 @@ a machine:
    from ZLG's [library downloads](https://manual.zlg.cn/web/#/152?page_id=5332)
    ("函数库/例程下载"), and copy the contents of its `zlgcan_x64` folder
    (`zlgcan.dll` and the `kerneldlls` folder) beside the executable or into a
-   folder on `PATH`. ZLG saves adapter
-   settings in that folder, so it must be writable by the user, which rules
-   out `Program Files`.
+   folder on `PATH`. ZLG saves adapter settings in that folder, so it must be
+   writable by the user, which rules out `Program Files`.
 
 gocan has been tested with `zlgcan.dll` releases from 2022, July 2025 and
 August 2026. Without `zlgcan.dll` or its runtimes, discovery omits ZLG
