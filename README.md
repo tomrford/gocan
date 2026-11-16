@@ -153,7 +153,10 @@ ZLG supports USBCAN-I/II and USBCANFD-100U/200U/MINI. gocan loads ZLG's
 `zlgcan.dll` at run time; ZLG's driver installers do not provide it. To set up
 a machine:
 
-1. Install the adapter's USB driver from ZLG.
+1. Install the adapter's USB driver from ZLG's
+   [driver downloads](https://manual.zlg.cn/web/#/146) ("驱动下载"):
+   `USBCAN_AllInOne_x86_x64` for USBCAN-I/II or `USBCANFD_AllInOne_x86_x64`
+   for USBCANFD-100U/200U/MINI. Unzip it and run the installer.
 2. Install the Visual C++ 2013 x64 redistributable and, for USBCAN-I/II, the
    Visual C++ 2008 SP1 x64 redistributable (MFC security update), both listed
    by [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
