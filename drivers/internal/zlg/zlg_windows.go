@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,8 +61,7 @@ type ChannelInfo struct {
 // Discover reports the channels of attached USBCAN-I/II and USBCANFD
 // adapters. Probing opens each adapter briefly, so adapters held by another
 // process are omitted; adapters open in this process are reported from their
-// open handle. ZLG's libraries are unpacked and loaded only once an adapter is
-// attached.
+// open handle. zlgcan.dll is loaded only once an adapter is attached.
 func Discover() ([]ChannelInfo, error) {
 	counts, err := attachedCounts()
 	if err != nil {
@@ -201,7 +199,7 @@ func (api *api) initChannel(device *device, config Config) (uintptr, error) {
 				return 0, err
 			}
 		}
-		init = unsafe.Pointer(&initFDConfig{canType: canTypeFD, accMask: 0xffffffff})
+		init = unsafe.Pointer(&initFDConfig{canType: typeCANFD, accMask: 0xffffffff})
 	} else {
 		timing := sja1000Timings[config.Bitrate]
 		init = unsafe.Pointer(&initConfig{accMask: 0xffffffff, timing0: timing[0], timing1: timing[1]})
@@ -217,25 +215,19 @@ type api struct {
 	openDevice, closeDevice, deviceInfo, setValueProc *windows.Proc
 	initCAN, startCAN, resetCAN, clearBuffer          *windows.Proc
 	transmit, receive, transmitFD, receiveFD          *windows.Proc
-	readErrorInfo, readChannelInfo                    *windows.Proc
+	receiveNum, readErrorInfo, readChannelInfo        *windows.Proc
 }
 
-// loadAPI unpacks and loads the bundled zlgcan.dll once per process. A load
-// failure, usually a missing Visual C++ 2008 runtime, reports the driver
-// unavailable.
+// loadAPI loads ZLG's 64-bit zlgcan.dll once per process through the standard
+// Windows search, which tries the executable's directory before PATH.
+// zlgcan.dll finds its kerneldlls folder beside itself. Every load failure
+// reports the driver unavailable, so Discover omits ZLG instead of failing.
 var loadAPI = sync.OnceValues(func() (*api, error) {
-	directory, err := unpackBundle()
+	module, err := windows.LoadLibraryEx(libraryName, 0, 0)
 	if err != nil {
-		return nil, fmt.Errorf("%w: unpack ZLG libraries: %v", gocan.ErrDriverUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", gocan.ErrDriverUnavailable, libraryLoadError(err))
 	}
-	path := filepath.Join(directory, "zlgcan.dll")
-	// The altered search path resolves zlgcan.dll's dependencies beside it
-	// without changing the process DLL search path.
-	module, err := windows.LoadLibraryEx(path, 0, windows.LOAD_WITH_ALTERED_SEARCH_PATH)
-	if err != nil {
-		return nil, fmt.Errorf("%w: load %s (requires the Visual C++ 2008 SP1 x64 redistributable): %v", gocan.ErrDriverUnavailable, path, err)
-	}
-	dll := &windows.DLL{Name: path, Handle: module}
+	dll := &windows.DLL{Name: libraryName, Handle: module}
 	a := &api{}
 	for _, procedure := range []struct {
 		proc **windows.Proc
@@ -253,6 +245,7 @@ var loadAPI = sync.OnceValues(func() (*api, error) {
 		{&a.receive, "ZCAN_Receive"},
 		{&a.transmitFD, "ZCAN_TransmitFD"},
 		{&a.receiveFD, "ZCAN_ReceiveFD"},
+		{&a.receiveNum, "ZCAN_GetReceiveNum"},
 		{&a.readErrorInfo, "ZCAN_ReadChannelErrInfo"},
 		{&a.readChannelInfo, "ZCAN_ReadChannelStatus"},
 	} {
@@ -262,6 +255,26 @@ var loadAPI = sync.OnceValues(func() (*api, error) {
 	}
 	return a, nil
 })
+
+const libraryName = "zlgcan.dll"
+
+// libraryLoadError explains a failed load. Loading as a data file skips
+// dependencies, so it tells a missing zlgcan.dll from a missing runtime.
+func libraryLoadError(err error) error {
+	switch {
+	case errors.Is(err, windows.ERROR_BAD_EXE_FORMAT):
+		return fmt.Errorf("%s is not the 64-bit library (use ZLG's zlgcan_x64 folder): %w", libraryName, err)
+	case errors.Is(err, windows.ERROR_MOD_NOT_FOUND):
+		module, dataErr := windows.LoadLibraryEx(libraryName, 0, windows.LOAD_LIBRARY_AS_DATAFILE)
+		if dataErr != nil {
+			return fmt.Errorf("%s not found beside the executable or on PATH: %w", libraryName, err)
+		}
+		_ = windows.FreeLibrary(module)
+		return fmt.Errorf("load %s (requires the Visual C++ 2013 x64 redistributable): %w", libraryName, err)
+	default:
+		return fmt.Errorf("load %s: %w", libraryName, err)
+	}
+}
 
 func (api *api) setValue(handle uintptr, path, value string) error {
 	nativePath, err := windows.BytePtrFromString(path)
@@ -302,7 +315,7 @@ func (api *api) acquire(key deviceKey, channel uint32) (*device, error) {
 	if opened == nil {
 		handle, _, _ := api.openDevice.Call(uintptr(key.deviceType), uintptr(key.index), 0)
 		if handle == 0 {
-			return nil, fmt.Errorf("open ZLG device type %d index %d: absent, in use by another process, or its kernel DLL failed to load (USBCANFD needs the Visual C++ 2013 x64 redistributable)", key.deviceType, key.index)
+			return nil, fmt.Errorf("open ZLG device type %d index %d: absent, in use by another process, or its kernel DLL failed to load (USBCAN-I/II need the Visual C++ 2008 SP1 x64 redistributable)", key.deviceType, key.index)
 		}
 		opened = &device{handle: handle, channels: map[uint32]bool{}}
 		if result, _, _ := api.deviceInfo.Call(handle, uintptr(unsafe.Pointer(&opened.info))); result != statusOK {
@@ -604,11 +617,17 @@ func (bus *Bus) receiveLoop() {
 
 // receiveBatch reads classical and, on USBCANFD adapters, CAN FD frames from
 // their separate native queues and records them in native timestamp order.
+// As ZLG's manual advises, ZCAN_Receive is called only after
+// ZCAN_GetReceiveNum reports waiting frames.
 func (bus *Bus) receiveBatch() (bool, error) {
-	received, _, _ := bus.api.receive.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFrames[0])), receiveBatchFrames, 0)
-	var receivedFD uintptr
+	var received, receivedFD uintptr
+	if waiting, _, _ := bus.api.receiveNum.Call(bus.channel, typeCAN); waiting != 0 {
+		received, _, _ = bus.api.receive.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFrames[0])), min(waiting, receiveBatchFrames), 0)
+	}
 	if bus.fdDevice {
-		receivedFD, _, _ = bus.api.receiveFD.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFDFrames[0])), receiveBatchFrames, 0)
+		if waiting, _, _ := bus.api.receiveNum.Call(bus.channel, typeCANFD); waiting != 0 {
+			receivedFD, _, _ = bus.api.receiveFD.Call(bus.channel, uintptr(unsafe.Pointer(&bus.rxFDFrames[0])), min(waiting, receiveBatchFrames), 0)
+		}
 	}
 	received, receivedFD = min(received, receiveBatchFrames), min(receivedFD, receiveBatchFrames)
 	classic, fd := bus.rxFrames[:received], bus.rxFDFrames[:receivedFD]
@@ -635,8 +654,8 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	return received == receiveBatchFrames || receivedFD == receiveBatchFrames, nil
 }
 
-// checkState polls controller state. The bundled USBCANFD.dll does not
-// implement ReadChannelStatus, so its error information is used on its own.
+// checkState polls controller state. USBCANFD.dll has not implemented
+// ReadChannelStatus, so its error information is used on its own.
 func (bus *Bus) checkState() error {
 	var errorInfo channelErrorInfo
 	if result, _, _ := bus.api.readErrorInfo.Call(bus.channel, uintptr(unsafe.Pointer(&errorInfo))); result != statusOK {

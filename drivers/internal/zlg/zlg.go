@@ -107,7 +107,9 @@ func validateConfig(config Config) error {
 const (
 	statusOK = 1
 
-	canTypeFD = 1
+	// ZCAN_CHANNEL_INIT_CONFIG.can_type and ZCAN_GetReceiveNum's frame type.
+	typeCAN   = 0
+	typeCANFD = 1
 
 	canExtendedFlag = 0x80000000
 	canRemoteFlag   = 0x40000000
