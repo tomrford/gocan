@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/tomrford/gocan"
 )
@@ -41,6 +42,12 @@ type Config struct {
 	// Termination selects switchable bus termination on supported channels.
 	// Default leaves the driver default; unsupported explicit choices are rejected.
 	Termination Termination
+	// PCANCloseGracePeriod gives accepted PCAN sends additional time to drain
+	// from the first Close call. Zero selects 100 ms; a negative
+	// value disables the added wait. It applies only to a normal close after
+	// an accepted Send, does not confirm delivery, and does not include
+	// PCAN-Basic's own shutdown wait. Nonzero values require a PCAN channel.
+	PCANCloseGracePeriod time.Duration
 	// NIXNETConcurrentIO lets NI-XNET read frames and controller state without
 	// holding the transmit lock. False (the default) serializes native reads
 	// and capture appends with transmission; slow reads may delay Send.
@@ -173,6 +180,9 @@ func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config
 	}
 	if config.NIXNETConcurrentIO && channel.driver != driverNIXNET {
 		return Config{}, errors.New("NIXNETConcurrentIO requires an NI-XNET channel")
+	}
+	if config.PCANCloseGracePeriod != 0 && channel.driver != driverPCAN {
+		return Config{}, errors.New("PCANCloseGracePeriod requires a PCAN channel")
 	}
 
 	fd := config.FDTiming != (FDTiming{})
