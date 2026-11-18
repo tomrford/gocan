@@ -270,10 +270,9 @@ func LengthToDLC(length int, fd bool) (uint8, error) {
 }
 
 // BusID is the one-based logical channel number of a bus in a Capture and
-// exported trace files. Multiple buses may deliberately use the same ID to
-// merge their records into one logical channel; the caller is responsible for
-// avoiding unintended collisions. Records are never deduplicated. Zero is
-// invalid.
+// exported trace files. A Capture gives each bus name one ID, so buses opened
+// with the same name merge their records into one logical channel. Records are
+// never deduplicated. Zero is invalid.
 type BusID uint16
 
 // Direction describes whether a frame was received or transmitted.

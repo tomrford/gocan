@@ -43,8 +43,8 @@ var (
 // The package-level Send function provides bounded queue-full retries.
 //
 // Done closes after acquisition stops; Err then reports the background failure
-// or nil after normal Close. ID is the one-based trace channel; Name is its label.
-// Close is idempotent.
+// or nil after normal Close. ID is the one-based trace channel; Name is its
+// label, which opening the bus records with Capture.AddBus. Close is idempotent.
 type Bus interface {
 	ID() BusID
 	Name() string

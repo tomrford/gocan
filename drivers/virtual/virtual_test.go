@@ -3,6 +3,7 @@ package virtual
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -141,7 +142,7 @@ func TestBroadcastDetectsOverrun(t *testing.T) {
 		done:     make(chan struct{}),
 	}
 	network.mu.Lock()
-	network.buses[victim.id] = victim
+	network.buses[victim] = struct{}{}
 	network.mu.Unlock()
 
 	network.broadcast(source, gocan.Frame{})
@@ -216,5 +217,77 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 	}
 	if transmitted.Direction != gocan.DirectionTransmit || received.Direction != gocan.DirectionReceive {
 		t.Fatalf("self-reception directions = %v, %v, want TX then RX", transmitted.Direction, received.Direction)
+	}
+}
+
+func TestCaptureNamesBusesAndAssignsTheirIDs(t *testing.T) {
+	capture := gocan.NewCapture()
+	var network Network
+	open := func(capture *gocan.Capture, config Config) *Bus {
+		t.Helper()
+		bus, err := network.Open(context.Background(), capture, config)
+		if err != nil {
+			t.Fatalf("Open %q: %v", config.Name, err)
+		}
+		t.Cleanup(func() { _ = bus.Close() })
+		return bus
+	}
+
+	powertrain := open(capture, Config{Name: "powertrain"})
+	chassis := open(capture, Config{ID: 3, Name: "chassis"})
+	body := open(capture, Config{Name: "body"})
+	diagnostics := open(capture, Config{Name: "diagnostics"})
+	if powertrain.ID() != 1 || chassis.ID() != 3 || body.ID() != 2 || diagnostics.ID() != 4 {
+		t.Fatalf("IDs = %d, %d, %d, %d; want 1, 3, 2, 4", powertrain.ID(), chassis.ID(), body.ID(), diagnostics.ID())
+	}
+
+	for _, config := range []Config{{ID: 1, Name: "renamed"}, {ID: 5, Name: "body"}} {
+		if _, err := network.Open(context.Background(), capture, config); err == nil {
+			t.Fatalf("Open %+v accepted a conflicting name and ID", config)
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := network.Open(canceled, capture, Config{Name: "never opened"}); err == nil {
+		t.Fatal("Open accepted a canceled context")
+	}
+	if _, ok := capture.BusID("never opened"); ok {
+		t.Fatal("a failed Open named a bus in the capture")
+	}
+
+	if err := body.Close(); err != nil {
+		t.Fatalf("Close body: %v", err)
+	}
+	capture.Clear()
+	body = open(capture, Config{Name: "body"})
+	if body.ID() != 2 {
+		t.Fatalf("reopened body ID = %d, want its earlier ID 2", body.ID())
+	}
+	want := map[gocan.BusID]string{1: "powertrain", 2: "body", 3: "chassis", 4: "diagnostics"}
+	if got := capture.BusNames(); !maps.Equal(got, want) {
+		t.Fatalf("BusNames = %v, want %v", got, want)
+	}
+	if id, ok := capture.BusID("chassis"); !ok || id != 3 {
+		t.Fatalf("BusID(chassis) = %d, %t; want 3, true", id, ok)
+	}
+
+	// Each capture numbers its own buses, even on a shared network.
+	other := gocan.NewCapture()
+	tester := open(other, Config{Name: "tester"})
+	if tester.ID() != 1 {
+		t.Fatalf("tester ID on its own capture = %d, want 1", tester.ID())
+	}
+	frame, err := gocan.NewFrame(0x7e0, []byte{2, 0x10, 3}, 0)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	cursor := capture.End()
+	if err := tester.Send(context.Background(), frame); err != nil {
+		t.Fatalf("tester Send: %v", err)
+	}
+	ctx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if _, _, err := capture.Next(ctx, gocan.FrameKey{Bus: body.ID(), ID: frame.ID, Direction: gocan.DirectionReceive}, cursor); err != nil {
+		t.Fatalf("body did not receive the tester's frame: %v", err)
 	}
 }

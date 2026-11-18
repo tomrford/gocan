@@ -27,7 +27,7 @@ import (
 const waitTimeout = 5 * time.Second
 
 // Pair opens two connected endpoints on one shared medium, both contributing
-// to capture. It is called once per test case; the pair must be fresh, and
+// to capture and named in it. It is called once per test case; the pair must be fresh, and
 // the opener is responsible for closing whatever the case does not close
 // (register t.Cleanup). A medium that can only provide one endpoint returns
 // nil for the second, which skips the cases that need a peer.
@@ -76,6 +76,14 @@ func openPair(t *testing.T, open Pair) (*gocan.Capture, gocan.Bus, gocan.Bus) {
 	}
 	if b != nil && (b.ID() == 0 || b.Name() == "") {
 		t.Fatal("second endpoint has no ID or name")
+	}
+	for _, bus := range []gocan.Bus{a, b} {
+		if bus == nil {
+			continue
+		}
+		if id, ok := capture.BusID(bus.Name()); !ok || id != bus.ID() {
+			t.Fatalf("capture names %q as bus %d, %t; want %d", bus.Name(), id, ok, bus.ID())
+		}
 	}
 	return capture, a, b
 }

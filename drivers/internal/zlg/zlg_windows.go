@@ -115,6 +115,12 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
+	id, err := capture.AddBus(config.ID, config.Name)
+	if err != nil {
+		return nil, err
+	}
+	config.ID = id
+
 	api, err := loadAPI()
 	if err != nil {
 		return nil, err

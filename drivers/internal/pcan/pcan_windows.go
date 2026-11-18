@@ -78,6 +78,12 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		}
 		bitrateCode = code
 	}
+	id, err := capture.AddBus(config.ID, config.Name)
+	if err != nil {
+		return nil, err
+	}
+	config.ID = id
+
 	api, err := loadPCANAPI()
 	if err != nil {
 		return nil, err

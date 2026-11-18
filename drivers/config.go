@@ -12,7 +12,8 @@ import (
 // Config names an opened bus and selects how its bit timing is configured.
 // Set either Bitrate (optionally with DataBitrate), FDTiming, or External.
 type Config struct {
-	// ID is the one-based trace channel assigned to the bus.
+	// ID is the one-based trace channel assigned to the bus. Zero lets the
+	// capture assign one; see gocan.Capture.AddBus.
 	ID gocan.BusID
 	// Name is the human-readable bus name.
 	Name string
@@ -159,8 +160,6 @@ func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config
 		return Config{}, errors.New("physical CAN bus requires a capture")
 	case channel.driver == driverUnknown:
 		return Config{}, errors.New("physical CAN bus requires a channel returned by Discover")
-	case config.ID == 0:
-		return Config{}, errors.New("physical CAN bus requires an ID")
 	case config.Name == "":
 		return Config{}, errors.New("physical CAN bus requires a name")
 	}

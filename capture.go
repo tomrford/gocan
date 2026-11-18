@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,8 @@ type Capture struct {
 	allocatingNext bool
 	latest         map[FrameKey]FrameEvent
 	latestStates   map[BusID]Event
+	busIDs         map[string]BusID
+	busNames       map[BusID]string
 	waiters        map[FrameKey]*captureWaiter
 	length         int
 	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
@@ -66,7 +69,57 @@ func NewCapture() *Capture {
 		),
 		latest:       make(map[FrameKey]FrameEvent),
 		latestStates: make(map[BusID]Event),
+		busIDs:       make(map[string]BusID),
+		busNames:     make(map[BusID]string),
 	}
+}
+
+// AddBus names a bus in the capture and returns its ID. Drivers call it when
+// they open a bus. A zero id selects the bus's earlier ID when the name is
+// already known, otherwise the lowest unused ID. Each name has one ID and each
+// ID one name; adding a known pair again returns it, so a reopened bus keeps its
+// channel and buses opened with the same name share one. Names outlive the
+// buses and Clear, since retained and exported records still refer to them.
+func (capture *Capture) AddBus(id BusID, name string) (BusID, error) {
+	if name == "" {
+		return 0, errors.New("CAN bus requires a name")
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	if known, ok := capture.busIDs[name]; ok {
+		if id != 0 && id != known {
+			return 0, fmt.Errorf("CAN bus %q already has ID %d in this capture", name, known)
+		}
+		return known, nil
+	}
+	if id == 0 {
+		for id = 1; capture.busNames[id] != ""; id++ {
+			if id == ^BusID(0) {
+				return 0, errors.New("capture has no unused CAN bus ID")
+			}
+		}
+	} else if known := capture.busNames[id]; known != "" {
+		return 0, fmt.Errorf("CAN bus ID %d is already %q in this capture", id, known)
+	}
+	capture.busIDs[name], capture.busNames[id] = id, name
+	return id, nil
+}
+
+// BusID returns the ID of the named bus.
+func (capture *Capture) BusID(name string) (BusID, bool) {
+	capture.mu.RLock()
+	defer capture.mu.RUnlock()
+	id, ok := capture.busIDs[name]
+	return id, ok
+}
+
+// BusNames returns an owned map of every named bus's ID to its name, in the
+// form trace writers take for channel labels.
+func (capture *Capture) BusNames() map[BusID]string {
+	capture.mu.RLock()
+	defer capture.mu.RUnlock()
+	return maps.Clone(capture.busNames)
 }
 
 type captureRecordKind uint8

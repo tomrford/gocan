@@ -5,7 +5,6 @@ package virtual
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/tomrford/gocan"
@@ -15,7 +14,8 @@ const receiveQueueCapacity = 1024
 
 // Config selects one endpoint on a Network.
 type Config struct {
-	// ID is the one-based trace channel assigned to the bus.
+	// ID is the one-based trace channel assigned to the bus. Zero lets the
+	// capture assign one; see gocan.Capture.AddBus.
 	ID gocan.BusID
 	// Name is the human-readable name of the bus.
 	Name               string
@@ -25,7 +25,7 @@ type Config struct {
 // Network connects virtual CAN buses. The zero Network is ready for use.
 type Network struct {
 	mu    sync.RWMutex
-	buses map[gocan.BusID]*Bus
+	buses map[*Bus]struct{}
 }
 
 // Open creates and starts one virtual bus. Every bus opened on the same
@@ -35,9 +35,6 @@ type Network struct {
 func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, error) {
 	if capture == nil {
 		return nil, errors.New("virtual CAN bus requires a capture")
-	}
-	if config.ID == 0 {
-		return nil, errors.New("virtual CAN bus requires an ID")
 	}
 	if config.Name == "" {
 		return nil, errors.New("virtual CAN bus requires a name")
@@ -49,18 +46,19 @@ func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config
 	network.mu.Lock()
 	defer network.mu.Unlock()
 
-	if network.buses == nil {
-		network.buses = make(map[gocan.BusID]*Bus)
-	}
-	if _, exists := network.buses[config.ID]; exists {
-		return nil, fmt.Errorf("virtual CAN bus ID %d is already open", config.ID)
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	id, err := capture.AddBus(config.ID, config.Name)
+	if err != nil {
+		return nil, err
+	}
+	if network.buses == nil {
+		network.buses = make(map[*Bus]struct{})
+	}
 
 	bus := &Bus{
-		id:                 config.ID,
+		id:                 id,
 		name:               config.Name,
 		capture:            capture,
 		network:            network,
@@ -71,7 +69,7 @@ func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config
 		stop:               make(chan struct{}),
 		done:               make(chan struct{}),
 	}
-	network.buses[config.ID] = bus
+	network.buses[bus] = struct{}{}
 	go bus.run()
 	return bus, nil
 }
@@ -285,7 +283,7 @@ func (network *Network) broadcast(source *Bus, received gocan.Frame) {
 	network.mu.RLock()
 	defer network.mu.RUnlock()
 
-	for _, destination := range network.buses {
+	for destination := range network.buses {
 		if destination == source && !source.receiveOwnMessages {
 			continue
 		}
@@ -302,7 +300,5 @@ func (network *Network) remove(bus *Bus) {
 	network.mu.Lock()
 	defer network.mu.Unlock()
 
-	if network.buses[bus.id] == bus {
-		delete(network.buses, bus.id)
-	}
+	delete(network.buses, bus)
 }

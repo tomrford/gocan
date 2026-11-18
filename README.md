@@ -33,12 +33,12 @@ func main() {
 	capture := gocan.NewCapture()
 	var network virtual.Network
 
-	sender, err := network.Open(ctx, capture, virtual.Config{ID: 1, Name: "sender"})
+	sender, err := network.Open(ctx, capture, virtual.Config{Name: "sender"})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer sender.Close()
-	receiver, err := network.Open(ctx, capture, virtual.Config{ID: 2, Name: "receiver"})
+	receiver, err := network.Open(ctx, capture, virtual.Config{Name: "receiver"})
 	if err != nil {
 		log.Fatal(err)
 	}

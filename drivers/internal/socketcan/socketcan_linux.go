@@ -56,6 +56,12 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 		return nil, err
 	}
 
+	id, err := capture.AddBus(config.ID, config.Name)
+	if err != nil {
+		return nil, err
+	}
+	config.ID = id
+
 	iface, err := net.InterfaceByName(config.Interface)
 	if err != nil {
 		return nil, fmt.Errorf("find SocketCAN interface %q: %w", config.Interface, err)

@@ -68,7 +68,8 @@ type Options struct {
 	// nonempty. All metadata text must be valid UTF-8 and XML 1.0 text.
 	Comment    string
 	Properties map[string]string
-	// BusNames supplies optional display names. Empty names use CAN<BusID>.
+	// BusNames supplies optional display names, such as Capture.BusNames.
+	// Empty names use CAN<BusID>.
 	// Numeric bus identity and canonical source paths remain unchanged.
 	BusNames map[gocan.BusID]string
 }
