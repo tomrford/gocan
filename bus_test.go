@@ -35,10 +35,32 @@ func TestSendRetryLifecycle(t *testing.T) {
 		if errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Since(start) != 5*time.Millisecond {
 			t.Fatalf("retry budget: %v after %v", err, time.Since(start))
 		}
-		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrBusOff }
+		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrHardwareDisconnected }
 		start = time.Now()
-		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusOff) || time.Now() != start {
+		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrHardwareDisconnected) || time.Now() != start {
 			t.Fatalf("fatal Send: %v after %v", err, time.Since(start))
+		}
+
+		// Bus-off recovery needs at least 128 x 11 recessive bit times, so
+		// retries poll every 10 ms rather than spinning.
+		recovered := time.Now().Add(25 * time.Millisecond)
+		calls = 0
+		bus.send = func(context.Context, gocan.Frame) error {
+			calls++
+			if time.Now().Before(recovered) {
+				return fmt.Errorf("adapter: %w", gocan.ErrBusOff)
+			}
+			return nil
+		}
+		start = time.Now()
+		if err := gocan.Send(context.Background(), bus, frame, time.Second); err != nil || time.Since(start) != 30*time.Millisecond || calls != 4 {
+			t.Fatalf("bus-off recovery: %v after %v, calls=%d", err, time.Since(start), calls)
+		}
+		calls = 0
+		recovered = time.Now().Add(time.Hour)
+		start = time.Now()
+		if err := gocan.Send(context.Background(), bus, frame, 25*time.Millisecond); !errors.Is(err, gocan.ErrBusOff) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 25*time.Millisecond || calls != 3 {
+			t.Fatalf("bus-off budget: %v after %v, calls=%d", err, time.Since(start), calls)
 		}
 		cause := errors.New("caller stopped send")
 		cancelled, cancelCause := context.WithCancelCause(context.Background())
@@ -48,7 +70,7 @@ func TestSendRetryLifecycle(t *testing.T) {
 			t.Fatalf("first-attempt cancellation: %v", err)
 		}
 		for _, attempt := range []int{1, 2} {
-			for _, result := range []error{nil, context.DeadlineExceeded, gocan.ErrBusOff} {
+			for _, result := range []error{nil, context.DeadlineExceeded, gocan.ErrHardwareDisconnected} {
 				calls = 0
 				bus.send = func(ctx context.Context, got gocan.Frame) error {
 					calls++

@@ -700,14 +700,40 @@ func (bus *Bus) checkState() error {
 		}
 		status = nil
 	}
-	event, terminal := controllerEvent(bus.ID(), status, errorInfo.code, !bus.fdDevice)
-	if event.Kind != 0 && (event != bus.lastState || terminal != nil) {
+	event, lost := controllerEvent(bus.ID(), status, errorInfo.code, !bus.fdDevice)
+	if lost {
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun}); err != nil {
+			return err
+		}
+	}
+	if event.Kind != 0 && event != bus.lastState {
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
 		}
 		bus.lastState = event
 	}
-	return terminal
+	if event.ControllerState == gocan.ControllerBusOff {
+		return bus.restart()
+	}
+	return nil
+}
+
+// restart returns a bus-off controller to the bus as ZLG documents: reset the
+// channel, then start it without initializing it again. The state poll paces
+// restarts. A started controller is error-active with cleared counters.
+func (bus *Bus) restart() error {
+	if result, _, _ := bus.api.resetCAN.Call(bus.channel); result != statusOK {
+		return fmt.Errorf("reset ZLG channel after bus-off: status %d", result)
+	}
+	if result, _, _ := bus.api.startCAN.Call(bus.channel); result != statusOK {
+		return fmt.Errorf("start ZLG channel after bus-off: status %d", result)
+	}
+	event := gocan.Event{Bus: bus.ID(), Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive}
+	if err := bus.capture.RecordEvent(event); err != nil {
+		return err
+	}
+	bus.lastState = event
+	return nil
 }
 
 // finish waits for the transmit goroutine, whose native call cannot be

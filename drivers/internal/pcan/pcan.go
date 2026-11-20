@@ -81,6 +81,7 @@ const (
 
 const (
 	pcanReceiveEvent      = 0x03
+	pcanBusOffAutoReset   = 0x07
 	pcanAllowStatusFrames = 0x1e
 	pcanAllowErrorFrames  = 0x20
 	pcanAttachedCount     = 0x2a
@@ -127,7 +128,6 @@ type pcanReceiveObservation struct {
 	hasFrame   bool
 	events     [3]gocan.Event
 	eventCount uint8
-	terminal   error
 }
 
 func (observation *pcanReceiveObservation) addEvent(event gocan.Event) {
@@ -245,7 +245,6 @@ func decodePCANErrorFrame(
 			ControllerState: gocan.ControllerBusOff,
 		}
 		observation.addEvent(state)
-		observation.terminal = fmt.Errorf("%w: PCAN controller entered bus-off", gocan.ErrBusOff)
 		return observation, nil
 	}
 
@@ -273,13 +272,13 @@ func decodePCANStatus(
 	status pcanStatus,
 	bus gocan.BusID,
 ) (pcanReceiveObservation, error) {
+	var observation pcanReceiveObservation
 	if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-		event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
-		observation := pcanReceiveObservation{
-			terminal: fmt.Errorf("%w: PCAN status %#08x", gocan.ErrReceiveOverrun, uint32(status)),
+		observation.addEvent(gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun})
+		status &^= pcanStatusOverrun | pcanStatusQueueOverrun
+		if status == pcanStatusOK {
+			return observation, nil
 		}
-		observation.addEvent(event)
-		return observation, nil
 	}
 
 	var state gocan.ControllerState
@@ -300,11 +299,7 @@ func decodePCANStatus(
 		Kind:            gocan.EventControllerState,
 		ControllerState: state,
 	}
-	var observation pcanReceiveObservation
 	observation.addEvent(event)
-	if state == gocan.ControllerBusOff {
-		observation.terminal = fmt.Errorf("%w: PCAN controller entered bus-off", gocan.ErrBusOff)
-	}
 	return observation, nil
 }
 

@@ -91,7 +91,7 @@ func TestTaskLifecycle(t *testing.T) {
 
 func TestStopDuringSend(t *testing.T) {
 	for name, blockedSend := range map[string]int{"first": 1, "later": 2} {
-		for outcome, result := range map[string]error{"accepted": nil, "cancelled": context.Canceled, "failed": gocan.ErrBusOff} {
+		for outcome, result := range map[string]error{"accepted": nil, "cancelled": context.Canceled, "failed": gocan.ErrHardwareDisconnected} {
 			t.Run(name+"/"+outcome, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					started, release := make(chan struct{}), make(chan struct{})
@@ -177,4 +177,39 @@ func TestStartValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBusOffMisses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		accepted := 0
+		bus := &callbackBus{send: func(context.Context, gocan.Frame) error {
+			if time.Since(start) < 25*time.Millisecond {
+				return gocan.ErrBusOff
+			}
+			accepted++
+			return nil
+		}}
+		task, err := cyclic.Start(context.Background(), bus, gocan.Frame{ID: 1}, cyclic.Config{Period: 10 * time.Millisecond, MaxConsecutiveMisses: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(35 * time.Millisecond)
+		synctest.Wait()
+		if task.Err() != nil || task.Missed() != 3 || accepted != 1 {
+			t.Fatalf("recovered task: Err = %v, missed %d, accepted %d; want nil, 3, 1", task.Err(), task.Missed(), accepted)
+		}
+		task.Stop()
+		<-task.Done()
+
+		start = time.Now()
+		task, err = cyclic.Start(context.Background(), bus, gocan.Frame{ID: 1}, cyclic.Config{Period: 10 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-task.Done()
+		if !errors.Is(task.Err(), gocan.ErrBusOff) || task.Missed() != 1 {
+			t.Fatalf("no allowance: Err = %v, missed %d; want ErrBusOff, 1", task.Err(), task.Missed())
+		}
+	})
 }

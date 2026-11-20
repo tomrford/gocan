@@ -5,6 +5,7 @@ package vector
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -192,55 +193,58 @@ func TestVectorFDCollisionBusOffEvents(t *testing.T) {
 		if err := winner.Send(context.Background(), winnerFrame); err != nil {
 			t.Fatalf("send from collision winner: %v", err)
 		}
-		if err := loser.Send(context.Background(), loserFrame); err != nil {
-			// Retransmissions can reach the expected terminal state before
-			// this goroutine finishes queuing the remaining collisions.
-			if errors.Is(err, gocan.ErrBusOff) {
-				break
-			}
+		if err := loser.Send(context.Background(), loserFrame); err != nil && !errors.Is(err, gocan.ErrBusOff) {
 			t.Fatalf("send from collision loser: %v", err)
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	select {
-	case <-loser.Done():
-	case <-ctx.Done():
-		t.Fatal("Vector collision loser did not enter bus-off")
-	}
-	if !errors.Is(loser.Err(), gocan.ErrBusOff) {
-		t.Fatalf("Vector collision loser Err() = %v, want ErrBusOff", loser.Err())
-	}
-	select {
-	case <-winner.Done():
-		t.Fatalf("Vector collision winner stopped: %v", winner.Err())
-	default:
-	}
-
-	loserEvents := capture.BusEvents(loser.ID())
-	seenError := false
-	seenBusOff := false
-	for _, event := range loserEvents {
-		switch event.Kind {
-		case gocan.EventErrorFrame:
-			seenError = true
-		case gocan.EventControllerState:
-			if event.ControllerState == gocan.ControllerBusOff {
-				if !seenError {
-					t.Fatal("Vector bus-off event preceded its FD error event")
-				}
-				seenBusOff = true
-			}
+	// Vector hardware rejoins the bus by itself after bus-off; the bus stays
+	// open and reports both transitions.
+	busOff := waitVectorState(t, capture, loser.ID(), 0, gocan.ControllerBusOff)
+	active := waitVectorState(t, capture, loser.ID(), busOff, gocan.ControllerActive)
+	for _, bus := range []gocan.Bus{loser, winner} {
+		select {
+		case <-bus.Done():
+			t.Fatalf("%s stopped: %v", bus.Name(), bus.Err())
+		default:
 		}
 	}
-	if !seenError || !seenBusOff {
-		t.Fatalf("Vector collision loser events omit error or bus-off: %+v", loserEvents)
+	loserEvents := capture.BusEvents(loser.ID())
+	if !slices.ContainsFunc(loserEvents[:busOff], func(event gocan.Event) bool { return event.Kind == gocan.EventErrorFrame }) {
+		t.Fatalf("Vector bus-off event preceded its FD error event: %+v", loserEvents[:active+1])
 	}
-	lastEvent := loserEvents[len(loserEvents)-1]
-	if lastEvent.Kind != gocan.EventControllerState ||
-		lastEvent.ControllerState != gocan.ControllerBusOff {
-		t.Fatalf("last Vector collision loser event = %+v, want bus-off", lastEvent)
+
+	cursor := capture.End()
+	recovered, err := vectorEventFrame(0x5a8, 8, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	if err := gocan.Send(context.Background(), loser, recovered, 5*time.Second); err != nil {
+		t.Fatalf("send after Vector bus-off recovery: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := capture.Next(ctx, gocan.FrameKey{Bus: winner.ID(), ID: recovered.ID, Direction: gocan.DirectionReceive}, cursor); err != nil {
+		t.Fatalf("wait for frame sent after recovery: %v", err)
+	}
+}
+
+// waitVectorState returns the index, within bus's events, of the first
+// controller-state event at or after from that reports state.
+func waitVectorState(t *testing.T, capture *gocan.Capture, bus gocan.BusID, from int, state gocan.ControllerState) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		events := capture.BusEvents(bus)
+		for index := from; index < len(events); index++ {
+			if events[index].Kind == gocan.EventControllerState && events[index].ControllerState == state {
+				return index
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Vector bus %d reported no %v state: %+v", bus, state, events)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

@@ -6,3 +6,7 @@ CANoe, has on the bus is discovered as externally configured with its current
 rates; open it with `Config.External` to join without changing its timing.
 gocan must join second. Keep the owner's measurement and timing stable while
 flashing; discovery and the on-bus check cannot reserve that configuration.
+
+Receive-queue overruns produce receive-overrun events; the bus keeps receiving.
+Vector hardware rejoins the bus after bus-off by itself, and gocan reports both
+transitions as controller-state events without closing the bus.

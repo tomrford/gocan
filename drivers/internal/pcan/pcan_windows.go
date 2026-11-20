@@ -25,6 +25,11 @@ import (
 // readiness signal, so retain margin over the observed roughly 3 ms window.
 const channelSettleDelay = 25 * time.Millisecond
 
+// busOffPollInterval paces status reads while PCAN-Basic's auto-reset returns
+// a bus-off controller to the bus. PCAN-USB sent no status message on that
+// return (November 2026).
+const busOffPollInterval = 10 * time.Millisecond
+
 // A PEAK USB removal is one shared PCAN process failure domain: every open
 // PCAN bus stops, because a classic PCAN-USB handle cannot be reliably mapped
 // to one Windows device instance.
@@ -143,6 +148,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	}{
 		{pcanAllowStatusFrames, "enable PCAN status frames"},
 		{pcanAllowErrorFrames, "enable PCAN error frames"},
+		{pcanBusOffAutoReset, "enable PCAN bus-off auto-reset"},
 	} {
 		result, _, _ = api.setValue.Call(
 			uintptr(config.Channel),
@@ -238,6 +244,7 @@ type pcanAPI struct {
 	readFD       *windows.LazyProc
 	write        *windows.LazyProc
 	writeFD      *windows.LazyProc
+	getStatus    *windows.LazyProc
 	getValue     *windows.LazyProc
 	setValue     *windows.LazyProc
 	getErrorText *windows.LazyProc
@@ -266,6 +273,7 @@ func loadPCANAPI() (*pcanAPI, error) {
 		readFD:       dll.NewProc("CAN_ReadFD"),
 		write:        dll.NewProc("CAN_Write"),
 		writeFD:      dll.NewProc("CAN_WriteFD"),
+		getStatus:    dll.NewProc("CAN_GetStatus"),
 		getValue:     dll.NewProc("CAN_GetValue"),
 		setValue:     dll.NewProc("CAN_SetValue"),
 		getErrorText: dll.NewProc("CAN_GetErrorText"),
@@ -278,6 +286,7 @@ func loadPCANAPI() (*pcanAPI, error) {
 		api.readFD,
 		api.write,
 		api.writeFD,
+		api.getStatus,
 		api.getValue,
 		api.setValue,
 		api.getErrorText,
@@ -378,6 +387,9 @@ type Bus struct {
 	ioMu      sync.Mutex
 	lifecycle *driverstate.Lifecycle
 
+	// The receive goroutine is the only accessor after Open publishes the bus.
+	busOff bool
+
 	deviceSubscription *devicechange.Subscription
 	cleanupErr         error
 }
@@ -440,6 +452,9 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		if status&(pcanStatusTransmitFull|pcanStatusQueueTXFull) != 0 {
 			return fmt.Errorf("%w: PCAN status %#08x", gocan.ErrTransmitQueueFull, uint32(status))
 		}
+		if status&pcanStatusBusOff != 0 {
+			return fmt.Errorf("%w: PCAN status %#08x", gocan.ErrBusOff, uint32(status))
+		}
 		err := bus.runtimeStatusError("send PCAN frame", status)
 		if errors.Is(err, gocan.ErrHardwareDisconnected) {
 			bus.stopWithError(err)
@@ -477,7 +492,11 @@ func (bus *Bus) receiveLoop() {
 
 	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
 	for {
-		event, err := windows.WaitForMultipleObjects(events, false, windows.INFINITE)
+		timeout := uint32(windows.INFINITE)
+		if bus.busOff {
+			timeout = uint32(busOffPollInterval / time.Millisecond)
+		}
+		event, err := windows.WaitForMultipleObjects(events, false, timeout)
 		if err != nil {
 			bus.stopWithError(fmt.Errorf("wait for PCAN receive event: %w", err))
 			return
@@ -487,6 +506,11 @@ func (bus *Bus) receiveLoop() {
 			return
 		case windows.WAIT_OBJECT_0 + 1:
 			if err := bus.drainReceiveQueue(); err != nil {
+				bus.stopWithError(err)
+				return
+			}
+		case uint32(windows.WAIT_TIMEOUT):
+			if err := bus.pollRecovery(); err != nil {
 				bus.stopWithError(err)
 				return
 			}
@@ -593,45 +617,55 @@ func (bus *Bus) receiveOne() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation)
-	return !stopped, err
+	return true, bus.applyObservation(observation)
 }
 
-func (bus *Bus) applyObservation(observation pcanReceiveObservation) (bool, error) {
-	if observation.terminal != nil {
-		bus.stopWithEvents(observation.terminal, observation.events[:observation.eventCount])
-		return true, nil
+// pollRecovery reports the state the controller returns to after a bus-off.
+func (bus *Bus) pollRecovery() error {
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
+
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return nil
+	default:
 	}
-	for index := range observation.eventCount {
-		if err := bus.capture.RecordEvent(observation.events[index]); err != nil {
-			return false, err
+	result, _, _ := bus.api.getStatus.Call(uintptr(bus.channel))
+	status := pcanStatus(result)
+	if status&pcanStatusHandleMask == pcanStatusInvalidHW {
+		return bus.runtimeStatusError("read PCAN status", status)
+	}
+	if status&pcanStatusBusOff != 0 {
+		return nil
+	}
+	observation, err := decodePCANStatus(status&(pcanStatusBusLight|pcanStatusBusWarning|pcanStatusBusPassive), bus.id)
+	if err != nil {
+		return err
+	}
+	return bus.applyObservation(observation)
+}
+
+func (bus *Bus) applyObservation(observation pcanReceiveObservation) error {
+	for _, event := range observation.events[:observation.eventCount] {
+		if event.Kind == gocan.EventControllerState {
+			bus.busOff = event.ControllerState == gocan.ControllerBusOff
+		}
+		if err := bus.capture.RecordEvent(event); err != nil {
+			return err
 		}
 	}
 	if observation.hasFrame {
-		if err := bus.capture.RecordFrame(gocan.FrameEvent{
+		return bus.capture.RecordFrame(gocan.FrameEvent{
 			Bus:       bus.id,
 			Direction: gocan.DirectionReceive,
 			Frame:     observation.frame,
-		}); err != nil {
-			return false, err
-		}
+		})
 	}
-	return false, nil
+	return nil
 }
 
 func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
-}
-
-// stopWithEvents is called with ioMu held, after the native read.
-func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	for _, event := range events {
-		if err := bus.capture.RecordEvent(event); err != nil {
-			bus.stopWithError(err)
-			return
-		}
-	}
-	bus.stopWithError(terminal)
 }
 
 func (bus *Bus) finish() {

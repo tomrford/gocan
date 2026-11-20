@@ -120,7 +120,6 @@ type receiveObservation struct {
 	hasFrame         bool
 	events           [2]gocan.Event
 	eventCount       uint8
-	terminal         error
 	requestChipState bool
 }
 
@@ -137,11 +136,9 @@ func newErrorObservation(bus gocan.BusID) receiveObservation {
 	return observation
 }
 
-func newOverrunObservation(bus gocan.BusID, detail string) receiveObservation {
-	event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
+func newOverrunObservation(bus gocan.BusID) receiveObservation {
 	var observation receiveObservation
-	observation.addEvent(event)
-	observation.terminal = fmt.Errorf("%w: %s", gocan.ErrReceiveOverrun, detail)
+	observation.addEvent(gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun})
 	return observation
 }
 
@@ -163,9 +160,6 @@ func newChipStateObservation(
 	}
 	var observation receiveObservation
 	observation.addEvent(event)
-	if controllerState == gocan.ControllerBusOff {
-		observation.terminal = fmt.Errorf("%w: Vector controller entered bus-off", gocan.ErrBusOff)
-	}
 	return observation, nil
 }
 
@@ -205,13 +199,28 @@ func encodeEvent(frame gocan.Frame) xlEvent {
 	return event
 }
 
+// decodeClassicReceiveEvent reports an overrun flag as loss before the event
+// that carries it, then decodes that event.
 func decodeClassicReceiveEvent(
 	event *xlEvent,
 	bus gocan.BusID,
 ) (receiveObservation, error) {
-	if event.flags&xlEventFlagOverrun != 0 {
-		return newOverrunObservation(bus, "Vector event queue overrun"), nil
+	observation, err := decodeClassicEvent(event, bus)
+	overrun := event.flags&xlEventFlagOverrun != 0 ||
+		event.tag == xlEventReceiveMessage && event.message().flags&xlMessageFlagOverrun != 0
+	if err != nil || !overrun {
+		return observation, err
 	}
+	withLoss := newOverrunObservation(bus)
+	for _, event := range observation.events[:observation.eventCount] {
+		withLoss.addEvent(event)
+	}
+	withLoss.frame, withLoss.hasFrame = observation.frame, observation.hasFrame
+	withLoss.requestChipState = observation.requestChipState
+	return withLoss, nil
+}
+
+func decodeClassicEvent(event *xlEvent, bus gocan.BusID) (receiveObservation, error) {
 	switch event.tag {
 	case xlEventChipState:
 		return newChipStateObservation(bus, event.chipState())
@@ -221,9 +230,6 @@ func decodeClassicReceiveEvent(
 	}
 
 	message := event.message()
-	if message.flags&xlMessageFlagOverrun != 0 {
-		return newOverrunObservation(bus, "Vector message queue overrun"), nil
-	}
 	if message.flags&xlMessageFlagErrorFrame != 0 {
 		return newErrorObservation(bus), nil
 	}

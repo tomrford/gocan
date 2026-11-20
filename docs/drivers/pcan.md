@@ -15,3 +15,10 @@ including by another process. Account for this in application shutdown: stop
 producers and await required protocol replies before closing. A caller-chosen
 delay may help queued traffic drain, but cannot guarantee delivery or an empty
 adapter queue.
+
+Receive overruns (`PCAN_ERROR_OVERRUN` and `PCAN_ERROR_QOVERRUN`) produce
+receive-overrun events; the bus keeps receiving. gocan enables PCAN-Basic's
+bus-off auto-reset and reports bus-off and the state the controller returns to
+as controller-state events. While bus-off, `Send` returns `gocan.ErrBusOff`.
+PCAN-USB still rejected writes 100 ms after reporting bus-off (November 2026),
+so give `gocan.Send` a retry timeout that covers recovery.
