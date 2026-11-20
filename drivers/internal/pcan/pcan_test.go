@@ -1,7 +1,6 @@
 package pcan
 
 import (
-	"errors"
 	"math"
 	"testing"
 	"unsafe"
@@ -87,27 +86,64 @@ func TestPCANEventTranslation(t *testing.T) {
 	if state.Kind != gocan.EventControllerState ||
 		state.ControllerState != gocan.ControllerPassive ||
 		state.TXErrorCount != 128 || state.RXErrorCount != 0 ||
-		!state.ErrorCountsKnown || errorFrame.terminal != nil {
+		!state.ErrorCountsKnown {
 		t.Fatalf("error-frame state = %+v", errorFrame)
 	}
 
-	busOff, err := decodePCANReceive(
-		0,
-		pcanMessageStatus,
-		4,
-		[]byte{0x00, 0x00, 0x00, 0x10},
-		false,
-		pcanStatusBusOff,
-		1,
-	)
-	if err != nil || !errors.Is(busOff.terminal, gocan.ErrBusOff) ||
-		busOff.events[0].ControllerState != gocan.ControllerBusOff {
-		t.Fatalf("bus-off status = %+v, %v", busOff, err)
+	// Bench PCAN-USB status payloads at bus-off: 0x14 and 0x18 (November 2026).
+	for _, payload := range []byte{0x10, 0x14, 0x18} {
+		busOff, err := decodePCANReceive(
+			1,
+			pcanMessageStatus,
+			4,
+			[]byte{0x00, 0x00, 0x00, payload},
+			false,
+			pcanStatus(payload),
+			1,
+		)
+		if err != nil || busOff.eventCount != 1 ||
+			busOff.events[0].ControllerState != gocan.ControllerBusOff {
+			t.Fatalf("bus-off status %#x = %+v, %v", payload, busOff, err)
+		}
 	}
 
-	overrun, err := decodePCANStatus(pcanStatusQueueOverrun, 1)
-	if err != nil || !errors.Is(overrun.terminal, gocan.ErrReceiveOverrun) ||
-		overrun.events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("overrun status = %+v, %v", overrun, err)
+	for _, status := range []pcanStatus{pcanStatusOverrun, pcanStatusQueueOverrun} {
+		overrun, err := decodePCANStatus(status, 1)
+		if err != nil || overrun.eventCount != 1 ||
+			overrun.events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("overrun status %#x = %+v, %v", status, overrun, err)
+		}
+	}
+
+	combined, err := decodePCANStatus(pcanStatusOverrun|pcanStatusBusOff, 1)
+	if err != nil || combined.eventCount != 2 ||
+		combined.events[0].Kind != gocan.EventReceiveOverrun ||
+		combined.events[1].ControllerState != gocan.ControllerBusOff {
+		t.Fatalf("overrun with bus-off = %+v, %v", combined, err)
+	}
+
+	for _, status := range []pcanStatus{
+		pcanStatusQueueEmpty | pcanStatusQueueOverrun,
+		pcanStatusOverrun | pcanStatusTransmitFull,
+		pcanStatusQueueOverrun | pcanStatusQueueTXFull,
+	} {
+		overrun, err := decodePCANStatus(status, 1)
+		if err != nil || overrun.eventCount != 1 ||
+			overrun.events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("combined overrun status %#x = %+v, %v", status, overrun, err)
+		}
+	}
+
+	emptyBusOff, err := decodePCANStatus(pcanStatusQueueEmpty|pcanStatusBusOff, 1)
+	if err != nil || emptyBusOff.eventCount != 1 ||
+		emptyBusOff.events[0].ControllerState != gocan.ControllerBusOff {
+		t.Fatalf("queue-empty with bus-off = %+v, %v", emptyBusOff, err)
+	}
+
+	if _, err := decodePCANStatus(pcanStatusInvalidHW, 1); err == nil {
+		t.Fatal("decodePCANStatus accepted PCAN_ERROR_ILLHW")
+	}
+	if _, err := decodePCANStatus(0x04000000, 1); err == nil {
+		t.Fatal("decodePCANStatus accepted PCAN_ERROR_INITIALIZE")
 	}
 }

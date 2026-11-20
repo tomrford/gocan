@@ -807,3 +807,93 @@ func TestActiveBAMReportsLateNativeAcceptance(t *testing.T) {
 		})
 	}
 }
+
+func TestActiveTransientBusOffRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := newActiveBus()
+		c := openActive(t, b)
+
+		// 1. Address-claim request arriving during bus-off keeps the client
+		// alive and retries the claim once the controller recovers.
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		b.inject(t, 0x18eaff22, 0x00, 0xee, 0x00)
+		time.Sleep(30 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case <-c.Done():
+			t.Fatalf("client stopped during bus-off address-claim reply: %v", c.Err())
+		default:
+		}
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+
+		// 2. Directed TP DT packet rejected with ErrBusOff retries within the
+		// consecutive-packet deadline and completes after recovery.
+		r := sendActive(c, context.Background(), 0x22, activePayload[:14])
+		wire(t, b, 0x18ec2280, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
+		b.inject(t, 0x18ec8022, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		time.Sleep(35 * time.Millisecond)
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+		wire(t, b, 0x1ceb2280, 2, 8, 9, 10, 11, 12, 13, 14)
+		b.inject(t, 0x18ec8022, 0x13, 14, 0, 2, 0xff, 0xca, 0xfe, 0)
+		resultIs(t, r, nil)
+
+		// 3. A best-effort TP abort that fails with ErrBusOff on send
+		// cancellation does not stop the client.
+		sendCtx, cancelSend := context.WithCancel(context.Background())
+		r = sendActive(c, sendCtx, 0x22, activePayload[:14])
+		wire(t, b, 0x18ec2280, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		cancelSend()
+		resultIs(t, r, context.Canceled)
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+		if err := c.Send(context.Background(), 6, 0xef00, 0x22, []byte{9}); err != nil {
+			t.Fatalf("Send after bus-off abort: %v", err)
+		}
+		wire(t, b, 0x18ef2280, 9)
+
+		// 4. A delayed address-claim retry blocking past a directed DT deadline
+		// must expire the transfer rather than send DT after its 750 ms budget.
+		r = sendActive(c, context.Background(), 0x22, activePayload[:14])
+		wire(t, b, 0x18ec2280, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
+		b.mu.Lock()
+		b.fullID = 0x1ceb2280
+		b.fullAfter = 1
+		b.fullUntil = time.Now().Add(725 * time.Millisecond)
+		b.mu.Unlock()
+		b.inject(t, 0x18ec8022, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
+		// Keep DT #2 retrying past 720 ms, while a pending address-claim retry
+		// fires at ~715 ms and blocks past the 750 ms consecutive-packet deadline.
+		time.Sleep(695 * time.Millisecond)
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		b.inject(t, 0x18eaff22, 0x00, 0xee, 0x00)
+		time.Sleep(5 * time.Millisecond)
+		synctest.Wait()
+		b.mu.Lock()
+		b.failure = nil
+		b.delayID = 0x18eeff80
+		b.delay = 80 * time.Millisecond
+		b.mu.Unlock()
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		wire(t, b, 0x1cec2280, 0xff, 3, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
+		resultIs(t, r, j1939.ErrTimeout)
+		quiet(t, b)
+	})
+}

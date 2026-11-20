@@ -157,6 +157,7 @@ type Bus struct {
 	rxSize        int
 	rxControlSize int
 	rxFlags       int
+	rxDropped     uint32
 
 	lifecycle *driverstate.Lifecycle
 }
@@ -281,23 +282,20 @@ func (bus *Bus) receiveLoop() {
 
 // recordReceive is called with ioMu held immediately after a native read.
 func (bus *Bus) recordReceive() error {
-	packet, err := bus.receivedPacket()
+	lost, err := bus.receiveLost()
 	if err != nil {
-		terminal := fmt.Errorf("receive SocketCAN frame: %w", err)
-		if errors.Is(err, gocan.ErrReceiveOverrun) {
-			event := gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}
-			bus.stopWithEvents(terminal, []gocan.Event{event})
-		}
-		return terminal
+		return err
 	}
+	if lost {
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
+			return err
+		}
+	}
+	packet := bus.rxPacket[:bus.rxSize]
 	if len(packet) >= 4 && binary.NativeEndian.Uint32(packet[:4])&unix.CAN_ERR_FLAG != 0 {
 		errorPacket, err := decodeErrorPacket(packet, bus.id)
 		if err != nil {
 			return err
-		}
-		if errorPacket.terminal != nil {
-			bus.stopWithEvents(errorPacket.terminal, errorPacket.events[:errorPacket.eventCount])
-			return nil
 		}
 		for index := range errorPacket.eventCount {
 			if err := bus.capture.RecordEvent(errorPacket.events[index]); err != nil {
@@ -318,20 +316,21 @@ func (bus *Bus) recordReceive() error {
 	})
 }
 
-func (bus *Bus) receivedPacket() ([]byte, error) {
+// receiveLost reports whether the socket dropped frames before this packet.
+// SO_RXQ_OVFL carries the socket's cumulative drop count.
+func (bus *Bus) receiveLost() (bool, error) {
 	if bus.rxFlags&unix.MSG_CTRUNC != 0 {
-		return nil, fmt.Errorf("%w: SocketCAN receive metadata was truncated", gocan.ErrReceiveOverrun)
+		return true, nil
 	}
-	if bus.rxControlSize != 0 {
-		dropped, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
-		if err != nil {
-			return nil, err
-		}
-		if dropped != 0 {
-			return nil, fmt.Errorf("%w: SocketCAN socket dropped %d frames", gocan.ErrReceiveOverrun, dropped)
-		}
+	if bus.rxControlSize == 0 {
+		return false, nil
 	}
-	return bus.rxPacket[:bus.rxSize], nil
+	dropped, ok, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
+	if err != nil || !ok || dropped == bus.rxDropped {
+		return false, err
+	}
+	bus.rxDropped = dropped
+	return true, nil
 }
 
 func (bus *Bus) receiveOnce(fd uintptr) bool {
@@ -369,21 +368,21 @@ func (bus *Bus) receiveOnce(fd uintptr) bool {
 	return true
 }
 
-func socketReceiveDropCount(control []byte) (uint32, error) {
+func socketReceiveDropCount(control []byte) (uint32, bool, error) {
 	messages, err := unix.ParseSocketControlMessage(control)
 	if err != nil {
-		return 0, fmt.Errorf("parse SocketCAN receive metadata: %w", err)
+		return 0, false, fmt.Errorf("parse SocketCAN receive metadata: %w", err)
 	}
 	for _, message := range messages {
 		if message.Header.Level != unix.SOL_SOCKET || message.Header.Type != unix.SO_RXQ_OVFL {
 			continue
 		}
 		if len(message.Data) < 4 {
-			return 0, fmt.Errorf("SocketCAN receive-overrun metadata has length %d", len(message.Data))
+			return 0, false, fmt.Errorf("SocketCAN receive-overrun metadata has length %d", len(message.Data))
 		}
-		return binary.NativeEndian.Uint32(message.Data[:4]), nil
+		return binary.NativeEndian.Uint32(message.Data[:4]), true, nil
 	}
-	return 0, nil
+	return 0, false, nil
 }
 
 // sendOnce writes without blocking, so a full transmit queue surfaces
@@ -400,17 +399,6 @@ func (bus *Bus) sendOnce(fd uintptr) {
 
 func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
-}
-
-// stopWithEvents is called with ioMu held, after the native read.
-func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	for _, event := range events {
-		if err := bus.capture.RecordEvent(event); err != nil {
-			bus.stopWithError(err)
-			return
-		}
-	}
-	bus.stopWithError(terminal)
 }
 
 func (bus *Bus) operationError() error {
@@ -514,12 +502,11 @@ func decodeFrame(packet []byte) (gocan.Frame, error) {
 }
 
 // decodedErrorPacket keeps the uncommon error path allocation-free. Combined
-// Linux class bits can produce an error observation, a state observation, and
-// a terminal receive-overrun observation from one packet.
+// Linux class bits can produce an error, a state, and a receive-overrun
+// observation from one packet.
 type decodedErrorPacket struct {
 	events     [3]gocan.Event
 	eventCount uint8
-	terminal   error
 }
 
 func decodeErrorPacket(packet []byte, bus gocan.BusID) (decodedErrorPacket, error) {
@@ -570,9 +557,6 @@ func decodeErrorPacket(packet []byte, bus gocan.BusID) (decodedErrorPacket, erro
 		event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 		result.events[result.eventCount] = event
 		result.eventCount++
-		result.terminal = fmt.Errorf("%w: SocketCAN controller RX buffer overflow", gocan.ErrReceiveOverrun)
-	} else if classes&unix.CAN_ERR_BUSOFF != 0 {
-		result.terminal = fmt.Errorf("%w: SocketCAN controller entered bus-off", gocan.ErrBusOff)
 	}
 	return result, nil
 }

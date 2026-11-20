@@ -5,6 +5,7 @@ package socketcan
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/tomrford/gocan"
@@ -50,6 +51,13 @@ func TestVCanConformance(t *testing.T) {
 		InduceOverrun: func(t *testing.T, healthy, target gocan.Bus) {
 			induceVCanOverrun(t, healthy.(*Bus), target.(*Bus), iface)
 		},
+		// Synthetic error packets reach both endpoints; vcan has no controller
+		// to reject frames during bus-off.
+		InduceBusOff: func(t *testing.T, _ gocan.Bus) func() {
+			sender := openErrorSender(t, iface)
+			sendErrorPacket(t, sender, unix.CAN_ERR_BUSOFF, [8]byte{})
+			return func() { sendErrorPacket(t, sender, unix.CAN_ERR_RESTARTED, [8]byte{}) }
+		},
 	})
 }
 
@@ -86,14 +94,15 @@ func induceVCanOverrun(t *testing.T, healthy, target *Bus, iface string) {
 	var buffer [fdMTU]byte
 	packet := encodeFrame(frame, &buffer)
 
-	for range 100_000 {
-		select {
-		case <-target.Done():
+	for sent := range 100_000 {
+		if sent%64 == 0 && slices.ContainsFunc(target.capture.BusEvents(target.id), func(event gocan.Event) bool {
+			return event.Kind == gocan.EventReceiveOverrun
+		}) {
 			return
-		default:
 		}
 		if _, err := unix.Write(sender, packet); err != nil {
 			t.Fatalf("send saturation frame: %v", err)
 		}
 	}
+	t.Fatal("target reported no overrun")
 }

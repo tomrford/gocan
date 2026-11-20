@@ -27,7 +27,7 @@ type FunctionalConfig struct {
 	// PaddingByte fills both requested padding and the padding required to reach
 	// a legal CAN FD data length.
 	PaddingByte byte
-	// TransmitRetryTimeout bounds queue-full retries. Zero disables retries;
+	// TransmitRetryTimeout bounds queue-full and bus-off retries. Zero disables retries;
 	// caller deadlines may shorten it. Acceptance does not confirm delivery.
 	TransmitRetryTimeout time.Duration
 }

@@ -5,7 +5,6 @@ package nixnet
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 	"unsafe"
@@ -16,14 +15,15 @@ import (
 )
 
 type Bus struct {
-	config     Config
-	capture    *gocan.Capture
-	api        *api
-	rx, tx     uint32
-	ioMu       sync.Mutex
-	lifecycle  *driverstate.Lifecycle
-	cleanupErr error
-	lastState  gocan.Event
+	config       Config
+	capture      *gocan.Capture
+	api          *api
+	rx, tx       uint32
+	ioMu         sync.Mutex
+	lifecycle    *driverstate.Lifecycle
+	cleanupErr   error
+	lastState    gocan.Event
+	overrunSince time.Time
 }
 
 var _ gocan.Bus = (*Bus)(nil)
@@ -85,11 +85,8 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (_ *Bus, e
 			return nil, err
 		}
 	}
-	for _, ref := range []uint32{bus.rx, bus.tx} {
-		result, _, _ := a.start.Call(uintptr(ref), 0)
-		if err = a.check("start NI-XNET stream", result); err != nil {
-			return nil, err
-		}
+	if err = bus.start(); err != nil {
+		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
 		return nil, err
@@ -195,10 +192,26 @@ func (bus *Bus) receiveBatch() (bool, error) {
 		bus.ioMu.Lock()
 		defer bus.ioMu.Unlock()
 	}
-	if err := bus.api.check("read NI-XNET frame", result); err != nil {
-		if errors.Is(err, gocan.ErrReceiveOverrun) {
-			_ = bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun})
+	err := bus.api.check("read NI-XNET frame", result)
+	if errors.Is(err, errReceiveOverflow) {
+		// On a single input stream, nxReadFrame clears overflow and the next
+		// read resumes immediately. On a shared interface, overflow persists
+		// until all input streams stop or flush; fail after a bounded window
+		// instead of leaving the bus open while silently unable to receive.
+		if bus.overrunSince.IsZero() {
+			bus.overrunSince = time.Now()
+			if recErr := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun}); recErr != nil {
+				return false, recErr
+			}
+			return true, nil
 		}
+		if time.Since(bus.overrunSince) >= time.Second {
+			return false, err
+		}
+		return false, nil
+	}
+	bus.overrunSince = time.Time{}
+	if err != nil {
 		return false, err
 	}
 	if returned > uint32(size) {
@@ -262,7 +275,24 @@ func (bus *Bus) checkState() error {
 	if state&15 == 3 {
 		return nil
 	}
-	return bus.recordState(byte(state&15), byte(state>>16), byte(state>>24))
+	if err := bus.recordState(byte(state&15), byte(state>>16), byte(state>>24)); err != nil {
+		return err
+	}
+	// NI-XNET stays bus-off until started again. The state poll paces restarts.
+	if state&15 == 2 {
+		return bus.start()
+	}
+	return nil
+}
+
+func (bus *Bus) start() error {
+	for _, ref := range []uint32{bus.rx, bus.tx} {
+		result, _, _ := bus.api.start.Call(uintptr(ref), 0)
+		if err := bus.api.check("start NI-XNET stream", result); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (bus *Bus) recordState(state, tx, rx byte) error {
 	event, err := controllerEvent(bus.ID(), state, tx, rx)
@@ -274,9 +304,6 @@ func (bus *Bus) recordState(state, tx, rx byte) error {
 			return err
 		}
 		bus.lastState = event
-	}
-	if state == 2 {
-		return fmt.Errorf("%w: NI-XNET controller", gocan.ErrBusOff)
 	}
 	return nil
 }

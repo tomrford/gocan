@@ -414,6 +414,7 @@ type Bus struct {
 	fd       bool
 
 	txMu      sync.Mutex
+	channelMu sync.Mutex // serializes native transmit calls with bus-off reset/start
 	txQueue   chan gocan.Frame
 	txDone    chan struct{}
 	lifecycle *driverstate.Lifecycle
@@ -587,6 +588,8 @@ func (bus *Bus) transmit(batch []gocan.Frame) (bool, error) {
 }
 
 func (bus *Bus) transmitRun(frames []gocan.Frame, fd bool) int {
+	bus.channelMu.Lock()
+	defer bus.channelMu.Unlock()
 	var sent uintptr
 	if fd {
 		for index, frame := range frames {
@@ -700,14 +703,41 @@ func (bus *Bus) checkState() error {
 		}
 		status = nil
 	}
-	event, terminal := controllerEvent(bus.ID(), status, errorInfo.code, !bus.fdDevice)
-	if event.Kind != 0 && (event != bus.lastState || terminal != nil) {
+	event, lost := controllerEvent(bus.ID(), status, errorInfo.code, !bus.fdDevice)
+	if lost {
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun}); err != nil {
+			return err
+		}
+	}
+	if event.Kind != 0 && event != bus.lastState {
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
 		}
 		bus.lastState = event
 	}
-	return terminal
+	if event.ControllerState == gocan.ControllerBusOff {
+		return bus.restart()
+	}
+	return nil
+}
+
+// restart returns a bus-off controller to the bus as ZLG documents: reset the
+// channel, then start it without initializing it again. channelMu keeps
+// native transmits from overlapping the reset/start window; the next state
+// poll reports the observed post-restart controller state.
+func (bus *Bus) restart() error {
+	bus.channelMu.Lock()
+	defer bus.channelMu.Unlock()
+	if bus.stopping() {
+		return nil
+	}
+	if result, _, _ := bus.api.resetCAN.Call(bus.channel); result != statusOK {
+		return fmt.Errorf("reset ZLG channel after bus-off: status %d", result)
+	}
+	if result, _, _ := bus.api.startCAN.Call(bus.channel); result != statusOK {
+		return fmt.Errorf("start ZLG channel after bus-off: status %d", result)
+	}
+	return nil
 }
 
 // finish waits for the transmit goroutine, whose native call cannot be

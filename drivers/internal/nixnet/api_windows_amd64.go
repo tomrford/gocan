@@ -35,6 +35,10 @@ const (
 	stateCAN           = 0x00130010
 )
 
+// errReceiveOverflow marks NI's input queue overflow statuses, which the bus
+// reports as a receive-overrun event.
+var errReceiveOverflow = errors.New("NI-XNET input queue overflow")
+
 type api struct {
 	systemOpen, systemClose, get, getSize, set, create, start, clear, read, write, state, statusText *windows.LazyProc
 }
@@ -76,7 +80,7 @@ func (a *api) check(operation string, result uintptr) error {
 	case 0xbff63008:
 		cause = gocan.ErrTransmitQueueFull
 	case 0xbff6300b, 0xbff630b6:
-		cause = gocan.ErrReceiveOverrun
+		cause = errReceiveOverflow
 	case 0xbff630b2, 0xbff630b9, 0xbff63029:
 		cause = gocan.ErrHardwareDisconnected
 	}
