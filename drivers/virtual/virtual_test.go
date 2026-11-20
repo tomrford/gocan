@@ -185,6 +185,15 @@ func TestBusOffRecoveryWait(t *testing.T) {
 			if err := sender.SetControllerState(gocan.ControllerBusOff); err != nil {
 				t.Fatal(err)
 			}
+			// Traffic sent by a peer while sender is bus-off must be dropped,
+			// not delivered after recovery.
+			dropped, err := gocan.NewFrame(0x51f, []byte{9}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := receiver.Send(context.Background(), dropped); err != nil {
+				t.Fatalf("peer Send during bus-off: %v", err)
+			}
 			time.AfterFunc(busOff, func() { _ = sender.SetControllerState(gocan.ControllerActive) })
 			counted := &countingBus{Bus: sender}
 			frame, err := gocan.NewFrame(0x51e, []byte{1}, 0)
@@ -201,6 +210,9 @@ func TestBusOffRecoveryWait(t *testing.T) {
 				if err != nil || elapsed != wantAccept || sent != 1 {
 					t.Fatalf("Send = %v after %v with %d transmissions; want acceptance at %v", err, elapsed, sent, wantAccept)
 				}
+				if got := len(capture.Series(gocan.FrameKey{Bus: sender.ID(), ID: dropped.ID, Direction: gocan.DirectionReceive})); got != 0 {
+					t.Fatalf("sender received %d frames sent during bus-off, want 0", got)
+				}
 			} else if !errors.Is(err, gocan.ErrBusOff) || elapsed != test.budget || sent != 0 {
 				t.Fatalf("Send = %v after %v with %d transmissions; want ErrBusOff at %v", err, elapsed, sent, test.budget)
 			}
@@ -210,6 +222,73 @@ func TestBusOffRecoveryWait(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBusOffSerializesTransmissionsWithStateEvents(t *testing.T) {
+	capture := gocan.NewCapture()
+	var network Network
+	bus, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "serial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+
+	frame, err := gocan.NewFrame(0x520, []byte{1}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if err := bus.Send(context.Background(), frame); err != nil && !errors.Is(err, gocan.ErrBusOff) {
+				done <- err
+				return
+			}
+		}
+	}()
+	for range 200 {
+		if err := bus.SetControllerState(gocan.ControllerBusOff); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.SetControllerState(gocan.ControllerActive); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatalf("concurrent Send: %v", err)
+	}
+
+	checker := &busOffOrderChecker{t: t}
+	if _, err := capture.WriteRecordsSince(gocan.Cursor{}, checker); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type busOffOrderChecker struct {
+	t      *testing.T
+	busOff bool
+}
+
+func (c *busOffOrderChecker) WriteFrame(frame gocan.FrameEvent) error {
+	if c.busOff && frame.Direction == gocan.DirectionTransmit {
+		c.t.Fatalf("transmission recorded while bus-off: %+v", frame)
+	}
+	return nil
+}
+
+func (c *busOffOrderChecker) WriteEvent(event gocan.Event) error {
+	if event.Kind == gocan.EventControllerState {
+		c.busOff = event.ControllerState == gocan.ControllerBusOff
+	}
+	return nil
 }
 
 type countingBus struct {

@@ -343,15 +343,15 @@ func (c *Client) claim(address Address) error {
 }
 
 func (c *Client) claimOrRetry() error {
+	if !c.claimRetryAt.IsZero() {
+		return nil
+	}
 	err := c.claim(c.config.Address)
 	if err == nil {
-		c.claimRetryAt = time.Time{}
 		return nil
 	}
 	if transientSendError(err) {
-		if c.claimRetryAt.IsZero() {
-			c.claimRetryAt = time.Now().Add(transientRetryDelay(err))
-		}
+		c.claimRetryAt = time.Now().Add(transientRetryDelay(err))
 		return nil
 	}
 	return err
@@ -375,9 +375,11 @@ func (c *Client) scheduleCannotClaim() {
 }
 
 func (c *Client) tick(now time.Time) error {
+	sent := false
 	if !c.claimRetryAt.IsZero() && !now.Before(c.claimRetryAt) {
 		c.claimRetryAt = time.Time{}
 		if c.claimed || !c.claimAt.IsZero() {
+			sent = true
 			if err := c.claimOrRetry(); err != nil {
 				return err
 			}
@@ -385,20 +387,22 @@ func (c *Client) tick(now time.Time) error {
 	}
 	if !c.cannotAt.IsZero() && !now.Before(c.cannotAt) {
 		c.cannotAt = time.Time{}
+		sent = true
 		if err := c.claim(NullAddress); err != nil {
-			if transientSendError(err) {
-				c.cannotAt = time.Now().Add(transientRetryDelay(err))
-				select {
-				case c.ready <- ErrAddressLost:
-				default:
-				}
-				return c.tickTransport(now)
+			if !transientSendError(err) {
+				return err
 			}
-			return err
+			c.cannotAt = time.Now().Add(transientRetryDelay(err))
 		}
 		select {
 		case c.ready <- ErrAddressLost:
 		default:
+		}
+	}
+	if sent {
+		now = time.Now()
+		if err := c.expireTransport(now); err != nil {
+			return err
 		}
 	}
 	return c.tickTransport(now)

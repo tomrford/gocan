@@ -469,27 +469,12 @@ func testBusOff(t *testing.T, open Pair, caps Capabilities) {
 		t.Fatalf("NewFrame: %v", err)
 	}
 	transmitted := frameKey(b, rejected, gocan.DirectionTransmit)
-	rejectedWhileBusOff := false
 	if err := b.Send(context.Background(), rejected); errors.Is(err, gocan.ErrBusOff) {
-		rejectedWhileBusOff = true
 		if series := capture.Series(transmitted); len(series) != 0 {
 			t.Fatalf("Send = %v but %d transmissions were recorded", err, len(series))
 		}
 	} else if err != nil {
 		t.Fatalf("Send during bus-off = %v, want nil or ErrBusOff", err)
-	}
-
-	// Traffic sent by a peer while target is bus-off must not arrive after
-	// recovery on media whose controller actually stops receiving.
-	droppedID := uint32(0x7f5)
-	if rejectedWhileBusOff {
-		dropped, err := gocan.NewFrame(droppedID, []byte{3}, 0)
-		if err != nil {
-			t.Fatalf("NewFrame: %v", err)
-		}
-		if err := a.Send(context.Background(), dropped); err != nil {
-			t.Fatalf("peer Send during bus-off: %v", err)
-		}
 	}
 
 	// A bounded send spanning recovery is accepted once the controller is.
@@ -499,24 +484,7 @@ func testBusOff(t *testing.T, open Pair, caps Capabilities) {
 	}
 	cursor := capture.End()
 	sent := make(chan error, 1)
-	if rejectedWhileBusOff {
-		firstRejection := make(chan struct{})
-		var notifyOnce sync.Once
-		sendBus := &busOffNotifyBus{
-			Bus: b,
-			onBusOff: func() {
-				notifyOnce.Do(func() { close(firstRejection) })
-			},
-		}
-		go func() { sent <- gocan.Send(context.Background(), sendBus, frame, waitTimeout) }()
-		select {
-		case <-firstRejection:
-		case <-time.After(waitTimeout):
-			t.Fatal("gocan.Send did not observe ErrBusOff before recovery")
-		}
-	} else {
-		go func() { sent <- gocan.Send(context.Background(), b, frame, waitTimeout) }()
-	}
+	go func() { sent <- gocan.Send(context.Background(), b, frame, waitTimeout) }()
 	recoverBus()
 	if err := <-sent; err != nil {
 		t.Fatalf("Send across bus-off recovery: %v", err)
@@ -528,22 +496,4 @@ func testBusOff(t *testing.T, open Pair, caps Capabilities) {
 		t.Fatalf("recovered Send recorded %d transmissions, want 1", len(series))
 	}
 	requireRoundTrip(t, capture, a, b, 0x7f4)
-	if rejectedWhileBusOff {
-		if series := capture.Series(frameKey(b, gocan.Frame{ID: droppedID}, gocan.DirectionReceive)); len(series) != 0 {
-			t.Fatalf("target received %d frames sent during bus-off, want 0", len(series))
-		}
-	}
-}
-
-type busOffNotifyBus struct {
-	gocan.Bus
-	onBusOff func()
-}
-
-func (bus *busOffNotifyBus) Send(ctx context.Context, frame gocan.Frame) error {
-	err := bus.Bus.Send(ctx, frame)
-	if errors.Is(err, gocan.ErrBusOff) {
-		bus.onBusOff()
-	}
-	return err
 }

@@ -216,15 +216,16 @@ func (bus *Bus) run() {
 	for {
 		select {
 		case request := <-bus.sends:
-			if err := bus.sendable(); err != nil {
-				request.result <- err
-				continue
+			bus.stateMu.Lock()
+			err := bus.sendableLocked()
+			if err == nil {
+				err = bus.capture.RecordFrame(gocan.FrameEvent{
+					Bus:       bus.id,
+					Direction: gocan.DirectionTransmit,
+					Frame:     request.frame,
+				})
 			}
-			err := bus.capture.RecordFrame(gocan.FrameEvent{
-				Bus:       bus.id,
-				Direction: gocan.DirectionTransmit,
-				Frame:     request.frame,
-			})
+			bus.stateMu.Unlock()
 			if err == nil {
 				bus.network.broadcast(bus, request.frame)
 			}
@@ -262,6 +263,10 @@ func (bus *Bus) run() {
 func (bus *Bus) sendable() error {
 	bus.stateMu.Lock()
 	defer bus.stateMu.Unlock()
+	return bus.sendableLocked()
+}
+
+func (bus *Bus) sendableLocked() error {
 	if bus.closing {
 		return gocan.ErrBusClosed
 	}

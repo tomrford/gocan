@@ -23,7 +23,6 @@ type Bus struct {
 	lifecycle    *driverstate.Lifecycle
 	cleanupErr   error
 	lastState    gocan.Event
-	overrun      bool
 	overrunSince time.Time
 }
 
@@ -199,8 +198,7 @@ func (bus *Bus) receiveBatch() (bool, error) {
 		// read resumes immediately. On a shared interface, overflow persists
 		// until all input streams stop or flush; fail after a bounded window
 		// instead of leaving the bus open while silently unable to receive.
-		if !bus.overrun {
-			bus.overrun = true
+		if bus.overrunSince.IsZero() {
 			bus.overrunSince = time.Now()
 			if recErr := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun}); recErr != nil {
 				return false, recErr
@@ -212,7 +210,7 @@ func (bus *Bus) receiveBatch() (bool, error) {
 		}
 		return false, nil
 	}
-	bus.overrun = false
+	bus.overrunSince = time.Time{}
 	if err != nil {
 		return false, err
 	}

@@ -709,11 +709,6 @@ func (bus *Bus) checkState() error {
 			return err
 		}
 	}
-	// USBCANFD reports no channel status; once a post-restart poll observes no
-	// bus-off error, report recovery to error-active.
-	if event.Kind == 0 && bus.lastState.ControllerState == gocan.ControllerBusOff {
-		event = gocan.Event{Bus: bus.ID(), Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive}
-	}
 	if event.Kind != 0 && event != bus.lastState {
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
