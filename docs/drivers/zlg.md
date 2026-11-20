@@ -40,8 +40,9 @@ transmission fails or the bus stops with an error. Native transmit failures
 and adapter closing can each take about one second.
 
 Controller and buffer overflows produce receive-overrun events; the bus keeps
-receiving. When the 100 ms state poll reads bus-off, gocan resets and restarts
-the channel, as ZLG documents, and reports it error active. `Send` only queues
+receiving. When the 100 ms state poll reads bus-off, gocan waits for any
+in-flight native transmit call, resets and restarts the channel as ZLG
+documents, and reports the state observed on the next poll. `Send` only queues
 frames, so it never waits for recovery; frames the adapter does not confirm
 meanwhile produce error-frame events.
 

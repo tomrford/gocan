@@ -325,8 +325,8 @@ func (bus *Bus) receiveLost() (bool, error) {
 	if bus.rxControlSize == 0 {
 		return false, nil
 	}
-	dropped, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
-	if err != nil || dropped == bus.rxDropped {
+	dropped, ok, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
+	if err != nil || !ok || dropped == bus.rxDropped {
 		return false, err
 	}
 	bus.rxDropped = dropped
@@ -368,21 +368,21 @@ func (bus *Bus) receiveOnce(fd uintptr) bool {
 	return true
 }
 
-func socketReceiveDropCount(control []byte) (uint32, error) {
+func socketReceiveDropCount(control []byte) (uint32, bool, error) {
 	messages, err := unix.ParseSocketControlMessage(control)
 	if err != nil {
-		return 0, fmt.Errorf("parse SocketCAN receive metadata: %w", err)
+		return 0, false, fmt.Errorf("parse SocketCAN receive metadata: %w", err)
 	}
 	for _, message := range messages {
 		if message.Header.Level != unix.SOL_SOCKET || message.Header.Type != unix.SO_RXQ_OVFL {
 			continue
 		}
 		if len(message.Data) < 4 {
-			return 0, fmt.Errorf("SocketCAN receive-overrun metadata has length %d", len(message.Data))
+			return 0, false, fmt.Errorf("SocketCAN receive-overrun metadata has length %d", len(message.Data))
 		}
-		return binary.NativeEndian.Uint32(message.Data[:4]), nil
+		return binary.NativeEndian.Uint32(message.Data[:4]), true, nil
 	}
-	return 0, nil
+	return 0, false, nil
 }
 
 // sendOnce writes without blocking, so a full transmit queue surfaces

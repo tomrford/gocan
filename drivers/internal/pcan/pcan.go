@@ -77,6 +77,11 @@ const (
 	pcanStatusInvalidData  pcanStatus = 0x20000
 	pcanStatusBusPassive   pcanStatus = 0x40000
 	pcanStatusCaution      pcanStatus = 0x2000000
+
+	pcanStatusOverrunMask  = pcanStatusOverrun | pcanStatusQueueOverrun
+	pcanStatusBusStateMask = pcanStatusBusLight | pcanStatusBusWarning | pcanStatusBusPassive | pcanStatusBusOff
+	pcanStatusTXFullMask   = pcanStatusTransmitFull | pcanStatusQueueTXFull
+	pcanStatusKnownMask    = pcanStatusBusStateMask | pcanStatusOverrunMask | pcanStatusTXFullMask | pcanStatusQueueEmpty
 )
 
 const (
@@ -272,27 +277,27 @@ func decodePCANStatus(
 	status pcanStatus,
 	bus gocan.BusID,
 ) (pcanReceiveObservation, error) {
+	if status&^pcanStatusKnownMask != 0 {
+		return pcanReceiveObservation{}, fmt.Errorf("unsupported PCAN receive status %#08x", uint32(status))
+	}
 	var observation pcanReceiveObservation
-	if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
+	if status&pcanStatusOverrunMask != 0 {
 		observation.addEvent(gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun})
-		status &^= pcanStatusOverrun | pcanStatusQueueOverrun
-		if status == pcanStatusOK {
-			return observation, nil
-		}
 	}
 
+	busState := status & pcanStatusBusStateMask
 	var state gocan.ControllerState
 	switch {
-	case status&pcanStatusBusOff != 0:
+	case busState&pcanStatusBusOff != 0:
 		state = gocan.ControllerBusOff
-	case status&pcanStatusBusPassive != 0:
+	case busState&pcanStatusBusPassive != 0:
 		state = gocan.ControllerPassive
-	case status&(pcanStatusBusLight|pcanStatusBusWarning) != 0:
+	case busState&(pcanStatusBusLight|pcanStatusBusWarning) != 0:
 		state = gocan.ControllerWarning
 	case status == pcanStatusOK:
 		state = gocan.ControllerActive
 	default:
-		return pcanReceiveObservation{}, fmt.Errorf("unsupported PCAN receive status %#08x", uint32(status))
+		return observation, nil
 	}
 	event := gocan.Event{
 		Bus:             bus,

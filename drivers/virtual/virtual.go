@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/tomrford/gocan"
 )
@@ -98,7 +99,7 @@ type Bus struct {
 	closeOnce sync.Once
 	stateMu   sync.Mutex
 	closing   bool
-	busOff    bool
+	busOff    atomic.Bool
 	errMu     sync.RWMutex
 	err       error
 }
@@ -173,7 +174,7 @@ func (bus *Bus) SetControllerState(state gocan.ControllerState) error {
 	}
 	err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventControllerState, ControllerState: state})
 	if err == nil {
-		bus.busOff = state == gocan.ControllerBusOff
+		bus.busOff.Store(state == gocan.ControllerBusOff)
 	}
 	return err
 }
@@ -231,7 +232,7 @@ func (bus *Bus) run() {
 
 		case received := <-bus.incoming:
 			bus.stateMu.Lock()
-			if bus.closing || bus.busOff {
+			if bus.closing || bus.busOff.Load() {
 				bus.stateMu.Unlock()
 				continue
 			}
@@ -264,7 +265,7 @@ func (bus *Bus) sendable() error {
 	if bus.closing {
 		return gocan.ErrBusClosed
 	}
-	if bus.busOff {
+	if bus.busOff.Load() {
 		return fmt.Errorf("%w: virtual bus %d", gocan.ErrBusOff, bus.id)
 	}
 	return nil
@@ -283,6 +284,9 @@ func (network *Network) broadcast(source *Bus, received gocan.Frame) {
 
 	for _, destination := range network.buses {
 		if destination == source && !source.receiveOwnMessages {
+			continue
+		}
+		if destination.busOff.Load() {
 			continue
 		}
 		select {

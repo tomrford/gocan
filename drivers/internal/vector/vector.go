@@ -199,6 +199,16 @@ func encodeEvent(frame gocan.Frame) xlEvent {
 	return event
 }
 
+func prependOverrun(observation receiveObservation, bus gocan.BusID) receiveObservation {
+	withLoss := newOverrunObservation(bus)
+	for _, event := range observation.events[:observation.eventCount] {
+		withLoss.addEvent(event)
+	}
+	withLoss.frame, withLoss.hasFrame = observation.frame, observation.hasFrame
+	withLoss.requestChipState = observation.requestChipState
+	return withLoss
+}
+
 // decodeClassicReceiveEvent reports an overrun flag as loss before the event
 // that carries it, then decodes that event.
 func decodeClassicReceiveEvent(
@@ -211,13 +221,7 @@ func decodeClassicReceiveEvent(
 	if err != nil || !overrun {
 		return observation, err
 	}
-	withLoss := newOverrunObservation(bus)
-	for _, event := range observation.events[:observation.eventCount] {
-		withLoss.addEvent(event)
-	}
-	withLoss.frame, withLoss.hasFrame = observation.frame, observation.hasFrame
-	withLoss.requestChipState = observation.requestChipState
-	return withLoss, nil
+	return prependOverrun(observation, bus), nil
 }
 
 func decodeClassicEvent(event *xlEvent, bus gocan.BusID) (receiveObservation, error) {

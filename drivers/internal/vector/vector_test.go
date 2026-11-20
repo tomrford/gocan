@@ -78,6 +78,15 @@ func TestFDNativeLayoutAndTranslation(t *testing.T) {
 	if !got.hasFrame || got.frame != frame {
 		t.Fatalf("FD round trip = %+v, want frame %+v", got, frame)
 	}
+
+	// XL_CAN_QUEUE_OVERFLOW (0x100) in flagsChip reports loss before the frame.
+	rx.chipFlags = 0x100
+	overrun, err := decodeFDReceiveEvent(&rx, 1)
+	if err != nil || overrun.eventCount != 1 ||
+		overrun.events[0].Kind != gocan.EventReceiveOverrun ||
+		!overrun.hasFrame || overrun.frame != frame {
+		t.Fatalf("FD overrun = %+v, %v", overrun, err)
+	}
 }
 
 func TestVectorStatusTranslation(t *testing.T) {

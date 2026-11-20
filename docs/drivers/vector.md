@@ -8,5 +8,6 @@ gocan must join second. Keep the owner's measurement and timing stable while
 flashing; discovery and the on-bus check cannot reserve that configuration.
 
 Receive-queue overruns produce receive-overrun events; the bus keeps receiving.
-Vector hardware rejoins the bus after bus-off by itself, and gocan reports both
-transitions as controller-state events without closing the bus.
+gocan keeps the bus open on bus-off and reports chip-state transitions as
+controller-state events; recovery depends on the adapter or, for externally
+configured channels, the owning application's channel configuration.

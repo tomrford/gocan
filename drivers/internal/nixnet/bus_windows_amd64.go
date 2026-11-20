@@ -15,15 +15,16 @@ import (
 )
 
 type Bus struct {
-	config     Config
-	capture    *gocan.Capture
-	api        *api
-	rx, tx     uint32
-	ioMu       sync.Mutex
-	lifecycle  *driverstate.Lifecycle
-	cleanupErr error
-	lastState  gocan.Event
-	overrun    bool
+	config       Config
+	capture      *gocan.Capture
+	api          *api
+	rx, tx       uint32
+	ioMu         sync.Mutex
+	lifecycle    *driverstate.Lifecycle
+	cleanupErr   error
+	lastState    gocan.Event
+	overrun      bool
+	overrunSince time.Time
 }
 
 var _ gocan.Bus = (*Bus)(nil)
@@ -194,12 +195,22 @@ func (bus *Bus) receiveBatch() (bool, error) {
 	}
 	err := bus.api.check("read NI-XNET frame", result)
 	if errors.Is(err, errReceiveOverflow) {
-		// Report each overflow once, however many reads return it.
-		if bus.overrun {
-			return false, nil
+		// On a single input stream, nxReadFrame clears overflow and the next
+		// read resumes immediately. On a shared interface, overflow persists
+		// until all input streams stop or flush; fail after a bounded window
+		// instead of leaving the bus open while silently unable to receive.
+		if !bus.overrun {
+			bus.overrun = true
+			bus.overrunSince = time.Now()
+			if recErr := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun}); recErr != nil {
+				return false, recErr
+			}
+			return true, nil
 		}
-		bus.overrun = true
-		return false, bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun})
+		if time.Since(bus.overrunSince) >= time.Second {
+			return false, err
+		}
+		return false, nil
 	}
 	bus.overrun = false
 	if err != nil {

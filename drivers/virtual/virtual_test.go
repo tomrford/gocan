@@ -158,7 +158,12 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 // after a spurious bus-off (November 2026). The logged figures are exact
 // under synctest's fake clock.
 func TestBusOffRecoveryWait(t *testing.T) {
-	const busOff = 1500 * time.Millisecond
+	// Recover between 10 ms retry ticks so synctest does not tie the recovery
+	// callback with the 1.5 s retry attempt.
+	const (
+		busOff     = 1495 * time.Millisecond
+		wantAccept = 1500 * time.Millisecond
+	)
 	for _, test := range []struct {
 		budget time.Duration
 		accept bool
@@ -193,8 +198,8 @@ func TestBusOffRecoveryWait(t *testing.T) {
 
 			sent := len(capture.Series(gocan.FrameKey{Bus: sender.ID(), ID: frame.ID, Direction: gocan.DirectionTransmit}))
 			if test.accept {
-				if err != nil || elapsed != busOff || sent != 1 {
-					t.Fatalf("Send = %v after %v with %d transmissions; want acceptance at %v", err, elapsed, sent, busOff)
+				if err != nil || elapsed != wantAccept || sent != 1 {
+					t.Fatalf("Send = %v after %v with %d transmissions; want acceptance at %v", err, elapsed, sent, wantAccept)
 				}
 			} else if !errors.Is(err, gocan.ErrBusOff) || elapsed != test.budget || sent != 0 {
 				t.Fatalf("Send = %v after %v with %d transmissions; want ErrBusOff at %v", err, elapsed, sent, test.budget)

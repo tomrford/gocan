@@ -193,7 +193,8 @@ func TestVectorFDCollisionBusOffEvents(t *testing.T) {
 		if err := winner.Send(context.Background(), winnerFrame); err != nil {
 			t.Fatalf("send from collision winner: %v", err)
 		}
-		if err := loser.Send(context.Background(), loserFrame); err != nil && !errors.Is(err, gocan.ErrBusOff) {
+		if err := loser.Send(context.Background(), loserFrame); err != nil &&
+			!errors.Is(err, gocan.ErrTransmitQueueFull) && !errors.Is(err, gocan.ErrBusOff) {
 			t.Fatalf("send from collision loser: %v", err)
 		}
 	}

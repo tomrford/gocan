@@ -22,6 +22,9 @@ const (
 	xlCANMessageFlagRTR = 16
 	xlCANMessageFlagEF  = 512
 
+	// XL_CAN_QUEUE_OVERFLOW in XLcanRxEvent.flagsChip.
+	xlCANChipFlagQueueOverflow = 0x100
+
 	xlCANExtendedID uint32 = 1 << 31
 )
 
@@ -130,7 +133,20 @@ func encodeFDTransmitEvent(frame gocan.Frame) xlCANTXEvent {
 	return event
 }
 
+// decodeFDReceiveEvent reports XL_CAN_QUEUE_OVERFLOW as loss before the event
+// that carries it, then decodes that event.
 func decodeFDReceiveEvent(
+	event *xlCANRXEvent,
+	bus gocan.BusID,
+) (receiveObservation, error) {
+	observation, err := decodeFDEvent(event, bus)
+	if err != nil || event.chipFlags&xlCANChipFlagQueueOverflow == 0 {
+		return observation, err
+	}
+	return prependOverrun(observation, bus), nil
+}
+
+func decodeFDEvent(
 	event *xlCANRXEvent,
 	bus gocan.BusID,
 ) (receiveObservation, error) {
