@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -150,4 +151,68 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 	if transmitted.Direction != gocan.DirectionTransmit || received.Direction != gocan.DirectionReceive {
 		t.Fatalf("self-reception directions = %v, %v, want TX then RX", transmitted.Direction, received.Direction)
 	}
+}
+
+// TestBusOffRecoveryWait measures gocan.Send across a bus-off as long as the
+// PCAN-USB one seen on the bench: CAN_Write rejected frames for about 1 s
+// after a spurious bus-off (November 2026). The logged figures are exact
+// under synctest's fake clock.
+func TestBusOffRecoveryWait(t *testing.T) {
+	const busOff = 1500 * time.Millisecond
+	for _, test := range []struct {
+		budget time.Duration
+		accept bool
+	}{{2 * time.Second, true}, {time.Second, false}} {
+		synctest.Test(t, func(t *testing.T) {
+			capture := gocan.NewCapture()
+			var network Network
+			sender, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "sender"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sender.Close()
+			receiver, err := network.Open(context.Background(), capture, Config{ID: 2, Name: "receiver"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer receiver.Close()
+
+			if err := sender.SetControllerState(gocan.ControllerBusOff); err != nil {
+				t.Fatal(err)
+			}
+			time.AfterFunc(busOff, func() { _ = sender.SetControllerState(gocan.ControllerActive) })
+			counted := &countingBus{Bus: sender}
+			frame, err := gocan.NewFrame(0x51e, []byte{1}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			err = gocan.Send(context.Background(), counted, frame, test.budget)
+			elapsed := time.Since(start)
+			t.Logf("bus-off %v, budget %v: %v after %v and %d attempts", busOff, test.budget, err, elapsed, counted.attempts)
+
+			sent := len(capture.Series(gocan.FrameKey{Bus: sender.ID(), ID: frame.ID, Direction: gocan.DirectionTransmit}))
+			if test.accept {
+				if err != nil || elapsed != busOff || sent != 1 {
+					t.Fatalf("Send = %v after %v with %d transmissions; want acceptance at %v", err, elapsed, sent, busOff)
+				}
+			} else if !errors.Is(err, gocan.ErrBusOff) || elapsed != test.budget || sent != 0 {
+				t.Fatalf("Send = %v after %v with %d transmissions; want ErrBusOff at %v", err, elapsed, sent, test.budget)
+			}
+			// Polling every 10 ms keeps a 1.5 s wait to about 150 native calls.
+			if limit := int(min(elapsed, test.budget)/(10*time.Millisecond)) + 1; counted.attempts > limit {
+				t.Fatalf("%d attempts in %v, want at most %d", counted.attempts, elapsed, limit)
+			}
+		})
+	}
+}
+
+type countingBus struct {
+	*Bus
+	attempts int
+}
+
+func (bus *countingBus) Send(ctx context.Context, frame gocan.Frame) error {
+	bus.attempts++
+	return bus.Bus.Send(ctx, frame)
 }

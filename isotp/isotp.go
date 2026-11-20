@@ -80,7 +80,7 @@ type Config struct {
 	AdvertisedSeparationTime time.Duration
 	FlowControlTimeout       time.Duration
 	ConsecutiveFrameTimeout  time.Duration
-	// TransmitRetryTimeout bounds queue-full retries for each transmitted frame,
+	// TransmitRetryTimeout bounds queue-full and bus-off retries for each transmitted frame,
 	// including Flow Control. Zero disables retries. This is a local queue
 	// budget, not a peer timing guarantee; caller deadlines may shorten it.
 	TransmitRetryTimeout time.Duration

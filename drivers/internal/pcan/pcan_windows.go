@@ -25,9 +25,9 @@ import (
 // readiness signal, so retain margin over the observed roughly 3 ms window.
 const channelSettleDelay = 25 * time.Millisecond
 
-// busOffPollInterval paces status reads while PCAN-Basic's auto-reset returns
-// a bus-off controller to the bus. PCAN-USB sent no status message on that
-// return (November 2026).
+// busOffPollInterval paces status reads from a bus-off until the controller is
+// error active again. PCAN-USB went from 0x14 through 0x8 to 0x0 over about
+// 1 s and sent no status message for the return (November 2026).
 const busOffPollInterval = 10 * time.Millisecond
 
 // A PEAK USB removal is one shared PCAN process failure domain: every open
@@ -388,7 +388,8 @@ type Bus struct {
 	lifecycle *driverstate.Lifecycle
 
 	// The receive goroutine is the only accessor after Open publishes the bus.
-	busOff bool
+	state      gocan.ControllerState
+	recovering bool
 
 	deviceSubscription *devicechange.Subscription
 	cleanupErr         error
@@ -493,7 +494,7 @@ func (bus *Bus) receiveLoop() {
 	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
 	for {
 		timeout := uint32(windows.INFINITE)
-		if bus.busOff {
+		if bus.recovering {
 			timeout = uint32(busOffPollInterval / time.Millisecond)
 		}
 		event, err := windows.WaitForMultipleObjects(events, false, timeout)
@@ -620,7 +621,8 @@ func (bus *Bus) receiveOne() (bool, error) {
 	return true, bus.applyObservation(observation)
 }
 
-// pollRecovery reports the state the controller returns to after a bus-off.
+// pollRecovery reports each state the controller passes through on its way
+// back from bus-off.
 func (bus *Bus) pollRecovery() error {
 	bus.ioMu.Lock()
 	defer bus.ioMu.Unlock()
@@ -635,11 +637,8 @@ func (bus *Bus) pollRecovery() error {
 	if status&pcanStatusHandleMask == pcanStatusInvalidHW {
 		return bus.runtimeStatusError("read PCAN status", status)
 	}
-	if status&pcanStatusBusOff != 0 {
-		return nil
-	}
-	observation, err := decodePCANStatus(status&(pcanStatusBusLight|pcanStatusBusWarning|pcanStatusBusPassive), bus.id)
-	if err != nil {
+	observation, err := decodePCANStatus(status&(pcanStatusBusLight|pcanStatusBusWarning|pcanStatusBusPassive|pcanStatusBusOff), bus.id)
+	if err != nil || observation.events[0].ControllerState == bus.state {
 		return err
 	}
 	return bus.applyObservation(observation)
@@ -648,7 +647,8 @@ func (bus *Bus) pollRecovery() error {
 func (bus *Bus) applyObservation(observation pcanReceiveObservation) error {
 	for _, event := range observation.events[:observation.eventCount] {
 		if event.Kind == gocan.EventControllerState {
-			bus.busOff = event.ControllerState == gocan.ControllerBusOff
+			bus.state = event.ControllerState
+			bus.recovering = bus.recovering && bus.state != gocan.ControllerActive || bus.state == gocan.ControllerBusOff
 		}
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
