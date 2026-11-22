@@ -44,7 +44,11 @@ func Parse(name string, r io.Reader) (*Database, error) {
 	}
 	original, err := io.ReadAll(r)
 	if err != nil {
-		return nil, err
+		location := name
+		if location == "" {
+			location = "input"
+		}
+		return nil, fmt.Errorf("dbc: %s: %w", location, err)
 	}
 	textBytes := bytes.TrimPrefix(original, []byte{0xef, 0xbb, 0xbf})
 	var source string

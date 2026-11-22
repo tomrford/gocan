@@ -38,7 +38,7 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 			break
 		}
 		if err != nil {
-			return nil, sourceError(name, "decode XML: %v", err)
+			return nil, sourceError(name, "decode XML: %w", err)
 		}
 		switch token := token.(type) {
 		case xml.StartElement:

@@ -281,7 +281,7 @@ func sourceError(source, format string, args ...any) error {
 	if source == "" {
 		source = "input"
 	}
-	return fmt.Errorf("cdd: %s: %s", source, fmt.Sprintf(format, args...))
+	return fmt.Errorf("cdd: %s: %w", source, fmt.Errorf(format, args...))
 }
 
 func prependGroup(fields []Field, group Metadata) {
