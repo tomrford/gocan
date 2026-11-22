@@ -1,9 +1,12 @@
 package dbc
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -24,7 +27,7 @@ func TestParseCoreDatabase(t *testing.T) {
 	if len(status.Transmitters) != 2 || status.Transmitters[0] != "ECU" || status.Transmitters[1] != "Logger" {
 		t.Fatalf("unexpected Status transmitters: %v", status.Transmitters)
 	}
-	if len(status.Signals) != 4 || status.Signals[2].ByteOrder != ByteOrderBigEndian {
+	if len(status.Signals) != 4 || status.Signals[2].ByteOrder != binary.BigEndian {
 		t.Fatalf("unexpected Status signals: %#v", status.Signals)
 	}
 	ratio, ok := status.SignalByName("Ratio")
@@ -138,7 +141,7 @@ func TestDropsDanglingRecordsWithDiagnostics(t *testing.T) {
 		"VAL_ 3221225472 Orphan 0 \"Off\";\n" +
 		"BO_TX_BU_ 512 : ECU;\n"
 
-	db, err := Parse("dangling.dbc", source)
+	db, err := Parse("dangling.dbc", strings.NewReader(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +176,7 @@ func TestRejectsStructurallyUnsafeDatabases(t *testing.T) {
 
 	for name, source := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse(name+".dbc", source)
+			_, err := Parse(name+".dbc", strings.NewReader(source))
 			if err == nil {
 				t.Fatal("Parse() succeeded, want an error")
 			}
@@ -191,7 +194,7 @@ func parseFixture(t *testing.T, path string) *Database {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := Parse(path, string(source))
+	db, err := Parse(path, bytes.NewReader(source))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,7 @@
 // Complete service-message encoding and ECU execution are outside this package.
 package cdd
 
-import "github.com/tomrford/gocan/internal/scalar"
+import "encoding/binary"
 
 // Database is the catalog for one selected ECU/variant. Entries, instances,
 // services and DIDs remain in source order. DIDs are views over the same service
@@ -239,16 +239,6 @@ type Precondition struct {
 // exactly, while JSON numbers use normal float64 rounding.
 type Values map[string]any
 
-// ByteOrder describes the byte order of one coded field.
-type ByteOrder uint8
-
-const (
-	// ByteOrderBig stores the most significant byte first.
-	ByteOrderBig ByteOrder = iota + 1
-	// ByteOrderLittle stores the least significant byte first.
-	ByteOrderLittle
-)
-
 // Encoding describes the coded representation declared by CVALUETYPE.
 type Encoding string
 
@@ -271,10 +261,11 @@ type LinearConversion struct {
 	minimum, maximum *uint64
 }
 
-// Choice assigns a label to one exact coded integer value. It shares its
-// identity with the DBC value-description type, so label metadata moves
-// between the two catalogs without conversion.
-type Choice = scalar.Choice
+// Choice assigns a label to one exact coded integer value.
+type Choice struct {
+	Value int64
+	Label string
+}
 
 // Field describes one coded field. Outside a Bitfield, BitOffset is the bit
 // offset from the start of the record. Inside a Bitfield, it is the logical
@@ -300,7 +291,7 @@ type Field struct {
 	BitLength  uint32
 	Count      uint32
 	Variable   *Extent
-	ByteOrder  ByteOrder
+	ByteOrder  binary.ByteOrder
 	Encoding   Encoding
 	Conversion *LinearConversion
 	Unit       string
@@ -315,7 +306,7 @@ type Bitfield struct {
 	Datatype  Metadata
 	BitOffset uint32 // byte-aligned offset from the start of the record
 	BitLength uint32 // total container size, including reserved bits
-	ByteOrder ByteOrder
+	ByteOrder binary.ByteOrder
 }
 
 // Extent bounds the element count of a variable-length field. A field carrying

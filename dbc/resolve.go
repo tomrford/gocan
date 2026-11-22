@@ -1,6 +1,7 @@
 package dbc
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -573,29 +574,32 @@ func validateSignalLayout(messageLength uint32, signal Signal) error {
 		return fmt.Errorf("bit length is zero")
 	}
 	messageBits := uint64(messageLength) * 8
-	if signal.ByteOrder == ByteOrderLittleEndian {
+	switch signal.ByteOrder {
+	case binary.LittleEndian:
 		end := uint64(signal.StartBit) + uint64(signal.BitLength)
 		if end > messageBits {
 			return fmt.Errorf("bits %d..%d exceed %d-byte message", signal.StartBit, end-1, messageLength)
 		}
 		return nil
+	case binary.BigEndian:
+		bit := uint64(signal.StartBit)
+		for index := uint32(0); index < signal.BitLength; index++ {
+			if bit >= messageBits {
+				return fmt.Errorf("big-endian bit walk exceeds %d-byte message", messageLength)
+			}
+			if index+1 == signal.BitLength {
+				break
+			}
+			if bit%8 == 0 {
+				bit += 15
+			} else {
+				bit--
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported byte order %v", signal.ByteOrder)
 	}
-
-	bit := uint64(signal.StartBit)
-	for index := uint32(0); index < signal.BitLength; index++ {
-		if bit >= messageBits {
-			return fmt.Errorf("big-endian bit walk exceeds %d-byte message", messageLength)
-		}
-		if index+1 == signal.BitLength {
-			break
-		}
-		if bit%8 == 0 {
-			bit += 15
-		} else {
-			bit--
-		}
-	}
-	return nil
 }
 
 func validateMultiplexGraph(message Message) error {

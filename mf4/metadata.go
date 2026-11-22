@@ -11,22 +11,22 @@ import (
 // MDF comments use the standard HDcomment/FHcomment XML vocabulary. Property
 // names and values are application-owned; the writer only validates and escapes
 // them. See asammdf's HeaderBlock.comment in the pinned reference.
-func (options Options) comments() (header, history string, err error) {
-	for _, value := range []string{options.ToolName, options.ToolVersion, options.Comment} {
+func (config Config) comments() (header, history string, err error) {
+	for _, value := range []string{config.ToolName, config.ToolVersion, config.Comment} {
 		if !validXMLText(value) {
-			return "", "", errors.New("MF4 metadata requires valid UTF-8 and XML 1.0 text")
+			return "", "", errors.New("mf4: metadata requires valid UTF-8 and XML 1.0 text")
 		}
 	}
-	keys := make([]string, 0, len(options.Properties))
-	for key, value := range options.Properties {
+	keys := make([]string, 0, len(config.Properties))
+	for key, value := range config.Properties {
 		if key == "" || !validXMLText(key) || !validXMLText(value) {
-			return "", "", errors.New("MF4 properties require nonempty keys and valid UTF-8 and XML 1.0 text")
+			return "", "", errors.New("mf4: properties require nonempty keys and valid UTF-8 and XML 1.0 text")
 		}
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
 	const namespace = "http://www.asam.net/mdf/v4"
-	if options.Comment != "" || len(keys) != 0 {
+	if config.Comment != "" || len(keys) != 0 {
 		type property struct {
 			Name  string `xml:"name,attr"`
 			Value string `xml:",chardata"`
@@ -35,9 +35,9 @@ func (options Options) comments() (header, history string, err error) {
 			XMLName    xml.Name
 			Text       string     `xml:"TX"`
 			Properties []property `xml:"common_properties>e"`
-		}{XMLName: xml.Name{Space: namespace, Local: "HDcomment"}, Text: options.Comment}
+		}{XMLName: xml.Name{Space: namespace, Local: "HDcomment"}, Text: config.Comment}
 		for _, key := range keys {
-			comment.Properties = append(comment.Properties, property{key, options.Properties[key]})
+			comment.Properties = append(comment.Properties, property{key, config.Properties[key]})
 		}
 		data, err := xml.Marshal(comment)
 		if err != nil {
@@ -45,7 +45,7 @@ func (options Options) comments() (header, history string, err error) {
 		}
 		header = string(data)
 	}
-	toolName := options.ToolName
+	toolName := config.ToolName
 	if toolName == "" {
 		toolName = "gocan"
 	}
@@ -55,7 +55,7 @@ func (options Options) comments() (header, history string, err error) {
 		ToolID      string `xml:"tool_id"`
 		ToolVendor  string `xml:"tool_vendor"`
 		ToolVersion string `xml:"tool_version"`
-	}{XMLName: xml.Name{Space: namespace, Local: "FHcomment"}, Text: "Exported raw CAN capture", ToolID: toolName, ToolVersion: options.ToolVersion}
+	}{XMLName: xml.Name{Space: namespace, Local: "FHcomment"}, Text: "Exported raw CAN capture", ToolID: toolName, ToolVersion: config.ToolVersion}
 	data, err := xml.Marshal(comment)
 	return header, string(data), err
 }

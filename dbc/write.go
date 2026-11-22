@@ -1,6 +1,8 @@
 package dbc
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"maps"
@@ -14,27 +16,27 @@ import (
 // Edit returns a new database made by applying edit to a copy of db. The copy
 // is written as DBC text and parsed as name, so the result is validated like
 // any parsed database, its lookups and codecs follow the edits, and Source
-// returns the written text. db is not changed.
+// returns the written bytes. db is not changed.
 //
 // edit may change DBC declarations, including adding or removing nodes,
 // messages and signals. Message.Format is derived from VFrameFormat and
 // ProtocolType attributes; edit those attributes to change the frame format.
 // Diagnostics are also derived. Lookups on the copy describe it before edit ran.
 func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
-	var text strings.Builder
-	if err := db.Write(&text); err != nil {
+	var buf bytes.Buffer
+	if err := db.Write(&buf); err != nil {
 		return nil, err
 	}
-	edited, err := Parse(name, text.String())
+	edited, err := Parse(name, &buf)
 	if err != nil {
 		return nil, err
 	}
 	edit(edited)
-	text.Reset()
-	if err := edited.Write(&text); err != nil {
+	buf.Reset()
+	if err := edited.Write(&buf); err != nil {
 		return nil, err
 	}
-	return Parse(name, text.String())
+	return Parse(name, &buf)
 }
 
 // Write writes db as UTF-8 DBC text. For a parsed database, parsing the text
@@ -169,10 +171,16 @@ func (db *Database) Write(w io.Writer) error {
 			} else if signal.IsMultiplexer {
 				marker = " M"
 			}
-			order, sign := '0', '+'
-			if signal.ByteOrder == ByteOrderLittleEndian {
+			var order byte
+			switch signal.ByteOrder {
+			case binary.BigEndian:
+				order = '0'
+			case binary.LittleEndian:
 				order = '1'
+			default:
+				fail("signal %q has unsupported byte order %v", signal.Name, signal.ByteOrder)
 			}
+			sign := '+'
 			if signal.Signed {
 				sign = '-'
 			}

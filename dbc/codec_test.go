@@ -2,6 +2,7 @@ package dbc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,7 +30,7 @@ func BenchmarkMessageCodecCompilation(b *testing.B) {
 			for index := range test.count {
 				message.Signals = append(message.Signals, Signal{
 					Name: fmt.Sprintf("Signal%d", index), StartBit: uint32(index) * test.width,
-					BitLength: test.width, ByteOrder: ByteOrderLittleEndian, Factor: 1,
+					BitLength: test.width, ByteOrder: binary.LittleEndian, Factor: 1,
 				})
 			}
 			b.ReportAllocs()
@@ -267,7 +268,7 @@ func TestClassicIgnoresCANFDBRSDefault(t *testing.T) {
 		"BA_DEF_ BO_ \"CANFD_BRS\" ENUM \"0\",\"1\";\n" +
 		"BA_DEF_DEF_ \"CANFD_BRS\" \"1\";\n"
 
-	database, err := Parse("real-world.dbc", source)
+	database, err := Parse("real-world.dbc", strings.NewReader(source))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -294,7 +295,7 @@ func TestMessagesByPGNCanonicalisesPDU1Identifiers(t *testing.T) {
 		"BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\n" +
 		"BA_ \"VFrameFormat\" BO_ 2564432256 3;\n" +
 		"BA_ \"VFrameFormat\" BO_ 2564432513 3;\n"
-	database, err := Parse("pdu1.dbc", source)
+	database, err := Parse("pdu1.dbc", strings.NewReader(source))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -358,7 +359,7 @@ func TestLongJ1939PayloadDecode(t *testing.T) {
 		"BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\n" +
 		"BA_ \"VFrameFormat\" BO_ 2566834942 3;\n"
 
-	database, err := Parse("long-j1939.dbc", source)
+	database, err := Parse("long-j1939.dbc", strings.NewReader(source))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -419,7 +420,7 @@ BO_ 2566834942 Long: 1800 ECU
 BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
 BA_ "VFrameFormat" BO_ 2566834942 3;
 `
-	db, err := Parse("transported.dbc", source)
+	db, err := Parse("transported.dbc", strings.NewReader(source))
 	if err != nil {
 		t.Fatal(err)
 	}

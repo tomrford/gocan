@@ -1,7 +1,9 @@
 package cdd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -43,10 +45,14 @@ type Selection struct {
 	Variant int
 }
 
-// Parse decodes a CDD document and exposes its ECU/variant choices. Select
-// resolves a catalog. Unsupported service layouts do not prevent selection.
-func Parse(name string, source []byte) (*Document, error) {
-	root, err := decodeXML(name, source)
+// Parse decodes a CDD document from r and exposes its ECU/variant choices.
+// Select resolves a catalog. Unsupported service layouts do not prevent
+// selection.
+func Parse(name string, r io.Reader) (*Document, error) {
+	if r == nil {
+		return nil, errors.New("cdd: reader is nil")
+	}
+	root, err := decodeXML(name, r)
 	if err != nil {
 		return nil, err
 	}
@@ -71,13 +77,15 @@ func Parse(name string, source []byte) (*Document, error) {
 	return document, nil
 }
 
-// ParseFile reads a CDD document using its declared XML character encoding.
+// ParseFile opens and parses a CDD document using its declared XML character
+// encoding.
 func ParseFile(path string) (*Document, error) {
-	source, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(path, source)
+	defer file.Close()
+	return Parse(path, file)
 }
 
 // Select resolves only the selected direct VAR content. It neither merges
@@ -86,7 +94,7 @@ func ParseFile(path string) (*Document, error) {
 // independent catalogs, including their codecs and diagnostics.
 func (document *Document) Select(selection Selection) (*Database, error) {
 	if document == nil || document.resolver == nil {
-		return nil, fmt.Errorf("CDD document has not been parsed")
+		return nil, errors.New("cdd: document has not been parsed")
 	}
 	ecuIndex, err := selectIndex("ECU", selection.ECU, len(document.ecus))
 	if err != nil {

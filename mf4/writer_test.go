@@ -71,13 +71,13 @@ func TestRecording(t *testing.T) {
 
 func testRecording(t *testing.T, compression bool) []byte {
 	f := newFile(t)
-	db, err := dbc.Parse("", "BU_: ECU\nBO_ 291 Status: 8 ECU\n SG_ Value : 0|8@1+ (0.5,-10) [-10|117.5] \"V\" ECU\nCM_ \"Gr\xf6\xdfe\";\n")
+	db, err := dbc.Parse("", strings.NewReader("BU_: ECU\nBO_ 291 Status: 8 ECU\n SG_ Value : 0|8@1+ (0.5,-10) [-10|117.5] \"V\" ECU\nCM_ \"Gr\xf6\xdfe\";\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	description := []byte(db.Source())
+	description := db.Source()
 	second := []byte("BU_: ECU\nBO_ 292 Second: 8 ECU\n SG_ Value : 0|8@1+ (2,0) [0|510] \"V\" ECU\n")
-	w, err := mf4.NewWriter(f, mf4.Options{Compression: compression, Databases: []mf4.Database{
+	w, err := mf4.NewWriter(f, mf4.Config{Compression: compression, Databases: []mf4.Database{
 		{Bus: 1, Name: "bus1.dbc", Data: description},
 		{Bus: 2, Name: "bus2.dbc", Data: second},
 	}})
@@ -249,7 +249,7 @@ func checkGroups(t *testing.T, f *os.File, counts []uint64) {
 
 func TestCaptureEvents(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, mf4.Options{Compression: true})
+	w, err := mf4.NewWriter(f, mf4.Config{Compression: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestCaptureEvents(t *testing.T) {
 
 func TestEventOnlyExport(t *testing.T) {
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, mf4.Options{Compression: true})
+	w, err := mf4.NewWriter(f, mf4.Config{Compression: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestWriterFailures(t *testing.T) {
 	for _, stage := range []string{"start seek", "start write", "start short", "flush", "short", "finalise", "event"} {
 		t.Run(stage, func(t *testing.T) {
 			f := &failingFile{File: newFile(t)}
-			w, err := mf4.NewWriter(f, mf4.Options{Compression: true})
+			w, err := mf4.NewWriter(f, mf4.Config{Compression: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -446,7 +446,7 @@ func TestWriterFailures(t *testing.T) {
 		})
 	}
 	f := newFile(t)
-	w, err := mf4.NewWriter(f, mf4.Options{})
+	w, err := mf4.NewWriter(f, mf4.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func TestWriterFailures(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mf4.NewWriter(f, mf4.Options{}); err == nil {
+	if _, err := mf4.NewWriter(f, mf4.Config{}); err == nil {
 		t.Fatal("overwrote existing output")
 	}
 }

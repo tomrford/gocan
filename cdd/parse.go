@@ -1,6 +1,7 @@
 package cdd
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -216,12 +217,12 @@ func (resolver *resolver) resolveFieldDatatype(data *element, name string, offse
 		return Field{}, sourceError(resolver.name, "field %q uses unsupported quantity %q", name, quantity)
 	}
 
-	var byteOrder ByteOrder
+	var byteOrder binary.ByteOrder
 	switch coded.attr("bo") {
 	case "21":
-		byteOrder = ByteOrderBig
+		byteOrder = binary.BigEndian
 	case "12":
-		byteOrder = ByteOrderLittle
+		byteOrder = binary.LittleEndian
 	default:
 		return Field{}, sourceError(resolver.name, "field %q uses unknown byte order %q", name, coded.attr("bo"))
 	}
@@ -278,9 +279,9 @@ func parseBound(value string) (int64, error) {
 
 func sourceError(source, format string, args ...any) error {
 	if source == "" {
-		source = "CDD input"
+		source = "input"
 	}
-	return fmt.Errorf("%s: %s", source, fmt.Sprintf(format, args...))
+	return fmt.Errorf("cdd: %s: %w", source, fmt.Errorf(format, args...))
 }
 
 func prependGroup(fields []Field, group Metadata) {

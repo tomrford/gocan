@@ -1,7 +1,6 @@
 package cdd
 
 import (
-	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -18,8 +17,8 @@ type element struct {
 	inText   bool
 }
 
-func decodeXML(name string, source []byte) (*element, error) {
-	decoder := xml.NewDecoder(bytes.NewReader(source))
+func decodeXML(name string, r io.Reader) (*element, error) {
+	decoder := xml.NewDecoder(r)
 	decoder.CharsetReader = func(label string, input io.Reader) (io.Reader, error) {
 		switch strings.ToLower(strings.TrimSpace(label)) {
 		case "iso-8859-1", "iso8859-1", "latin1":
@@ -39,7 +38,7 @@ func decodeXML(name string, source []byte) (*element, error) {
 			break
 		}
 		if err != nil {
-			return nil, sourceError(name, "decode XML: %v", err)
+			return nil, sourceError(name, "decode XML: %w", err)
 		}
 		switch token := token.(type) {
 		case xml.StartElement:

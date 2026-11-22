@@ -55,8 +55,8 @@ type Database struct {
 	Data []byte
 }
 
-// Options configures an MF4 export. The zero value writes uncompressed data.
-type Options struct {
+// Config configures an MF4 export. The zero value writes uncompressed data.
+type Config struct {
 	Databases []Database
 	// Compression applies Deflate to each chunk of frame records.
 	Compression bool
@@ -120,28 +120,28 @@ var _ gocan.RecordWriter = (*Writer)(nil)
 // nanoseconds in the header. Relative time precision decreases for long runs.
 // Each bus may have one DBC attachment, linked from both frame structures.
 // Event markers retain their own append order separately from frame records.
-func NewWriter(output io.WriteSeeker, options Options) (*Writer, error) {
+func NewWriter(output io.WriteSeeker, config Config) (*Writer, error) {
 	if output == nil {
-		return nil, errors.New("MF4 writer requires an output")
+		return nil, errors.New("mf4: writer requires an output")
 	}
-	headerComment, historyComment, err := options.comments()
+	headerComment, historyComment, err := config.comments()
 	if err != nil {
 		return nil, err
 	}
 	seen := make(map[gocan.BusID]bool)
-	for _, database := range options.Databases {
+	for _, database := range config.Databases {
 		if database.Bus == 0 || seen[database.Bus] {
-			return nil, fmt.Errorf("invalid or duplicate DBC bus %d", database.Bus)
+			return nil, fmt.Errorf("mf4: invalid or duplicate DBC bus %d", database.Bus)
 		}
 		if database.Name == "" || path.Base(database.Name) != database.Name || strings.ContainsAny(database.Name, "\\\x00") ||
 			!strings.EqualFold(path.Ext(database.Name), ".dbc") || !utf8.ValidString(database.Name) || len(database.Data) == 0 {
-			return nil, fmt.Errorf("bus %d requires a UTF-8 basename ending in .dbc and nonempty data", database.Bus)
+			return nil, fmt.Errorf("mf4: bus %d requires a UTF-8 basename ending in .dbc and nonempty data", database.Bus)
 		}
 		seen[database.Bus] = true
 	}
-	for bus, name := range options.BusNames {
+	for bus, name := range config.BusNames {
 		if bus == 0 || !validXMLText(name) {
-			return nil, fmt.Errorf("invalid MF4 display name or bus ID for bus %d", bus)
+			return nil, fmt.Errorf("mf4: invalid display name or bus ID for bus %d", bus)
 		}
 	}
 	size, err := output.Seek(0, io.SeekEnd)
@@ -149,12 +149,12 @@ func NewWriter(output io.WriteSeeker, options Options) (*Writer, error) {
 		return nil, err
 	}
 	if size != 0 {
-		return nil, errors.New("MF4 output must be empty")
+		return nil, errors.New("mf4: output must be empty")
 	}
 	w := &Writer{output: output, buffer: make([]byte, 0, bufferSize),
 		groups: make(map[uint32]*channelGroup), attachments: make(map[gocan.BusID]uint64),
-		eventLink: 64 + 56, busNames: maps.Clone(options.BusNames)}
-	if options.Compression {
+		eventLink: 64 + 56, busNames: maps.Clone(config.BusNames)}
+	if config.Compression {
 		w.compressor = zlib.NewWriter(&w.compressed)
 	}
 	id := make([]byte, 64)
@@ -183,7 +183,7 @@ func NewWriter(output io.WriteSeeker, options Options) (*Writer, error) {
 	w.groupLink = int64(dg) + 32
 	w.dataLink = int64(dg) + 40
 	attachmentLink := int64(64 + 48)
-	for _, database := range options.Databases {
+	for _, database := range config.Databases {
 		name := w.text(database.Name)
 		mime := w.text("application/x-dbc")
 		data := make([]byte, 40+len(database.Data))
@@ -225,7 +225,7 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 	group := w.groups[key]
 	seconds := float64(offset) / 1e9
 	if group != nil && group.cycles != 0 && seconds < group.lastTime {
-		return fmt.Errorf("MF4 bus %d time master must not regress", event.Bus)
+		return fmt.Errorf("mf4: bus %d time master must not regress", event.Bus)
 	}
 	if group == nil {
 		group = w.addGroup(event.Bus, remote)
@@ -292,7 +292,7 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	case gocan.EventReceiveOverrun:
 		name = "receive overrun"
 	default:
-		return fmt.Errorf("MF4 does not support Capture event kind %d", event.Kind)
+		return fmt.Errorf("mf4: unsupported Capture event kind %d", event.Kind)
 	}
 	offset, err := w.timeOffset(event.Timestamp)
 	if err != nil {
@@ -384,14 +384,14 @@ func (w *Writer) ready() error {
 		return w.err
 	}
 	if w.closed {
-		return errors.New("MF4 writer is closed")
+		return errors.New("mf4: writer is closed")
 	}
 	return nil
 }
 
 func (w *Writer) timeOffset(timestamp time.Time) (int64, error) {
 	if !validTime(timestamp) {
-		return 0, errors.New("MF4 timestamp is outside the supported nanosecond range")
+		return 0, errors.New("mf4: timestamp is outside the supported nanosecond range")
 	}
 	if w.start.IsZero() {
 		w.patch64(64+24+6*8, uint64(timestamp.UnixNano())) // HD data starts after six links.
@@ -401,7 +401,7 @@ func (w *Writer) timeOffset(timestamp time.Time) (int64, error) {
 		w.start = timestamp
 	}
 	if timestamp.UnixNano() < w.start.UnixNano() {
-		return 0, errors.New("MF4 timestamp is before start")
+		return 0, errors.New("mf4: timestamp is before start")
 	}
 	return timestamp.UnixNano() - w.start.UnixNano(), nil
 }

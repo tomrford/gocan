@@ -16,7 +16,7 @@ func TestWriteRoundTrip(t *testing.T) {
 			if err := original.Write(&written); err != nil {
 				t.Fatal(err)
 			}
-			reparsed, err := Parse(fixture+"-written.dbc", written.String())
+			reparsed, err := Parse(fixture+"-written.dbc", strings.NewReader(written.String()))
 			if err != nil {
 				t.Fatalf("written database does not parse: %v\n%s", err, written.String())
 			}
@@ -49,7 +49,7 @@ func assertEquivalent(t *testing.T, want, got *Database) {
 	t.Helper()
 	wantCopy, gotCopy := *want, *got
 	wantCopy.Diagnostics, gotCopy.Diagnostics = nil, nil
-	wantCopy.source, gotCopy.source = "", ""
+	wantCopy.source, gotCopy.source = nil, nil
 	if reflect.DeepEqual(wantCopy, gotCopy) {
 		return
 	}

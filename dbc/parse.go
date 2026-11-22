@@ -1,7 +1,11 @@
 package dbc
 
 import (
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -20,32 +24,45 @@ type Error struct {
 func (err *Error) Error() string {
 	location := err.Position.Source
 	if location == "" {
-		location = "DBC input"
+		location = "input"
 	}
 	if err.Position.Line > 0 {
 		location = fmt.Sprintf("%s:%d:%d", location, err.Position.Line, err.Position.Column)
 	}
 	if err.Keyword != "" {
-		return fmt.Sprintf("%s: %s: %s", location, err.Keyword, err.Message)
+		return fmt.Sprintf("dbc: %s: %s: %s", location, err.Keyword, err.Message)
 	}
-	return fmt.Sprintf("%s: %s", location, err.Message)
+	return fmt.Sprintf("dbc: %s: %s", location, err.Message)
 }
 
-// Parse parses source into a resolved DBC model. It accepts UTF-8 text, with
-// an optional byte-order mark, and falls back to Windows-1252 for legacy
+// Parse reads and parses r into a resolved DBC model. It accepts UTF-8 text,
+// with an optional byte-order mark, and falls back to Windows-1252 for legacy
 // sources. In quoted strings, \" is the only escape.
-func Parse(name, source string) (*Database, error) {
-	original := source
-	source = strings.TrimPrefix(source, "\ufeff")
-	if !utf8.ValidString(source) {
-		decoded, err := charmap.Windows1252.NewDecoder().String(source)
+func Parse(name string, r io.Reader) (*Database, error) {
+	if r == nil {
+		return nil, errors.New("dbc: reader is nil")
+	}
+	original, err := io.ReadAll(r)
+	if err != nil {
+		location := name
+		if location == "" {
+			location = "input"
+		}
+		return nil, fmt.Errorf("dbc: %s: %w", location, err)
+	}
+	textBytes := bytes.TrimPrefix(original, []byte{0xef, 0xbb, 0xbf})
+	var source string
+	if utf8.Valid(textBytes) {
+		source = string(textBytes)
+	} else {
+		decoded, err := charmap.Windows1252.NewDecoder().Bytes(textBytes)
 		if err != nil {
 			return nil, &Error{
 				Position: Position{Source: name, Line: 1, Column: 1},
 				Message:  fmt.Sprintf("decode as Windows-1252: %v", err),
 			}
 		}
-		source = decoded
+		source = string(decoded)
 	}
 
 	tokens, err := lex(name, source)
@@ -64,14 +81,15 @@ func Parse(name, source string) (*Database, error) {
 	return db, nil
 }
 
-// ParseFile reads and parses a DBC file. Parse documents the accepted
+// ParseFile opens and parses a DBC file. Parse documents the accepted
 // character encodings.
 func ParseFile(path string) (*Database, error) {
-	source, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(path, string(source))
+	defer file.Close()
+	return Parse(path, file)
 }
 
 type rawDatabase struct {
@@ -110,7 +128,7 @@ type rawSignal struct {
 	muxMarker string
 	startBit  uint32
 	bitLength uint32
-	byteOrder ByteOrder
+	byteOrder binary.ByteOrder
 	signed    bool
 	factor    float64
 	offset    float64
@@ -394,12 +412,12 @@ func (p *parser) parseSignal(keyword token) error {
 	if err != nil {
 		return err
 	}
-	var byteOrder ByteOrder
+	var byteOrder binary.ByteOrder
 	switch order.text {
 	case "0":
-		byteOrder = ByteOrderBigEndian
+		byteOrder = binary.BigEndian
 	case "1":
-		byteOrder = ByteOrderLittleEndian
+		byteOrder = binary.LittleEndian
 	default:
 		return p.errorAt(order, "byte order must be 0 or 1")
 	}
