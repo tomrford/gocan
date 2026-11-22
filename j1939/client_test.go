@@ -14,8 +14,8 @@ import (
 	"github.com/tomrford/gocan/j1939"
 )
 
-// Wire fixtures are specified independently of the active client's helpers.
-// TP layouts/timers: Linux J1939 and python-can-j1939, pinned in AGENTS.md.
+// Wire fixtures are specified independently of the active client's helpers,
+// following SAE J1939-21 transport layouts and timers.
 type activeBus struct {
 	capture   *gocan.Capture
 	sent      chan gocan.Frame

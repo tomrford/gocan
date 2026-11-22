@@ -11,9 +11,8 @@ import (
 	"github.com/tomrford/gocan/cdd"
 )
 
-// Reference provenance: the 7+2 diagram is from CANdelaStudio 17 English help,
-// as transcribed with this task. All other wires are independent calculations
-// from its LSB-first child positioning and whole-container byte mapping rules.
+// Wire fixtures follow CANdelaStudio's LSB-first STRUCT child positioning and
+// whole-container byte mapping rules (including its 7+2 bitfield layout).
 // These synthetic CDD cases were not executed in CANoe or validated by its DTD.
 const packedTypes = `
 <IDENT id="byte"><CVALUETYPE bl="8" bo="21" enc="uns"/></IDENT>

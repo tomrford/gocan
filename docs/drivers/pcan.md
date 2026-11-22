@@ -1,8 +1,11 @@
 # PCAN
 
-The PCAN classical API cannot transmit classical DLC values 9–15. PCAN-Basic
-cannot select ISO or non-ISO CAN FD framing, so the adapter's stored mode must
-match its peers.
+For classical CAN, PCAN accepts only its predefined rates, with fractional
+rates rounded to the nearest bit per second (for example `83_333`). Built-in
+CAN FD rate presets use an 80% sample point in both phases; custom CAN FD bit
+timing is supported through `Config.FDTiming`. The PCAN classical
+API cannot transmit classical DLC values 9–15. PCAN-Basic cannot select ISO or
+non-ISO CAN FD framing, so the adapter's stored mode must match its peers.
 
 `Send` returns once PCAN-Basic queues the frame; success does not confirm
 transmission on the wire or a reply. `Close` releases the channel through

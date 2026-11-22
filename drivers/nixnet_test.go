@@ -6,8 +6,8 @@ import (
 )
 
 func TestNIXNETConfiguration(t *testing.T) {
-	channel := Channel{driver: driverNIXNET, nativeName: "CAN5", supportsFD: true, supportsTermination: true}
-	if channel.Identifier() != "nixnet:CAN5" || channel.Driver() != "nixnet" || !channel.SupportsTermination() {
+	channel := Channel{driver: driverNIXNET, nativeName: "CAN1", supportsFD: true, supportsTermination: true}
+	if channel.Identifier() != "nixnet:CAN1" || channel.Driver() != "nixnet" || !channel.SupportsTermination() {
 		t.Fatalf("wrong channel metadata: %+v", channel)
 	}
 	for _, concurrent := range []bool{false, true} {

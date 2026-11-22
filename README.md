@@ -94,13 +94,11 @@ func main() {
 | [SocketCAN](docs/drivers/socketcan.md) | Linux | Yes | Yes | Software and virtual interfaces |
 | [PCAN](docs/drivers/pcan.md) | Windows | Yes | Yes | Physical adapters |
 | [Vector](docs/drivers/vector.md) | Windows x64 | Yes | Yes | Physical adapters |
-| [NI-XNET](docs/drivers/nixnet.md) | Windows x64 | Yes | Yes | PXI-8512 CAN5/CAN6, ISO FD at 500k/2M and 500k/4M |
+| [NI-XNET](docs/drivers/nixnet.md) | Windows x64 | Yes | Yes | PXI-8512, ISO FD at 500k/2M and 500k/4M |
 | [ZLG](docs/drivers/zlg.md) | Windows x64 | Yes | USBCANFD | USBCAN-I tested; receive loss under load; USBCANFD unqualified |
 
-Physical channels are discovered and opened through `drivers`. SocketCAN uses
-link timing configured by Linux. PCAN, Vector and NI-XNET accept shared exact
-CAN FD bit timing through the same public configuration; ZLG accepts only its
-own rate presets.
+Physical channels are discovered and opened through `drivers`; see each
+driver's page for setup, bit-timing rules, and hardware limitations.
 
 ## Development
 

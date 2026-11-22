@@ -7,11 +7,11 @@ import (
 	"strconv"
 )
 
-// CANdelaStudio 17 English help (installed documentation transcribed in the
-// task) defines STRUCT children from the enclosing value's least-significant
-// bit. Byte order applies to that entire value, not individual children.
-// Top-level objects remain byte-aligned. Explicit and implicit gaps reserve
-// space without constraining received bits; request padding starts at zero.
+// CANdelaStudio defines STRUCT children from the enclosing value's
+// least-significant bit. Byte order applies to that entire value, not
+// individual children. Top-level objects remain byte-aligned. Explicit and
+// implicit gaps reserve space without constraining received bits; request
+// padding starts at zero.
 func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset *uint64) error {
 	container, err := resolver.resolveFieldDatatype(node, "STRUCT", uint32(*offset))
 	if err != nil {

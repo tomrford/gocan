@@ -41,9 +41,9 @@ type messageID struct {
 	extended bool
 }
 
-// Source returns a copy of the exact bytes passed to Parse or read by
-// ParseFile, including its original encoding and byte-order mark. It does not
-// reflect model edits. A database constructed without parsing returns nil.
+// Source returns a copy of the exact bytes read by Parse or ParseFile,
+// including its original encoding and byte-order mark. It does not reflect
+// model edits. A database constructed without parsing returns nil.
 func (db *Database) Source() []byte { return bytes.Clone(db.source) }
 
 // Node is one CAN network participant declared by BU_.

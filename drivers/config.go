@@ -17,38 +17,30 @@ type Config struct {
 	// Name is the human-readable bus name.
 	Name string
 	// Bitrate selects classical CAN, or the nominal CAN FD rate when
-	// DataBitrate is set, in bits per second. For classical CAN, PCAN accepts
-	// only its predefined rates, with fractional rates rounded to the nearest
-	// bit per second (for example 83_333). ZLG accepts only its predefined
-	// rates: 5_000 through 1_000_000 on USBCAN, and 50_000 through 1_000_000
-	// on USBCANFD.
+	// DataBitrate is set, in bits per second. Some drivers accept only
+	// predefined classical bitrates.
 	Bitrate uint32
-	// DataBitrate selects CAN FD using built-in timing on PCAN, Vector,
-	// NI-XNET, and ZLG USBCANFD. Channel.FDRatePresets lists the available rate
-	// pairs. The presets use an 80% sample point in both phases, except ZLG's
-	// 5 Mbit/s data rate at 75%.
-	// Zero selects classical CAN when Bitrate is set. Use FDTiming instead
-	// when the network requires other rates or specific timing.
+	// DataBitrate selects CAN FD using driver-supported rate presets.
+	// Channel.FDRatePresets lists the available rate pairs. Zero selects
+	// classical CAN when Bitrate is set. Use FDTiming instead when the network
+	// requires other rates or custom timing on programmable channels.
 	DataBitrate uint32
 	// FDTiming selects programmable CAN FD with exact bit timing.
 	FDTiming FDTiming
 	// External selects timing already configured outside gocan, on channels
-	// whose ExternallyConfigured method returns true. On Vector it joins the
-	// channel without changing the timing of the application that owns it;
-	// Open checks that the channel is on the bus before joining, but cannot
-	// prevent the owner from closing or changing timing during the open.
+	// whose ExternallyConfigured method returns true. On shared channels, Open
+	// verifies the channel is on the bus before joining but cannot prevent the
+	// owning application from closing or changing timing during the open.
 	External bool
 	// Termination selects switchable bus termination on supported channels.
 	// Default leaves the driver default; unsupported explicit choices are rejected.
 	Termination Termination
 	// NIXNETConcurrentIO lets NI-XNET read frames and controller state without
-	// holding the transmit lock. False (the default) serializes native reads
-	// and capture appends with transmission; slow reads may delay Send.
-	// True reduces that delay, but a reply fetched before a new request may be
-	// captured after it. Use concurrent mode for fully awaited exchanges with
-	// no stale or unsolicited replies on the receive address; after a timeout
-	// or cancellation, finish or recover the old exchange before reusing it.
-	// This option is fixed at Open and is rejected for other drivers.
+	// holding the transmit lock to reduce send delays during slow native reads.
+	// Capture ordering can then place an earlier-fetched reply after a newer
+	// request; use it only for fully awaited exchanges without stale or
+	// unsolicited replies on that receive address. Fixed at Open and rejected
+	// for other drivers.
 	NIXNETConcurrentIO bool
 }
 
