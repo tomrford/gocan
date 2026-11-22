@@ -8,25 +8,25 @@ import (
 
 var (
 	// ErrBusClosed indicates an operation on a bus that has stopped.
-	ErrBusClosed = errors.New("CAN bus is closed")
+	ErrBusClosed = errors.New("gocan: CAN bus is closed")
 	// ErrReceiveOverrun indicates that a driver could not retain incoming
 	// traffic before its bounded receive queue filled. A driver stops its bus
 	// with this error instead of silently dropping frames.
-	ErrReceiveOverrun = errors.New("CAN receive queue overrun")
+	ErrReceiveOverrun = errors.New("gocan: CAN receive queue overrun")
 	// ErrBusOff indicates that a controller stopped participating on the bus
 	// after its transmit error counter exceeded the bus-off threshold.
-	ErrBusOff = errors.New("CAN controller is bus-off")
+	ErrBusOff = errors.New("gocan: CAN controller is bus-off")
 	// ErrTransmitQueueFull indicates that a non-blocking native transmit queue
 	// cannot currently accept another frame. The bus remains usable and callers
 	// may retry under their own context.
-	ErrTransmitQueueFull = errors.New("CAN transmit queue is full")
+	ErrTransmitQueueFull = errors.New("gocan: CAN transmit queue is full")
 	// ErrHardwareDisconnected indicates that an adapter or channel disappeared
 	// after it was opened. The bus stops; reconnecting hardware requires a new
 	// Open call.
-	ErrHardwareDisconnected = errors.New("CAN hardware disconnected")
+	ErrHardwareDisconnected = errors.New("gocan: CAN hardware disconnected")
 	// ErrDriverUnavailable indicates that a driver's native vendor stack is
 	// not installed on this host, as opposed to an installed stack failing.
-	ErrDriverUnavailable = errors.New("CAN driver is not installed")
+	ErrDriverUnavailable = errors.New("gocan: CAN driver is not installed")
 )
 
 // Bus owns one logical CAN channel. Every accepted transmission and received
@@ -69,7 +69,7 @@ type Bus interface {
 // its custom cause is joined to that error, preserving errors.Is matching for both.
 func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration) error {
 	if retryTimeout < 0 {
-		return errors.New("CAN transmit retry timeout must not be negative")
+		return errors.New("gocan: transmit retry timeout must not be negative")
 	}
 	err := bus.Send(ctx, frame)
 	if ctx.Err() != nil && errors.Is(err, ctx.Err()) && context.Cause(ctx) != ctx.Err() {

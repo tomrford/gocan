@@ -104,14 +104,14 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 
 	last, endRecord, err := locateCursor(end, generation, chunks, pruneSeam)
 	if err != nil {
-		return nil, 0, fmt.Errorf("capture range end: %w", err)
+		return nil, 0, fmt.Errorf("gocan: capture range end: %w", err)
 	}
 	first, startRecord, err := locateCursor(start, generation, chunks, pruneSeam)
 	if err != nil {
-		return nil, 0, fmt.Errorf("capture range start: %w", err)
+		return nil, 0, fmt.Errorf("gocan: capture range start: %w", err)
 	}
 	if first > last || first == last && startRecord > endRecord {
-		return nil, 0, fmt.Errorf("capture range end precedes its start: %w", ErrCursorOutOfRange)
+		return nil, 0, fmt.Errorf("gocan: capture range end precedes its start: %w", ErrCursorOutOfRange)
 	}
 	if start == end {
 		return nil, 0, nil
@@ -128,7 +128,7 @@ func (capture *Capture) viewsBetween(start, end Cursor) (views []captureView, sk
 	}
 	tail := views[len(views)-1].records
 	if endRecord+1 > len(tail) {
-		return nil, 0, fmt.Errorf("capture range end: %w", &CursorOutOfRangeError{Cursor: end})
+		return nil, 0, fmt.Errorf("gocan: capture range end: %w", &CursorOutOfRangeError{Cursor: end})
 	}
 	views[len(views)-1].records = tail[:endRecord+1]
 	return views, startRecord + 1, nil

@@ -116,26 +116,26 @@ func NewReceiveOverrunEvent(bus BusID, timestamp time.Time) (Event, error) {
 // Validate reports whether event is suitable for capture.
 func (event Event) Validate() error {
 	if event.Bus == 0 {
-		return errors.New("event has no bus")
+		return errors.New("gocan: event has no bus")
 	}
 	if event.Timestamp.IsZero() {
-		return errors.New("event has no timestamp")
+		return errors.New("gocan: event has no timestamp")
 	}
 
 	switch event.Kind {
 	case EventControllerState:
 		if event.ControllerState < ControllerActive || event.ControllerState > ControllerBusOff {
-			return fmt.Errorf("event has invalid controller state %d", event.ControllerState)
+			return fmt.Errorf("gocan: event has invalid controller state %d", event.ControllerState)
 		}
 		if !event.ErrorCountsKnown && (event.TXErrorCount != 0 || event.RXErrorCount != 0) {
-			return errors.New("event has controller error counts marked unavailable")
+			return errors.New("gocan: event has controller error counts marked unavailable")
 		}
 	case EventErrorFrame, EventReceiveOverrun:
 		if event.ControllerState != 0 || event.TXErrorCount != 0 || event.RXErrorCount != 0 || event.ErrorCountsKnown {
-			return fmt.Errorf("event kind %d has controller-state details", event.Kind)
+			return fmt.Errorf("gocan: event kind %d has controller-state details", event.Kind)
 		}
 	default:
-		return fmt.Errorf("event has invalid kind %d", event.Kind)
+		return fmt.Errorf("gocan: event has invalid kind %d", event.Kind)
 	}
 	return nil
 }

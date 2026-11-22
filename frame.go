@@ -22,7 +22,7 @@ const (
 )
 
 // ErrInvalidFrame identifies an invalid CAN frame.
-var ErrInvalidFrame = errors.New("invalid CAN frame")
+var ErrInvalidFrame = errors.New("gocan: invalid CAN frame")
 
 // FrameFlags describe properties of a CAN frame.
 type FrameFlags uint8
@@ -162,9 +162,6 @@ func (frame Frame) Validate() error {
 	if frame.Flags.Has(FrameErrorStateIndicator) && !frame.Flags.Has(FrameFD) {
 		return fmt.Errorf("%w: error state indicator requires CAN FD", ErrInvalidFrame)
 	}
-	if _, err := DLCToLength(frame.DLC, frame.Flags.Has(FrameFD)); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidFrame, err)
-	}
 	return nil
 }
 
@@ -223,7 +220,7 @@ func (frame Frame) String() string {
 // bytes.
 func DLCToLength(dlc uint8, fd bool) (int, error) {
 	if dlc > 15 {
-		return 0, fmt.Errorf("DLC %d exceeds 15", dlc)
+		return 0, fmt.Errorf("%w: DLC %d exceeds 15", ErrInvalidFrame, dlc)
 	}
 	if dlc <= 8 {
 		return int(dlc), nil
@@ -333,13 +330,13 @@ func (event FrameEvent) Key() FrameKey {
 // Validate reports whether event is suitable for capture.
 func (event FrameEvent) Validate() error {
 	if event.Bus == 0 {
-		return errors.New("frame event has no bus")
+		return errors.New("gocan: frame event has no bus")
 	}
 	if event.Timestamp.IsZero() {
-		return errors.New("frame event has no timestamp")
+		return errors.New("gocan: frame event has no timestamp")
 	}
 	if event.Direction != DirectionReceive && event.Direction != DirectionTransmit {
-		return fmt.Errorf("frame event has invalid direction %d", event.Direction)
+		return fmt.Errorf("gocan: frame event has invalid direction %d", event.Direction)
 	}
 	return event.Frame.Validate()
 }
