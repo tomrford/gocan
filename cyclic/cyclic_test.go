@@ -35,10 +35,7 @@ func TestTaskLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() {
-		task.Stop()
-		<-task.Done()
-	})
+	t.Cleanup(func() { _ = task.Close() })
 
 	key := gocan.FrameKey{
 		Bus:       bus.ID(),
@@ -73,10 +70,14 @@ func TestTaskLifecycle(t *testing.T) {
 		}
 	}
 
-	task.Stop()
-	<-task.Done()
+	if err := task.Close(); err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	if err := task.Close(); err != nil {
+		t.Fatalf("second Close = %v, want nil", err)
+	}
 	if err := task.Err(); err != nil {
-		t.Fatalf("Err after Stop = %v, want nil", err)
+		t.Fatalf("Err after Close = %v, want nil", err)
 	}
 	if err := task.Update(initial); !errors.Is(err, cyclic.ErrStopped) {
 		t.Fatalf("Update after Stop = %v, want ErrStopped", err)

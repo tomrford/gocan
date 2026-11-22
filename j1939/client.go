@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -18,11 +19,20 @@ const RequestPGN PGN = 0xea00
 const commandedAddressPGN PGN = 0xfed8
 
 var (
-	ErrClosed      = errors.New("J1939 client is closed")
-	ErrAddressLost = errors.New("J1939 local address was lost")
-	ErrBusy        = errors.New("J1939 transport is busy")
-	ErrTimeout     = errors.New("J1939 transport timeout")
+	// ErrClosed indicates an operation on a client that has been closed.
+	ErrClosed = errors.New("j1939: client is closed")
+	// ErrAddressLost indicates that the client lost address arbitration and
+	// can no longer transmit from its configured address.
+	ErrAddressLost = errors.New("j1939: local address was lost")
+	// ErrBusy indicates that another transport session prevents starting this send.
+	ErrBusy = errors.New("j1939: transport is busy")
+	// ErrTimeout indicates that a J1939 transport timer or BAM interval expired.
+	ErrTimeout = errors.New("j1939: transport timeout")
 )
+
+var errCloseRequested = errors.New("j1939: client close requested")
+
+var _ io.Closer = (*Client)(nil)
 
 // Config identifies one local controller. Address must be 0..253 and NAME must
 // be nonzero, with reserved and arbitrary-address-capable bits clear. This
@@ -64,6 +74,7 @@ type Client struct {
 	mu       sync.Mutex
 	cursor   gocan.Cursor
 	address  Address
+	err      error
 	// Only the run goroutine accesses fields below.
 	claimed  bool
 	claimAt  time.Time
@@ -90,10 +101,10 @@ type sendRequest struct {
 // wait is conservative even for addresses permitted to start immediately.
 func Open(ctx context.Context, bus gocan.Bus, config Config) (*Client, error) {
 	if bus == nil || bus.Capture() == nil {
-		return nil, errors.New("J1939 requires a bus with a capture")
+		return nil, errors.New("j1939: requires a bus with a capture")
 	}
 	if config.Address >= NullAddress || config.Name == 0 {
-		return nil, errors.New("J1939 requires a usable local address and nonzero NAME")
+		return nil, errors.New("j1939: requires a usable local address and nonzero NAME")
 	}
 	if config.Name.Reserved() != 0 || config.Name.ArbitraryAddressCapable() {
 		return nil, fmt.Errorf("%w: reserved or arbitrary-address-capable NAME", ErrUnsupported)
@@ -106,21 +117,49 @@ func Open(ctx context.Context, bus gocan.Bus, config Config) (*Client, error) {
 		if err == nil {
 			return c, nil
 		}
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	case <-c.done:
-		return nil, c.Err()
+		return nil, c.operationError()
 	case <-ctx.Done():
-		c.Close()
+		_ = c.Close()
 		return nil, context.Cause(ctx)
 	}
 }
 
-func (c *Client) Close()                { c.cancel(ErrClosed); <-c.done }
+// Close aborts active directed transport sessions, waits for the client to
+// stop, and returns nil. It is idempotent and does not close the bus.
+func (c *Client) Close() error {
+	c.cancel(errCloseRequested)
+	<-c.done
+	return nil
+}
+
+// Done is closed after the client stops and cleans up active transport sessions.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
-// Err returns the terminal cause after Done closes, including ErrClosed after Close.
-func (c *Client) Err() error { return context.Cause(c.ctx) }
+// Err returns the background failure that stopped the client. It returns nil
+// before Done closes and after a clean Close.
+func (c *Client) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *Client) operationError() error {
+	if err := c.Err(); err != nil {
+		return err
+	}
+	return ErrClosed
+}
+
+func (c *Client) contextError() error {
+	cause := context.Cause(c.ctx)
+	if errors.Is(cause, errCloseRequested) {
+		return ErrClosed
+	}
+	return cause
+}
 
 // Address is NullAddress while unclaimed or after loss/closure.
 func (c *Client) Address() Address { c.mu.Lock(); defer c.mu.Unlock(); return c.address }
@@ -169,14 +208,14 @@ func (c *Client) send(ctx context.Context, priority uint8, pgn PGN, destination 
 	case <-ctx.Done():
 		return context.Cause(ctx)
 	case <-c.done:
-		return c.Err()
+		return c.operationError()
 	case c.requests <- r:
 	}
 	select {
 	case err := <-r.result:
 		return err
 	case <-c.done:
-		return c.Err()
+		return c.operationError()
 	}
 }
 
@@ -191,14 +230,30 @@ func activePGN(pgn PGN) error {
 }
 
 func (c *Client) run() {
+	var runErr error
 	defer func() {
+		if ctxErr := context.Cause(c.ctx); ctxErr != nil &&
+			(runErr == nil || errors.Is(runErr, c.ctx.Err()) || errors.Is(runErr, ctxErr)) {
+			select {
+			case <-c.bus.Done():
+			default:
+				c.shutdown()
+			}
+			if errors.Is(ctxErr, errCloseRequested) {
+				runErr = nil
+			} else {
+				runErr = ctxErr
+			}
+		}
+		c.cancel(runErr)
 		c.mu.Lock()
+		c.err = runErr
 		c.address = NullAddress
 		c.mu.Unlock()
 		close(c.done)
 	}()
 	if err := c.claim(c.config.Address); err != nil {
-		c.cancel(err)
+		runErr = err
 		return
 	}
 	c.claimAt = time.Now().Add(250 * time.Millisecond)
@@ -214,14 +269,12 @@ func (c *Client) run() {
 		var request *sendRequest
 		select {
 		case <-c.ctx.Done():
-			c.shutdown()
 			return
 		case <-c.bus.Done():
-			err := c.bus.Err()
-			if err == nil {
-				err = gocan.ErrBusClosed
+			runErr = c.bus.Err()
+			if runErr == nil {
+				runErr = gocan.ErrBusClosed
 			}
-			c.cancel(err)
 			return
 		case r := <-c.requests:
 			request = r
@@ -229,14 +282,14 @@ func (c *Client) run() {
 		case <-due:
 		}
 		if err := c.poll(); err != nil {
-			c.cancel(err)
+			runErr = err
 			return
 		}
 		if request != nil {
 			c.startSend(request)
 		}
 		if err := c.tick(time.Now()); err != nil {
-			c.cancel(err)
+			runErr = err
 			return
 		}
 	}

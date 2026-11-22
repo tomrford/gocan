@@ -55,13 +55,13 @@ type transmitter struct {
 
 func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDataLength uint8, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
 	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
-		return transmitter{}, fmt.Errorf("ISO-TP frame flags %#x are not supported", uint8(unsupported))
+		return transmitter{}, fmt.Errorf("isotp: frame flags %#x are not supported", uint8(unsupported))
 	}
 	if flags.Has(gocan.FrameBitRateSwitch) && !flags.Has(gocan.FrameFD) {
-		return transmitter{}, errors.New("ISO-TP bit-rate switching requires CAN FD")
+		return transmitter{}, errors.New("isotp: bit-rate switching requires CAN FD")
 	}
 	if err := validateID(transmitID, flags); err != nil {
-		return transmitter{}, fmt.Errorf("ISO-TP transmit ID: %w", err)
+		return transmitter{}, fmt.Errorf("isotp: transmit ID: %w", err)
 	}
 	transmitDataLength := int(dataLength)
 	if transmitDataLength == 0 {
@@ -71,10 +71,10 @@ func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDa
 		return transmitter{}, err
 	}
 	if int(minDataLength) > transmitDataLength || nearestCANFDLength(int(minDataLength)) != int(minDataLength) {
-		return transmitter{}, fmt.Errorf("ISO-TP minimum transmit data length %d is invalid for maximum %d", minDataLength, transmitDataLength)
+		return transmitter{}, fmt.Errorf("isotp: minimum transmit data length %d is invalid for maximum %d", minDataLength, transmitDataLength)
 	}
 	if retryTimeout < 0 {
-		return transmitter{}, errors.New("ISO-TP transmit retry timeout must not be negative")
+		return transmitter{}, errors.New("isotp: transmit retry timeout must not be negative")
 	}
 	return transmitter{
 		transmitID:            transmitID,
@@ -95,7 +95,7 @@ func (transmitter *transmitter) singleFrameCapacity() uint32 {
 
 func (transmitter *transmitter) prepareTransmission(payload []byte) (transmission, error) {
 	if len(payload) == 0 {
-		return transmission{}, errors.New("ISO-TP payload must not be empty")
+		return transmission{}, errors.New("isotp: payload must not be empty")
 	}
 	if uint64(len(payload)) > uint64(transmitter.maximumPayloadLength) {
 		return transmission{}, fmt.Errorf("%w: %d exceeds configured maximum %d", ErrPayloadTooLarge, len(payload), transmitter.maximumPayloadLength)

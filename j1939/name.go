@@ -14,7 +14,7 @@ const AddressClaimPGN PGN = 0xee00
 
 // ErrAmbiguous indicates competing observed identities. A passive capture does
 // not establish that the lower NAME won arbitration or that a loser stopped.
-var ErrAmbiguous = errors.New("ambiguous J1939 identity")
+var ErrAmbiguous = errors.New("j1939: ambiguous identity")
 
 // Name is the 64-bit J1939 controller identity. Its numeric value determines
 // address-claim priority: lower values win. Names are transmitted little-endian.

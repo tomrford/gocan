@@ -29,7 +29,7 @@ func (client *Client) ShortUpload(ctx context.Context, address Address, length i
 func (client *Client) read(ctx context.Context, address Address, length int, short bool) ([]byte, error) {
 	// A transfer ending at 2^32 would wrap the ECU's incremented MTA as well.
 	if length < 0 || uint64(address.Value)+uint64(length) > uint64(^uint32(0)) {
-		return nil, fmt.Errorf("XCP read address/count overflow")
+		return nil, fmt.Errorf("xcp: read address/count overflow")
 	}
 	ctx, finish, err := client.begin(ctx)
 	if err != nil {

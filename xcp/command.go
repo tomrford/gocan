@@ -153,12 +153,12 @@ func (client *Client) validateRequest(request Request) (minimum int, known bool,
 		known = false
 	}
 	if parameters >= 0 && len(request.Data) != parameters {
-		return 0, known, fmt.Errorf("XCP command %#02x needs %d parameter bytes", request.Command, parameters)
+		return 0, known, fmt.Errorf("xcp: command %#02x needs %d parameter bytes", request.Command, parameters)
 	}
 	if request.Command == CommandShortUpload {
 		address := client.capabilities.ByteOrder.Uint32(request.Data[3:])
 		if uint64(address)+uint64(request.Data[0]) > uint64(^uint32(0)) {
-			return 0, known, fmt.Errorf("XCP read address/count overflow")
+			return 0, known, fmt.Errorf("xcp: read address/count overflow")
 		}
 	}
 	return minimum, known, nil

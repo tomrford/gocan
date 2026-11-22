@@ -99,7 +99,7 @@ func testRecording(t *testing.T, compression bool) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(r.Stop)
+	t.Cleanup(func() { _ = r.Close() })
 	initial := capture.End()
 	if r.Accepted() != initial || r.Flushed() != initial {
 		t.Fatal("initial recorder progress missing")
@@ -131,9 +131,8 @@ func testRecording(t *testing.T, compression bool) []byte {
 	appendFrame(frame(1, 803*time.Millisecond, 0x123, 0, 44))
 	appendFrame(frame(2, 803*time.Millisecond, 0x124, 0, 60, 0, 0, 0, 0, 0, 0, 0))
 	end := capture.End()
-	r.Stop()
-	if r.Err() != nil || r.Accepted() != end || r.Flushed() != end {
-		t.Fatal("final recorder progress", r.Err())
+	if err := r.Close(); err != nil || r.Err() != nil || r.Accepted() != end || r.Flushed() != end {
+		t.Fatal("final recorder progress", err, r.Err())
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -282,9 +281,8 @@ func TestCaptureEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Stop()
-	if r.Err() != nil || r.Accepted() != capture.End() || r.Flushed() != capture.End() {
-		t.Fatal("recorder stopped at an event", r.Err())
+	if err := r.Close(); err != nil || r.Err() != nil || r.Accepted() != capture.End() || r.Flushed() != capture.End() {
+		t.Fatal("recorder stopped at an event", err, r.Err())
 	}
 	checkGroups(t, f, []uint64{2})
 	file := readImage(t, f)

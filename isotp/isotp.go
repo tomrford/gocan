@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -28,27 +29,29 @@ const (
 
 var (
 	// ErrProtocol identifies malformed or unexpected ISO-TP traffic.
-	ErrProtocol = errors.New("ISO-TP protocol error")
+	ErrProtocol = errors.New("isotp: protocol error")
 	// ErrExchangeClosed identifies an operation on a closed Exchange, and is the
 	// error reported to a Next call that Close cancelled.
-	ErrExchangeClosed = errors.New("ISO-TP exchange is closed")
+	ErrExchangeClosed = errors.New("isotp: exchange is closed")
 	// ErrFirstFrameTimeout indicates that no Single or First Frame arrived
 	// before the timeout passed to Exchange.Next.
-	ErrFirstFrameTimeout = errors.New("ISO-TP first-frame timeout")
+	ErrFirstFrameTimeout = errors.New("isotp: first-frame timeout")
 	// ErrFlowControlTimeout indicates that a sender did not receive Flow Control
 	// before its configured timeout.
-	ErrFlowControlTimeout = errors.New("ISO-TP flow-control timeout")
+	ErrFlowControlTimeout = errors.New("isotp: flow-control timeout")
 	// ErrConsecutiveFrameTimeout indicates that a receiver did not receive the
 	// next Consecutive Frame before its configured timeout.
-	ErrConsecutiveFrameTimeout = errors.New("ISO-TP consecutive-frame timeout")
+	ErrConsecutiveFrameTimeout = errors.New("isotp: consecutive-frame timeout")
 	// ErrFlowControlOverflow indicates that the peer rejected a transmitted PDU.
-	ErrFlowControlOverflow = errors.New("ISO-TP flow-control overflow")
+	ErrFlowControlOverflow = errors.New("isotp: flow-control overflow")
 	// ErrWaitFrameLimit indicates that the peer sent more Wait frames than this
 	// link permits.
-	ErrWaitFrameLimit = errors.New("ISO-TP wait-frame limit reached")
+	ErrWaitFrameLimit = errors.New("isotp: wait-frame limit reached")
 	// ErrPayloadTooLarge indicates that a PDU exceeds MaximumPayloadLength.
-	ErrPayloadTooLarge = errors.New("ISO-TP payload is too large")
+	ErrPayloadTooLarge = errors.New("isotp: payload is too large")
 )
+
+var _ io.Closer = (*Exchange)(nil)
 
 // Config defines one physical, normal-addressing ISO-TP link.
 type Config struct {
@@ -142,18 +145,18 @@ type Exchange struct {
 // New validates config and prepares a physical, normal-addressing ISO-TP Link.
 func New(bus gocan.Bus, config Config) (*Link, error) {
 	if bus == nil {
-		return nil, errors.New("ISO-TP link requires a bus")
+		return nil, errors.New("isotp: link requires a bus")
 	}
 	capture := bus.Capture()
 	if capture == nil {
-		return nil, errors.New("ISO-TP bus requires a capture")
+		return nil, errors.New("isotp: bus requires a capture")
 	}
 	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.TransmitMinDataLength, config.PaddingByte, config.TransmitRetryTimeout)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateID(config.ReceiveID, config.FrameFlags); err != nil {
-		return nil, fmt.Errorf("ISO-TP receive ID: %w", err)
+		return nil, fmt.Errorf("isotp: receive ID: %w", err)
 	}
 
 	separationTime, err := encodeSeparationTime(config.AdvertisedSeparationTime)
@@ -308,7 +311,7 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 		// Resolve the cause before Close cancels the exchange context, or the
 		// real transport failure is replaced by ErrExchangeClosed.
 		failure := withCause(operationContext, err)
-		exchange.Close()
+		_ = exchange.Close()
 		return nil, failure
 	}
 	return exchange, nil
@@ -322,7 +325,7 @@ func (link *Link) Begin(ctx context.Context, payload []byte) (*Exchange, error) 
 // caller cancellation, caller deadlines, and transport errors remain distinct.
 func (exchange *Exchange) Next(ctx context.Context, firstFrameTimeout time.Duration) ([]byte, error) {
 	if firstFrameTimeout < 0 {
-		return nil, errors.New("ISO-TP first-frame timeout must not be negative")
+		return nil, errors.New("isotp: first-frame timeout must not be negative")
 	}
 	exchange.mu.Lock()
 	defer exchange.mu.Unlock()
@@ -336,20 +339,21 @@ func (exchange *Exchange) Next(ctx context.Context, firstFrameTimeout time.Durat
 	return payload, withCause(operationContext, err)
 }
 
-// Close releases the Link for another operation. It is safe to call more than
-// once. A Next already in progress is cancelled and reports ErrExchangeClosed,
-// so Close waits only for that call to unwind rather than for a protocol
-// timeout.
-func (exchange *Exchange) Close() {
+// Close releases the Link for another operation and returns nil. It is
+// idempotent. A Next already in progress is cancelled and reports
+// ErrExchangeClosed, so Close waits only for that call to unwind rather than
+// for a protocol timeout.
+func (exchange *Exchange) Close() error {
 	exchange.cancel(ErrExchangeClosed)
 	exchange.mu.Lock()
 	defer exchange.mu.Unlock()
 	if exchange.closed {
-		return
+		return nil
 	}
 	exchange.closed = true
 	exchange.link.finishReception()
 	exchange.link.release(exchange.link.sending)
+	return nil
 }
 
 func (link *Link) newExchange() *Exchange {
@@ -487,7 +491,7 @@ func (link *Link) busError() error {
 
 func configuredTimeout(value, defaultValue time.Duration, name string) (time.Duration, error) {
 	if value < 0 {
-		return 0, fmt.Errorf("ISO-TP %s timeout must not be negative", name)
+		return 0, fmt.Errorf("isotp: %s timeout must not be negative", name)
 	}
 	if value == 0 {
 		return defaultValue, nil
@@ -517,14 +521,14 @@ func validateTransmitDataLength(length int, fd bool) error {
 		}
 	}
 	if !valid {
-		return fmt.Errorf("ISO-TP transmit data length %d is invalid for this CAN frame type", length)
+		return fmt.Errorf("isotp: transmit data length %d is invalid for this CAN frame type", length)
 	}
 	return nil
 }
 
 func encodeSeparationTime(value time.Duration) (uint8, error) {
 	if value < 0 {
-		return 0, errors.New("ISO-TP advertised separation time must not be negative")
+		return 0, errors.New("isotp: advertised separation time must not be negative")
 	}
 	if value == 0 {
 		return 0, nil
@@ -541,5 +545,5 @@ func encodeSeparationTime(value time.Duration) (uint8, error) {
 			return 0xf0 + uint8(units), nil
 		}
 	}
-	return 0, fmt.Errorf("ISO-TP advertised separation time %s cannot be encoded", value)
+	return 0, fmt.Errorf("isotp: advertised separation time %s cannot be encoded", value)
 }

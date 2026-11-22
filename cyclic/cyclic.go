@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,13 +14,15 @@ import (
 )
 
 // ErrStopped indicates an update to a task that has already stopped.
-var ErrStopped = errors.New("cyclic task is stopped")
+var ErrStopped = errors.New("cyclic: task is stopped")
 
 // ErrOccurrenceMissed indicates that an occurrence's send budget expired.
 // It does not imply that the native transmit queue was full.
-var ErrOccurrenceMissed = errors.New("cyclic occurrence send budget expired")
+var ErrOccurrenceMissed = errors.New("cyclic: occurrence send budget expired")
 
-var errStopRequested = errors.New("cyclic task stop requested")
+var errStopRequested = errors.New("cyclic: task stop requested")
+
+var _ io.Closer = (*Task)(nil)
 
 // Config controls a recurring transmission schedule.
 type Config struct {
@@ -48,8 +51,10 @@ type Config struct {
 //
 // Generation, validation, and send errors stop the Task, including on the first
 // attempt, except for send misses permitted by Config.MaxConsecutiveMisses.
-// Stop requests cancellation; Done closes after all callbacks and sends finish.
-// Err then reports the terminal error, or nil if Stop ended it.
+// Close requests cancellation and waits until all callbacks and sends finish.
+// Stop requests cancellation without waiting (for example from inside a
+// StartFunc callback). Done closes after all callbacks and sends finish; Err
+// then reports the terminal error, or nil after a clean Stop or Close.
 type Task struct {
 	bus          gocan.Bus
 	period       time.Duration
@@ -90,20 +95,20 @@ func Start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, config Config)
 // example, through a channel) before accessing it.
 func StartFunc(ctx context.Context, bus gocan.Bus, generate func() (gocan.Frame, error), config Config) (*Task, error) {
 	if generate == nil {
-		return nil, errors.New("cyclic task requires a frame callback")
+		return nil, errors.New("cyclic: task requires a frame callback")
 	}
 	return start(ctx, bus, gocan.Frame{}, generate, config)
 }
 
 func start(ctx context.Context, bus gocan.Bus, frame gocan.Frame, generate func() (gocan.Frame, error), config Config) (*Task, error) {
 	if bus == nil {
-		return nil, errors.New("cyclic task requires a bus")
+		return nil, errors.New("cyclic: task requires a bus")
 	}
 	if config.Period <= 0 {
-		return nil, fmt.Errorf("cyclic task period must be positive: %s", config.Period)
+		return nil, fmt.Errorf("cyclic: task period must be positive: %s", config.Period)
 	}
 	if config.TransmitRetryTimeout < 0 {
-		return nil, errors.New("CAN transmit retry timeout must not be negative")
+		return nil, errors.New("cyclic: transmit retry timeout must not be negative")
 	}
 	if generate == nil {
 		if err := frame.Validate(); err != nil {
@@ -140,7 +145,7 @@ func (task *Task) Update(frame gocan.Frame) error {
 		return err
 	}
 	if task.generate != nil {
-		return errors.New("cannot update a cyclic task with a frame callback")
+		return errors.New("cyclic: cannot update a task with a frame callback")
 	}
 	task.frame = frame
 	return nil
@@ -157,10 +162,20 @@ func (task *Task) Frame() gocan.Frame {
 	return task.frame
 }
 
+// Close requests cancellation, waits for all callbacks and sends to finish,
+// and returns nil. It is idempotent. A StartFunc callback must call Stop
+// rather than Close, since Close waits for the callback to return.
+func (task *Task) Close() error {
+	task.Stop()
+	<-task.done
+	return nil
+}
+
 // Stop requests cancellation and returns without waiting for an active callback
-// or send. It is idempotent. To wait for completion, receive from Done after Stop.
-// A callback's result is not sent if Stop was requested while it ran. A native
-// send already in progress finishes with its definite result before Done closes.
+// or send. It is idempotent. To wait for completion, call Close or receive from
+// Done after Stop. A callback's result is not sent if Stop was requested while
+// it ran. A native send already in progress finishes with its definite result
+// before Done closes.
 func (task *Task) Stop() {
 	task.mu.Lock()
 	if !task.stopping {
@@ -176,7 +191,7 @@ func (task *Task) Done() <-chan struct{} {
 }
 
 // Err returns the error that stopped the Task. It returns nil before the Task
-// stops and when an explicit Stop ended it. A nil error before Done closes does
+// stops and after a clean Stop or Close. A nil error before Done closes does
 // not imply that any send has succeeded.
 func (task *Task) Err() error {
 	task.mu.Lock()

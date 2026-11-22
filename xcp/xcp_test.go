@@ -373,8 +373,12 @@ func TestCloseAndBusLoss(t *testing.T) {
 					want = gocan.ErrBusClosed
 					_ = r.tester.Close()
 				} else {
-					r.client.Close()
-					r.client.Close()
+					if err := r.client.Close(); err != nil {
+						t.Fatalf("Close: %v", err)
+					}
+					if err := r.client.Close(); err != nil {
+						t.Fatalf("second Close: %v", err)
+					}
 				}
 				for _, done := range []<-chan error{first, queued} {
 					if err := <-done; !errors.Is(err, want) {
@@ -382,6 +386,9 @@ func TestCloseAndBusLoss(t *testing.T) {
 					}
 				}
 				if !closeBus {
+					if _, err := r.client.Status(r.ctx); !errors.Is(err, xcp.ErrClosed) {
+						t.Fatalf("Status after Close: %v, want ErrClosed", err)
+					}
 					select {
 					case <-r.tester.Done():
 						t.Fatal("client closed bus")
@@ -391,6 +398,38 @@ func TestCloseAndBusLoss(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("waits for active send", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			r := newRig(t, false)
+			_ = r.client.Close()
+			started, release := make(chan struct{}), make(chan struct{})
+			bus := &outcomeBus{Bus: r.tester, after: func() {
+				close(started)
+				<-release
+			}}
+			client, err := xcp.New(bus, r.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inFlight := run(func() error { _, err := client.Connect(r.ctx); return err })
+			<-started
+			closed := run(func() error { return client.Close() })
+			synctest.Wait()
+			select {
+			case err := <-closed:
+				t.Fatalf("Close returned before active command unwound: %v", err)
+			default:
+			}
+			close(release)
+			if err := <-closed; err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if err := <-inFlight; !errors.Is(err, xcp.ErrClosed) {
+				t.Fatalf("in-flight Connect = %v, want ErrClosed", err)
+			}
+		})
+	})
 }
 
 func TestRawSessionStateAndReadValidation(t *testing.T) {
@@ -679,6 +718,11 @@ func TestDefiniteSendOutcome(t *testing.T) {
 		}
 		r.synchronize()
 		r.client.Close()
+		badConfig := r.config
+		badConfig.TransmitRetryTimeout = -time.Millisecond
+		if _, err := xcp.New(bus, badConfig); err == nil {
+			t.Fatal("xcp.New accepted negative TransmitRetryTimeout")
+		}
 		r.config.TransmitRetryTimeout = 10 * time.Millisecond
 		r.client, err = xcp.New(bus, r.config)
 		if err != nil {
@@ -776,7 +820,7 @@ func newRig(t *testing.T, fd bool) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { _ = client.Close() })
 	return &rig{t: t, ctx: ctx, client: client, capture: capture, tester: tester, ecu: ecu, config: config}
 }
 
