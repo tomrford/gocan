@@ -4,7 +4,9 @@
 package dbc
 
 import (
-	"github.com/tomrford/gocan/internal/scalar"
+	"bytes"
+	"encoding/binary"
+
 	"github.com/tomrford/gocan/j1939"
 )
 
@@ -28,7 +30,7 @@ type Database struct {
 	messagesByName map[string]int
 	messagesByID   map[messageID]int
 	messagesByPGN  map[j1939.PGN][]int
-	source         string
+	source         []byte
 }
 
 // messageID indexes one message by its resolved arbitration identifier. The
@@ -39,10 +41,10 @@ type messageID struct {
 	extended bool
 }
 
-// Source returns the exact input passed to Parse or read by ParseFile, including
-// its original encoding and byte-order mark. It does not reflect model edits.
-// A database constructed without parsing has no source.
-func (db *Database) Source() string { return db.source }
+// Source returns a copy of the exact bytes passed to Parse or read by
+// ParseFile, including its original encoding and byte-order mark. It does not
+// reflect model edits. A database constructed without parsing returns nil.
+func (db *Database) Source() []byte { return bytes.Clone(db.source) }
 
 // Node is one CAN network participant declared by BU_.
 type Node struct {
@@ -94,11 +96,12 @@ const (
 )
 
 // Signal is one resolved SG_ definition.
+// ByteOrder is binary.BigEndian (@0, Motorola) or binary.LittleEndian (@1, Intel).
 type Signal struct {
 	Name          string
 	StartBit      uint32
 	BitLength     uint32
-	ByteOrder     ByteOrder
+	ByteOrder     binary.ByteOrder
 	Signed        bool
 	ValueType     ValueType
 	Factor        float64
@@ -113,14 +116,6 @@ type Signal struct {
 	Attributes    map[string]AttributeValue
 	Comment       string
 }
-
-// ByteOrder is the DBC signal byte order.
-type ByteOrder uint8
-
-const (
-	ByteOrderBigEndian ByteOrder = iota
-	ByteOrderLittleEndian
-)
 
 // ValueType is the raw numeric representation of a signal.
 type ValueType uint8
@@ -143,10 +138,11 @@ type MultiplexRange struct {
 	Last  uint64
 }
 
-// ValueDescription assigns a label to one raw integer value. It shares its
-// identity with the CDD choice type, so label metadata moves between the two
-// catalogs without conversion.
-type ValueDescription = scalar.Choice
+// ValueDescription assigns a label to one raw integer value.
+type ValueDescription struct {
+	Value int64
+	Label string
+}
 
 // ValueTable is one global VAL_TABLE_ declaration.
 type ValueTable struct {

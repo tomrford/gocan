@@ -1,6 +1,7 @@
 package dbc
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -13,26 +14,27 @@ import (
 
 // ErrInactiveSignal means the selected multiplexing path excludes the signal
 // from this frame. It is an expected absence, not a malformed-payload error.
-var ErrInactiveSignal = errors.New("inactive DBC signal")
+var ErrInactiveSignal = errors.New("dbc: inactive signal")
 
 type messageCodec struct {
 	signalsByName map[string]int
 	constraints   []map[int][]MultiplexRange
 	selectors     []bool
+	choices       [][]scalar.Choice
 	err           error
 	writeErr      error
 }
 
 // MessageByName returns the resolved message with name.
-func (database *Database) MessageByName(name string) (*Message, bool) {
-	if database == nil {
+func (db *Database) MessageByName(name string) (*Message, bool) {
+	if db == nil {
 		return nil, false
 	}
-	index, ok := database.messagesByName[name]
+	index, ok := db.messagesByName[name]
 	if !ok {
 		return nil, false
 	}
-	return &database.Messages[index], true
+	return &db.Messages[index], true
 }
 
 // MessageByID returns the resolved message with arbitration identifier id,
@@ -43,29 +45,29 @@ func (database *Database) MessageByName(name string) (*Message, bool) {
 // A J1939 message matches only its declared identifier, including priority and
 // source, so a frame from another source misses here even though Decode accepts
 // it. Use MessagesByPGN to match J1939 traffic by parameter group.
-func (database *Database) MessageByID(id uint32, extended bool) (*Message, bool) {
-	if database == nil {
+func (db *Database) MessageByID(id uint32, extended bool) (*Message, bool) {
+	if db == nil {
 		return nil, false
 	}
-	index, ok := database.messagesByID[messageID{id: id, extended: extended}]
+	index, ok := db.messagesByID[messageID{id: id, extended: extended}]
 	if !ok {
 		return nil, false
 	}
-	return &database.Messages[index], true
+	return &db.Messages[index], true
 }
 
 // MessagesByPGN returns the resolved J1939 messages with pgn in declaration
 // order. More than one message may deliberately describe the same PGN.
 // Callers must resolve multiple matches from their device/database context;
 // this lookup does not pick a definition based on source or destination.
-func (database *Database) MessagesByPGN(pgn j1939.PGN) []*Message {
-	if database == nil {
+func (db *Database) MessagesByPGN(pgn j1939.PGN) []*Message {
+	if db == nil {
 		return nil
 	}
-	indexes := database.messagesByPGN[pgn]
+	indexes := db.messagesByPGN[pgn]
 	messages := make([]*Message, len(indexes))
 	for i, index := range indexes {
-		messages[i] = &database.Messages[index]
+		messages[i] = &db.Messages[index]
 	}
 	return messages
 }
@@ -112,7 +114,7 @@ func (message *Message) EncodePayload(values Values) ([]byte, error) {
 		return nil, err
 	}
 	if uint64(message.Length) > uint64(math.MaxInt) {
-		return nil, fmt.Errorf("DBC message %q payload length %d exceeds platform capacity", message.Name, message.Length)
+		return nil, fmt.Errorf("dbc: message %q payload length %d exceeds platform capacity", message.Name, message.Length)
 	}
 	payload := make([]byte, message.Length)
 	if err := codec.encode(message, payload, values); err != nil {
@@ -134,9 +136,9 @@ func (codec *messageCodec) encode(message *Message, data []byte, values Values) 
 		_, hasValue := provided[index]
 		switch {
 		case active[index] && !hasValue:
-			return fmt.Errorf("DBC message %q requires signal %q", message.Name, signal.Name)
+			return fmt.Errorf("dbc: message %q requires signal %q", message.Name, signal.Name)
 		case !active[index] && hasValue:
-			return fmt.Errorf("DBC signal %q is inactive for the selected multiplexing path", signal.Name)
+			return fmt.Errorf("dbc: signal %q is inactive for the selected multiplexing path", signal.Name)
 		}
 	}
 
@@ -160,7 +162,7 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 		return err
 	}
 	if frame == nil {
-		return fmt.Errorf("DBC message %q cannot patch a nil frame", message.Name)
+		return fmt.Errorf("dbc: message %q cannot patch a nil frame", message.Name)
 	}
 	if err := message.validateFrame(*frame); err != nil {
 		return err
@@ -193,7 +195,7 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 	for index, signal := range message.Signals {
 		if codec.selectors[index] && newActive[index] && !oldActive[index] {
 			if _, ok := changed[index]; !ok {
-				return fmt.Errorf("DBC multiplexor %q became active and requires a value", signal.Name)
+				return fmt.Errorf("dbc: multiplexor %q became active and requires a value", signal.Name)
 			}
 		}
 	}
@@ -201,9 +203,9 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 		_, isChanged := changed[index]
 		switch {
 		case newActive[index] && !oldActive[index] && !isChanged:
-			return fmt.Errorf("DBC signal %q became active and requires a value", signal.Name)
+			return fmt.Errorf("dbc: signal %q became active and requires a value", signal.Name)
 		case !newActive[index] && isChanged:
-			return fmt.Errorf("DBC signal %q is inactive for the selected multiplexing path", signal.Name)
+			return fmt.Errorf("dbc: signal %q is inactive for the selected multiplexing path", signal.Name)
 		}
 	}
 
@@ -240,34 +242,34 @@ func (message *Message) DecodePayload(payload []byte, name string) (any, error) 
 		return nil, err
 	}
 	if uint64(len(payload)) > uint64(message.Length) {
-		return nil, fmt.Errorf("DBC message %q payload length %d exceeds declared length %d", message.Name, len(payload), message.Length)
+		return nil, fmt.Errorf("dbc: message %q payload length %d exceeds declared length %d", message.Name, len(payload), message.Length)
 	}
 	index, ok := codec.signalsByName[name]
 	if !ok {
-		return nil, fmt.Errorf("DBC message %q has no signal %q", message.Name, name)
+		return nil, fmt.Errorf("dbc: message %q has no signal %q", message.Name, name)
 	}
 	active, err := codec.signalActiveInPayload(message, payload, index)
 	if err != nil {
 		return nil, err
 	}
 	if !active {
-		return nil, fmt.Errorf("%w %q in this frame", ErrInactiveSignal, name)
+		return nil, fmt.Errorf("%w: signal %q", ErrInactiveSignal, name)
 	}
 	if !signalAvailable(message.Signals[index], len(payload)) {
-		return nil, fmt.Errorf("DBC signal %q is not present in the %d-byte payload", name, len(payload))
+		return nil, fmt.Errorf("dbc: signal %q is not present in the %d-byte payload", name, len(payload))
 	}
-	return decodeSignalValue(message.Signals[index], readSignalBits(payload, message.Signals[index])), nil
+	return decodeSignalValue(message.Signals[index], codec.choices[index], readSignalBits(payload, message.Signals[index])), nil
 }
 
 func (message *Message) usableCodec() (*messageCodec, error) {
 	if message == nil {
-		return nil, fmt.Errorf("DBC message is nil")
+		return nil, fmt.Errorf("dbc: message is nil")
 	}
 	if message.codec == nil {
-		return nil, fmt.Errorf("DBC message %q has no resolved codec; obtain messages from Parse", message.Name)
+		return nil, fmt.Errorf("dbc: message %q has no resolved codec; obtain messages from Parse", message.Name)
 	}
 	if message.codec.err != nil {
-		return nil, fmt.Errorf("DBC message %q cannot be encoded or decoded: %w", message.Name, message.codec.err)
+		return nil, fmt.Errorf("dbc: message %q cannot be encoded or decoded: %w", message.Name, message.codec.err)
 	}
 	return message.codec, nil
 }
@@ -278,7 +280,7 @@ func (message *Message) writableCodec() (*messageCodec, error) {
 		return nil, err
 	}
 	if codec.writeErr != nil {
-		return nil, fmt.Errorf("DBC message %q cannot be encoded or patched: %w", message.Name, codec.writeErr)
+		return nil, fmt.Errorf("dbc: message %q cannot be encoded or patched: %w", message.Name, codec.writeErr)
 	}
 	return codec, nil
 }
@@ -288,11 +290,23 @@ func compileMessageCodec(message *Message) *messageCodec {
 		signalsByName: make(map[string]int, len(message.Signals)),
 		constraints:   make([]map[int][]MultiplexRange, len(message.Signals)),
 		selectors:     make([]bool, len(message.Signals)),
+		choices:       make([][]scalar.Choice, len(message.Signals)),
 	}
 	for index, signal := range message.Signals {
 		if signal.BitLength > 64 {
 			codec.err = fmt.Errorf("signal %q exceeds the 64-bit codec representation", signal.Name)
 			return codec
+		}
+		if signal.ByteOrder != binary.BigEndian && signal.ByteOrder != binary.LittleEndian {
+			codec.err = fmt.Errorf("signal %q has unsupported byte order %v", signal.Name, signal.ByteOrder)
+			return codec
+		}
+		if len(signal.Values) > 0 {
+			choices := make([]scalar.Choice, len(signal.Values))
+			for i, value := range signal.Values {
+				choices[i] = scalar.Choice{Value: value.Value, Label: value.Label}
+			}
+			codec.choices[index] = choices
 		}
 		codec.signalsByName[signal.Name] = index
 		codec.selectors[index] = signal.IsMultiplexer
@@ -417,11 +431,11 @@ func (codec *messageCodec) convertValues(message *Message, values Values) (map[i
 	for name, value := range values {
 		index, ok := codec.signalsByName[name]
 		if !ok {
-			return nil, nil, fmt.Errorf("DBC message %q has no signal %q", message.Name, name)
+			return nil, nil, fmt.Errorf("dbc: message %q has no signal %q", message.Name, name)
 		}
-		encoded, err := encodeSignalValue(message.Signals[index], value)
+		encoded, err := encodeSignalValue(message.Signals[index], codec.choices[index], value)
 		if err != nil {
-			return nil, nil, fmt.Errorf("encode DBC signal %q: %w", name, err)
+			return nil, nil, fmt.Errorf("dbc: encode signal %q: %w", name, err)
 		}
 		raw[index] = encoded
 		provided[index] = struct{}{}
@@ -447,7 +461,7 @@ func (codec *messageCodec) signalActive(message *Message, index int, raw map[int
 		return true, nil
 	}
 	if visiting[index] {
-		return false, fmt.Errorf("multiplexer cycle includes signal %q", message.Signals[index].Name)
+		return false, fmt.Errorf("dbc: multiplexer cycle includes signal %q", message.Signals[index].Name)
 	}
 	selector := codec.signalsByName[condition.Selector]
 	visiting[index] = true
@@ -458,7 +472,7 @@ func (codec *messageCodec) signalActive(message *Message, index int, raw map[int
 	}
 	value, ok := raw[selector]
 	if !ok {
-		return false, fmt.Errorf("DBC message %q requires multiplexor %q", message.Name, message.Signals[selector].Name)
+		return false, fmt.Errorf("dbc: message %q requires multiplexor %q", message.Name, message.Signals[selector].Name)
 	}
 	return rangesContain(condition.Ranges, value), nil
 }
@@ -484,7 +498,7 @@ func (codec *messageCodec) signalActiveInPayload(message *Message, payload []byt
 		return false, err
 	}
 	if !signalAvailable(message.Signals[selector], len(payload)) {
-		return false, fmt.Errorf("DBC multiplexor %q is not present in the %d-byte payload", message.Signals[selector].Name, len(payload))
+		return false, fmt.Errorf("dbc: multiplexor %q is not present in the %d-byte payload", message.Signals[selector].Name, len(payload))
 	}
 	return rangesContain(condition.Ranges, readSignalBits(payload, message.Signals[selector])), nil
 }
@@ -499,7 +513,7 @@ func (message *Message) newFrame() (gocan.Frame, error) {
 
 func (message *Message) validateFrame(frame gocan.Frame) error {
 	if message == nil {
-		return fmt.Errorf("DBC message is nil")
+		return fmt.Errorf("dbc: message is nil")
 	}
 	if err := frame.Validate(); err != nil {
 		return err
@@ -509,7 +523,7 @@ func (message *Message) validateFrame(frame gocan.Frame) error {
 		return err
 	}
 	if frame.Flags.Has(gocan.FrameRemote) {
-		return fmt.Errorf("DBC message %q cannot decode a remote frame", message.Name)
+		return fmt.Errorf("dbc: message %q cannot decode a remote frame", message.Name)
 	}
 	matchesID := frame.ID == message.ID
 	if message.Format == FrameFormatJ1939 {
@@ -518,17 +532,17 @@ func (message *Message) validateFrame(frame gocan.Frame) error {
 		matchesID = actual.PGN == expected.PGN
 	}
 	if !matchesID || frame.Flags.Has(gocan.FrameExtended) != flags.Has(gocan.FrameExtended) {
-		return fmt.Errorf("frame %#x does not match DBC message %q", frame.ID, message.Name)
+		return fmt.Errorf("dbc: frame %#x does not match message %q", frame.ID, message.Name)
 	}
 	if frame.Flags.Has(gocan.FrameFD) != flags.Has(gocan.FrameFD) {
-		return fmt.Errorf("frame format does not match DBC message %q", message.Name)
+		return fmt.Errorf("dbc: frame format does not match message %q", message.Name)
 	}
 	expectedLength, err := gocan.DLCToLength(dlc, flags.Has(gocan.FrameFD))
 	if err != nil {
 		return err
 	}
 	if frame.DataLength() != expectedLength {
-		return fmt.Errorf("frame payload length %d does not match DBC message %q length %d", frame.DataLength(), message.Name, expectedLength)
+		return fmt.Errorf("dbc: frame payload length %d does not match message %q length %d", frame.DataLength(), message.Name, expectedLength)
 	}
 	return nil
 }
@@ -542,27 +556,27 @@ func (message *Message) frameShape() (uint8, gocan.FrameFlags, error) {
 	switch message.Format {
 	case FrameFormatStandardCAN, FrameFormatExtendedCAN:
 		if length > 8 {
-			return 0, 0, fmt.Errorf("DBC message %q exceeds classical CAN length", message.Name)
+			return 0, 0, fmt.Errorf("dbc: message %q exceeds classical CAN length", message.Name)
 		}
 	case FrameFormatStandardCANFD, FrameFormatExtendedCANFD:
 		flags |= gocan.FrameFD
 		length = legalFDLength(length)
 	case FrameFormatJ1939:
 		if length > 8 {
-			return 0, 0, fmt.Errorf("DBC J1939 message %q exceeds one classical CAN frame", message.Name)
+			return 0, 0, fmt.Errorf("dbc: J1939 message %q exceeds one classical CAN frame", message.Name)
 		}
 	default:
-		return 0, 0, fmt.Errorf("DBC message %q has no supported frame format", message.Name)
+		return 0, 0, fmt.Errorf("dbc: message %q has no supported frame format", message.Name)
 	}
 	if message.bitRateSwitch {
 		if !flags.Has(gocan.FrameFD) {
-			return 0, 0, fmt.Errorf("DBC message %q requests bit-rate switching without CAN FD", message.Name)
+			return 0, 0, fmt.Errorf("dbc: message %q requests bit-rate switching without CAN FD", message.Name)
 		}
 		flags |= gocan.FrameBitRateSwitch
 	}
 	dlc, err := gocan.LengthToDLC(length, flags.Has(gocan.FrameFD))
 	if err != nil {
-		return 0, 0, fmt.Errorf("DBC message %q: %w", message.Name, err)
+		return 0, 0, fmt.Errorf("dbc: message %q: %w", message.Name, err)
 	}
 	return dlc, flags, nil
 }
@@ -576,7 +590,7 @@ func legalFDLength(length int) int {
 	return length
 }
 
-func encodeSignalValue(signal Signal, value any) (uint64, error) {
+func encodeSignalValue(signal Signal, choices []scalar.Choice, value any) (uint64, error) {
 	if label, ok := scalar.StringValue(value); ok {
 		if signal.ValueType != ValueTypeInteger {
 			return 0, fmt.Errorf("value descriptions require an integer signal")
@@ -584,7 +598,7 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 		// A value description is an exact raw value sanctioned by the catalog,
 		// so it bypasses the physical range like the not-available idiom
 		// requires. Decode returns the same label back.
-		return scalar.RawForLabel(signal.Values, label, signal.BitLength, signal.Signed)
+		return scalar.RawForLabel(choices, label, signal.BitLength, signal.Signed)
 	}
 	if boolean, ok := boolValue(value); ok {
 		if signal.ValueType != ValueTypeInteger || signal.BitLength != 1 || signal.Factor != 1 || signal.Offset != 0 {
@@ -665,14 +679,14 @@ func encodeSignalValue(signal Signal, value any) (uint64, error) {
 	return validateIntegerRaw(signal, raw)
 }
 
-func decodeSignalValue(signal Signal, raw uint64) any {
+func decodeSignalValue(signal Signal, choices []scalar.Choice, raw uint64) any {
 	if signal.ValueType == ValueTypeFloat32 {
 		return float64(math.Float32frombits(uint32(raw)))*signal.Factor + signal.Offset
 	}
 	if signal.ValueType == ValueTypeFloat64 {
 		return math.Float64frombits(raw)*signal.Factor + signal.Offset
 	}
-	return scalar.DecodeLinear(signal.BitLength, signal.Signed, raw, signal.Factor, signal.Offset, signal.Values, true)
+	return scalar.DecodeLinear(signal.BitLength, signal.Signed, raw, signal.Factor, signal.Offset, choices, true)
 }
 
 func validateIntegerRaw(signal Signal, raw uint64) (uint64, error) {
@@ -710,7 +724,7 @@ func boolValue(value any) (bool, bool) {
 
 func readSignalBits(data []byte, signal Signal) uint64 {
 	var value uint64
-	if signal.ByteOrder == ByteOrderLittleEndian {
+	if signal.ByteOrder == binary.LittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
 			if data[dataBit/8]&(byte(1)<<(dataBit%8)) != 0 {
@@ -731,7 +745,7 @@ func readSignalBits(data []byte, signal Signal) uint64 {
 }
 
 func writeSignalBits(data []byte, signal Signal, value uint64) {
-	if signal.ByteOrder == ByteOrderLittleEndian {
+	if signal.ByteOrder == binary.LittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
 			setDataBit(data, dataBit, value&(uint64(1)<<valueBit) != 0)
@@ -767,7 +781,7 @@ func signalAvailable(signal Signal, payloadLength int) bool {
 }
 
 func visitSignalBits(signal Signal, visit func(uint32)) {
-	if signal.ByteOrder == ByteOrderLittleEndian {
+	if signal.ByteOrder == binary.LittleEndian {
 		for index := uint32(0); index < signal.BitLength; index++ {
 			visit(signal.StartBit + index)
 		}

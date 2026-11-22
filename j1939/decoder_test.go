@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestDecoderReassemblesBAMForDBC(t *testing.T) {
 		" SG_ Far : 144|16@1+ (1,0) [0|65535] \"\" ECU\n" +
 		"BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\n" +
 		"BA_ \"VFrameFormat\" BO_ 2566834942 3;\n"
-	database, err := dbc.Parse("long-j1939.dbc", source)
+	database, err := dbc.Parse("long-j1939.dbc", strings.NewReader(source))
 	if err != nil {
 		t.Fatalf("Parse DBC: %v", err)
 	}
@@ -361,12 +362,12 @@ func frameEvent(t *testing.T, offset time.Duration, id uint32, data []byte) goca
 }
 
 func ExampleDecoder() {
-	database, err := dbc.Parse("engine.dbc", `BU_: ECU
+	database, err := dbc.Parse("engine.dbc", strings.NewReader(`BU_: ECU
 BO_ 2566844032 EngineTemperature: 8 ECU
  SG_ Coolant : 0|8@1+ (1,-40) [-40|215] "degC" ECU
 BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
 BA_ "VFrameFormat" BO_ 2566844032 3;
-`)
+`))
 	if err != nil {
 		panic(err)
 	}

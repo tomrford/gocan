@@ -1,6 +1,7 @@
 package dbc
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,7 +30,7 @@ func TestParseFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if db.Source() != string(source) {
+		if !bytes.Equal(db.Source(), source) {
 			t.Fatal("original source bytes were not retained")
 		}
 		return db

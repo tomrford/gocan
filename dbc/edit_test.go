@@ -67,7 +67,7 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 		t.Fatal("derived database still answers the device 0 name")
 	}
 	// The derived source is the DBC to store alongside device A's traces.
-	reparsed, err := dbc.Parse("device-A-source.dbc", deviceA.Source())
+	reparsed, err := dbc.Parse("device-A-source.dbc", bytes.NewReader(deviceA.Source()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fdSource, err := dbc.Parse("device-A-fd-source.dbc", fd.Source())
+	fdSource, err := dbc.Parse("device-A-fd-source.dbc", bytes.NewReader(fd.Source()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +158,7 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 		}, "11-bit"},
 		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, `"DEV 0 STAT"`},
 		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, `C:\\logs\\`},
+		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, "unsupported byte order"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := base.Edit("invalid.dbc", test.edit); err == nil || !strings.Contains(err.Error(), test.want) {

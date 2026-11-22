@@ -18,7 +18,7 @@ func TestExportMetadata(t *testing.T) {
 	properties := map[string]string{"boost.workspace.id": "w<&\"42", "boost.pack.é<&\".version": "1.2\nβ", "empty": ""}
 	wantProperties := maps.Clone(properties)
 	busNames := map[gocan.BusID]string{1: "Powertrain <A> & B", 2: "Diagnostics"}
-	w, err := mf4.NewWriter(f, mf4.Options{
+	w, err := mf4.NewWriter(f, mf4.Config{
 		Compression: true, ToolName: "Boost <test> & export", ToolVersion: "1.2+β",
 		Comment: "Cooling test\nWorkspace <A> & B", Properties: properties, BusNames: busNames,
 	})
@@ -86,7 +86,7 @@ func TestExportMetadata(t *testing.T) {
 }
 
 func TestMetadataValidation(t *testing.T) {
-	for name, options := range map[string]mf4.Options{
+	for name, options := range map[string]mf4.Config{
 		"tool":          {ToolName: "invalid\x00name"},
 		"version":       {ToolVersion: "invalid\xff"},
 		"comment":       {Comment: "invalid\ufffe"},
@@ -112,7 +112,7 @@ func TestMetadataValidation(t *testing.T) {
 func TestMetadataDefaults(t *testing.T) {
 	f := newFile(t)
 	before := time.Now().UnixNano()
-	w, err := mf4.NewWriter(f, mf4.Options{})
+	w, err := mf4.NewWriter(f, mf4.Config{})
 	after := time.Now().UnixNano()
 	if err != nil {
 		t.Fatal(err)
