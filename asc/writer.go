@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"time"
 
@@ -121,7 +122,7 @@ func (writer *Writer) WriteEvent(event gocan.Event) error {
 		buf = append(buf, "CAN "...)
 		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
 		buf = append(buf, " Status:chip status "...)
-		buf = append(buf, controllerState(event.ControllerState)...)
+		buf = append(buf, event.ControllerState.String()...)
 		if event.ErrorCountsKnown {
 			buf = append(buf, " - TxErr: "...)
 			buf = strconv.AppendInt(buf, int64(event.TXErrorCount), 10)
@@ -227,16 +228,17 @@ func appendHexUpper(dst []byte, value uint32) []byte {
 }
 
 func appendPadded(dst []byte, value int64, width int, fill byte) []byte {
-	start := len(dst)
-	dst = strconv.AppendInt(dst, value, 10)
-	if padding := width - (len(dst) - start); padding > 0 {
-		dst = append(dst, make([]byte, padding)...)
-		copy(dst[start+padding:], dst[start:])
-		for i := 0; i < padding; i++ {
+	var digits [20]byte
+	num := strconv.AppendInt(digits[:0], value, 10)
+	if padding := width - len(num); padding > 0 {
+		dst = slices.Grow(dst, padding+len(num))
+		start := len(dst)
+		dst = dst[:start+padding]
+		for i := range padding {
 			dst[start+i] = fill
 		}
 	}
-	return dst
+	return append(dst, num...)
 }
 
 func appendDirection(dst []byte, direction gocan.Direction) []byte {
@@ -251,19 +253,4 @@ func boolDigit(value bool) byte {
 		return 1
 	}
 	return 0
-}
-
-func controllerState(state gocan.ControllerState) string {
-	switch state {
-	case gocan.ControllerActive:
-		return "error active"
-	case gocan.ControllerWarning:
-		return "error warning"
-	case gocan.ControllerPassive:
-		return "error passive"
-	case gocan.ControllerBusOff:
-		return "bus off"
-	default:
-		panic("gocan: validated controller state is invalid")
-	}
 }
