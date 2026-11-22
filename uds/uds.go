@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -20,15 +21,18 @@ const (
 )
 
 var (
+	// ErrInvalidRequest identifies invalid parameters in a UDS request before
+	// any bytes are sent.
+	ErrInvalidRequest = errors.New("uds: invalid request")
 	// ErrInvalidResponse identifies a malformed UDS response.
-	ErrInvalidResponse = errors.New("invalid UDS response")
+	ErrInvalidResponse = errors.New("uds: invalid response")
 	// ErrUnexpectedResponse identifies a response for a different service.
-	ErrUnexpectedResponse = errors.New("unexpected UDS response")
+	ErrUnexpectedResponse = errors.New("uds: unexpected response")
 	// ErrP2Timeout indicates that the first response did not arrive in time.
-	ErrP2Timeout = errors.New("UDS P2 timeout")
+	ErrP2Timeout = errors.New("uds: P2 timeout")
 	// ErrP2StarTimeout indicates that a response following ResponsePending did
 	// not arrive in time.
-	ErrP2StarTimeout = errors.New("UDS P2* timeout")
+	ErrP2StarTimeout = errors.New("uds: P2* timeout")
 )
 
 // ServiceID identifies a UDS service.
@@ -57,7 +61,7 @@ type NegativeResponseError struct {
 }
 
 func (err *NegativeResponseError) Error() string {
-	return fmt.Sprintf("UDS service %#02x returned negative response %#02x", err.Service, err.Code)
+	return fmt.Sprintf("uds: service %#02x returned negative response %#02x", err.Service, err.Code)
 }
 
 // Config sets the UDS application-response timeouts. Zero values select 100
@@ -76,14 +80,21 @@ type Config struct {
 
 // Client exchanges raw UDS requests over one ISO-TP link.
 //
-// A Client logically owns its Link. Do, DoSuppressed, and Send may be called
-// concurrently, but callers must not operate the Link independently or
-// construct another Client around it.
+// A Client logically owns its Link. Do, DoSuppressed, Send, and
+// ApplySessionTiming may be called concurrently, but callers must not operate
+// the Link independently or construct another Client around it.
 type Client struct {
 	link                    *isotp.Link
+	mu                      sync.RWMutex
 	p2Timeout               time.Duration
 	p2StarTimeout           time.Duration
 	responseRecoveryTimeout time.Duration
+}
+
+func (client *Client) sessionTimeouts() (p2Timeout, p2StarTimeout time.Duration) {
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	return client.p2Timeout, client.p2StarTimeout
 }
 
 // RetentionCursor returns receive progress during an active Do, DoSuppressed,
@@ -98,7 +109,7 @@ func (client *Client) RetentionCursor() gocan.Cursor {
 // New validates config and binds a raw UDS client to link.
 func New(link *isotp.Link, config Config) (*Client, error) {
 	if link == nil {
-		return nil, errors.New("UDS client requires an ISO-TP link")
+		return nil, errors.New("uds: client requires an ISO-TP link")
 	}
 	p2Timeout, err := configuredTimeout(config.P2Timeout, defaultP2Timeout, "P2")
 	if err != nil {
@@ -109,7 +120,7 @@ func New(link *isotp.Link, config Config) (*Client, error) {
 		return nil, err
 	}
 	if config.ResponseRecoveryTimeout < 0 {
-		return nil, errors.New("UDS response recovery timeout must not be negative")
+		return nil, errors.New("uds: response recovery timeout must not be negative")
 	}
 	return &Client{
 		link:                    link,
@@ -127,13 +138,13 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		return Response{}, err
 	}
 
+	timeout, p2StarTimeout := client.sessionTimeouts()
 	exchange, err := client.link.Begin(ctx, payload)
 	if err != nil {
-		return Response{}, err
+		return Response{}, wrapRequestTransportError(err)
 	}
 	defer exchange.Close()
 
-	timeout := client.p2Timeout
 	timeoutError := ErrP2Timeout
 	for {
 		payload, err := client.nextWithTimeout(ctx, exchange, timeout, timeoutError)
@@ -150,7 +161,7 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 		if negative.Code != responsePending {
 			return Response{}, negative
 		}
-		timeout = client.p2StarTimeout
+		timeout = p2StarTimeout
 		timeoutError = ErrP2StarTimeout
 	}
 }
@@ -165,7 +176,14 @@ func (client *Client) Send(ctx context.Context, request Request) error {
 	if err != nil {
 		return err
 	}
-	return client.link.Send(ctx, payload)
+	return wrapRequestTransportError(client.link.Send(ctx, payload))
+}
+
+func wrapRequestTransportError(err error) error {
+	if errors.Is(err, isotp.ErrPayloadTooLarge) {
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+	}
+	return err
 }
 
 // DoSuppressed transmits a request whose service data already contains
@@ -190,7 +208,7 @@ func (client *Client) DoSuppressed(ctx context.Context, request Request) (*Respo
 
 func (request Request) payload() ([]byte, error) {
 	if request.Service&0x40 != 0 {
-		return nil, fmt.Errorf("UDS request service %#02x cannot have a positive response service ID", request.Service)
+		return nil, fmt.Errorf("%w: service %#02x cannot have a positive response service ID", ErrInvalidRequest, request.Service)
 	}
 	payload := make([]byte, 1+len(request.Data))
 	payload[0] = byte(request.Service)
@@ -246,7 +264,7 @@ func (client *Client) nextWithTimeout(ctx context.Context, exchange *isotp.Excha
 
 func configuredTimeout(value, defaultValue time.Duration, name string) (time.Duration, error) {
 	if value < 0 {
-		return 0, fmt.Errorf("UDS %s timeout must not be negative", name)
+		return 0, fmt.Errorf("uds: %s timeout must not be negative", name)
 	}
 	if value == 0 {
 		return defaultValue, nil
