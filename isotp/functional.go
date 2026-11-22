@@ -45,7 +45,7 @@ type Functional struct {
 // ISO-TP send path.
 func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) {
 	if bus == nil {
-		return nil, errors.New("ISO-TP functional path requires a bus")
+		return nil, errors.New("isotp: functional path requires a bus")
 	}
 	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.TransmitMinDataLength, config.PaddingByte, config.TransmitRetryTimeout)
 	if err != nil {

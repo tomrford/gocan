@@ -188,7 +188,7 @@ func TestFailuresReleaseLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin before response timeouts: %v", err)
 	}
-	t.Cleanup(waiting.Close)
+	t.Cleanup(func() { _ = waiting.Close() })
 	if _, err := waiting.Next(ctx, 5*time.Millisecond); !errors.Is(err, isotp.ErrFirstFrameTimeout) {
 		t.Fatalf("Next without a response = %v, want ErrFirstFrameTimeout", err)
 	}
@@ -319,7 +319,7 @@ func TestExchangeStopsWithBus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Begin: %v", err)
 		}
-		t.Cleanup(exchange.Close)
+		t.Cleanup(func() { _ = exchange.Close() })
 
 		result := make(chan error, 1)
 		go func() {
@@ -540,7 +540,7 @@ func TestCloseCancelsPendingNext(t *testing.T) {
 					}
 				}
 				pending := make(chan error, 1)
-				t.Cleanup(exchange.Close)
+				t.Cleanup(func() { _ = exchange.Close() })
 				go func() {
 					_, err := exchange.Next(ctx, time.Minute)
 					pending <- err

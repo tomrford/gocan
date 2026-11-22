@@ -5,13 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
 	"github.com/tomrford/gocan"
 )
 
-var errStopRequested = errors.New("recorder stop requested")
+var errStopRequested = errors.New("recorder: stop requested")
+
+var _ io.Closer = (*Recorder)(nil)
 
 // Writer receives capture records and owns their format lifecycle. Flush
 // delivers buffered records to the underlying writer. Close finalises the
@@ -32,9 +35,10 @@ type Writer interface {
 //
 // Any writer error stops the Recorder without a retry. A cursor the capture
 // can no longer place stops it with gocan.ErrCursorOutOfRange rather than
-// hiding lost records. Stop is idempotent: it writes one final window, closes
-// the writer, and waits for recording to end. Rotation and retention belong
-// to the caller. Err reports the terminal error, or nil after a clean Stop.
+// hiding lost records. Close is idempotent: it writes one final window, closes
+// the writer, waits for recording to end, and returns the terminal error (nil
+// after a clean Close). Rotation and retention belong to the caller. Err
+// reports the terminal error, or nil while running or after a clean Close.
 type Recorder struct {
 	capture  *gocan.Capture
 	writer   Writer
@@ -67,13 +71,13 @@ func Start(
 	interval time.Duration,
 ) (*Recorder, error) {
 	if capture == nil {
-		return nil, errors.New("recorder requires a capture")
+		return nil, errors.New("recorder: capture is required")
 	}
 	if writer == nil {
-		return nil, errors.New("recorder requires a writer")
+		return nil, errors.New("recorder: writer is required")
 	}
 	if interval <= 0 {
-		return nil, fmt.Errorf("recorder interval must be positive: %s", interval)
+		return nil, fmt.Errorf("recorder: interval must be positive: %s", interval)
 	}
 
 	recorderContext, cancel := context.WithCancelCause(ctx)
@@ -112,9 +116,9 @@ func (recorder *Recorder) Flushed() gocan.Cursor {
 	return recorder.flushed
 }
 
-// Stop writes one final window, closes the writer, and waits for recording to
-// end.
-func (recorder *Recorder) Stop() {
+// Close writes one final window, closes the writer, waits for recording to
+// end, and returns Err. It is idempotent.
+func (recorder *Recorder) Close() error {
 	recorder.mu.Lock()
 	if !recorder.stopping {
 		recorder.stopping = true
@@ -122,6 +126,7 @@ func (recorder *Recorder) Stop() {
 	}
 	recorder.mu.Unlock()
 	<-recorder.done
+	return recorder.Err()
 }
 
 // Done is closed after the writer closes and recording stops.
@@ -130,7 +135,7 @@ func (recorder *Recorder) Done() <-chan struct{} {
 }
 
 // Err returns the error that stopped the Recorder. It returns nil before the
-// Recorder stops and after a clean Stop.
+// Recorder stops and after a clean Close.
 func (recorder *Recorder) Err() error {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
@@ -178,7 +183,7 @@ func (recorder *Recorder) pass() error {
 		return writeErr
 	}
 	if err := recorder.writer.Flush(); err != nil {
-		return errors.Join(writeErr, fmt.Errorf("flush recorder writer: %w", err))
+		return errors.Join(writeErr, fmt.Errorf("recorder: flush writer: %w", err))
 	}
 
 	recorder.mu.Lock()
@@ -191,7 +196,7 @@ func (recorder *Recorder) finish(runErr error) error {
 	recorder.cancel(runErr)
 	closeErr := recorder.writer.Close()
 	if closeErr != nil {
-		closeErr = fmt.Errorf("close recorder writer: %w", closeErr)
+		closeErr = fmt.Errorf("recorder: close writer: %w", closeErr)
 	}
 
 	recorder.mu.Lock()

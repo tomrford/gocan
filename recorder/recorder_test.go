@@ -118,7 +118,12 @@ func TestRecorderLifecycle(t *testing.T) {
 	appendFrame(t, capture, 0x101)
 	awaitFlushed(t, rec, capture.End())
 	appendFrame(t, capture, 0x102)
-	rec.Stop()
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("second Close = %v", err)
+	}
 
 	ids, closes := writer.state()
 	if want := []uint32{0x100, 0x101, 0x102}; !slices.Equal(ids, want) {
@@ -131,7 +136,7 @@ func TestRecorderLifecycle(t *testing.T) {
 		t.Fatal("recorder did not finish at the capture end")
 	}
 	if err := rec.Err(); err != nil {
-		t.Fatalf("Err after Stop = %v", err)
+		t.Fatalf("Err after Close = %v", err)
 	}
 }
 
@@ -148,7 +153,7 @@ func TestRecorderPublishesFlushBoundary(t *testing.T) {
 	started, release := writer.blockNextFlush()
 	stopped := make(chan struct{})
 	go func() {
-		rec.Stop()
+		_ = rec.Close()
 		close(stopped)
 	}()
 
