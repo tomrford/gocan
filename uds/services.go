@@ -3,6 +3,7 @@ package uds
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -50,19 +51,21 @@ type SessionControlResponse struct {
 	Timing  *SessionTiming
 }
 
-// ApplySessionTiming uses timing for subsequent exchanges. Callers can clamp
-// values or add transport margin before applying server timing. It must not be
-// called concurrently with Do or DoSuppressed. Send never reads the timeouts,
-// so a send-only background keep-alive remains safe.
+// ApplySessionTiming updates the P2 and P2* timeouts for subsequent exchanges.
+// Callers can clamp values or add transport margin before applying server
+// timing. It is safe to call concurrently with Do, DoSuppressed, and Send;
+// exchanges already in flight keep the timing snapshot they started with.
 func (client *Client) ApplySessionTiming(timing SessionTiming) error {
 	if timing.P2ServerMax <= 0 {
-		return fmt.Errorf("UDS P2 server maximum must be positive")
+		return errors.New("uds: P2 server maximum must be positive")
 	}
 	if timing.P2StarServerMax <= 0 {
-		return fmt.Errorf("UDS P2* server maximum must be positive")
+		return errors.New("uds: P2* server maximum must be positive")
 	}
+	client.mu.Lock()
 	client.p2Timeout = timing.P2ServerMax
 	client.p2StarTimeout = timing.P2StarServerMax
+	client.mu.Unlock()
 	return nil
 }
 
@@ -215,7 +218,7 @@ func (client *Client) WriteDataByIdentifier(ctx context.Context, identifier uint
 // order. Their layout and applicability are defined by the DID and the caller.
 func (client *Client) InputOutputControlByIdentifier(ctx context.Context, identifier uint16, parameter IOControlParameter, controlState, enableMask []byte) ([]byte, error) {
 	if parameter > IOShortTermAdjustment {
-		return nil, fmt.Errorf("UDS IO control parameter %#02x must be 0 through 3", parameter)
+		return nil, fmt.Errorf("%w: IO control parameter %#02x must be 0 through 3", ErrInvalidRequest, parameter)
 	}
 	request := make([]byte, 3+len(controlState)+len(enableMask))
 	binary.BigEndian.PutUint16(request, identifier)
@@ -387,13 +390,13 @@ func (client *Client) doEchoed(
 
 func validateSubfunction(value byte, name string) error {
 	if value&suppressPositiveResponse != 0 {
-		return fmt.Errorf("UDS %s %#02x sets suppressPositiveResponse", name, value)
+		return fmt.Errorf("%w: %s %#02x sets suppressPositiveResponse", ErrInvalidRequest, name, value)
 	}
 	if value == 0 {
-		return fmt.Errorf("UDS %s must not be zero", name)
+		return fmt.Errorf("%w: %s must not be zero", ErrInvalidRequest, name)
 	}
 	if value == 0x7f {
-		return fmt.Errorf("UDS %s %#02x is reserved", name, value)
+		return fmt.Errorf("%w: %s %#02x is reserved", ErrInvalidRequest, name, value)
 	}
 	return nil
 }
@@ -403,30 +406,30 @@ func validateSecurityLevel(level SecurityLevel) error {
 		return err
 	}
 	if level&1 == 0 {
-		return fmt.Errorf("UDS security level %#02x must be an odd request-seed subfunction", level)
+		return fmt.Errorf("%w: security level %#02x must be an odd request-seed subfunction", ErrInvalidRequest, level)
 	}
 	return nil
 }
 
 func communicationControlRequest(controlType CommunicationControlType, communicationType CommunicationType, nodeID *uint16) ([]byte, error) {
 	if byte(controlType)&suppressPositiveResponse != 0 {
-		return nil, fmt.Errorf("UDS communication control type %#02x sets suppressPositiveResponse", controlType)
+		return nil, fmt.Errorf("%w: communication control type %#02x sets suppressPositiveResponse", ErrInvalidRequest, controlType)
 	}
 	withNode := controlType == CommunicationEnableRxDisableTxWithNode || controlType == CommunicationEnableRxAndTxWithNode
 	if withNode && nodeID == nil {
-		return nil, fmt.Errorf("UDS communication control type %#02x requires enhanced address information", controlType)
+		return nil, fmt.Errorf("%w: communication control type %#02x requires enhanced address information", ErrInvalidRequest, controlType)
 	}
 	if !withNode && nodeID != nil {
-		return nil, fmt.Errorf("UDS communication control type %#02x does not accept enhanced address information", controlType)
+		return nil, fmt.Errorf("%w: communication control type %#02x does not accept enhanced address information", ErrInvalidRequest, controlType)
 	}
 	if controlType == 0x7f {
-		return nil, fmt.Errorf("UDS communication control type %#02x is reserved", controlType)
+		return nil, fmt.Errorf("%w: communication control type %#02x is reserved", ErrInvalidRequest, controlType)
 	}
 	if communicationType&0x0c != 0 {
-		return nil, fmt.Errorf("UDS communication type %#02x sets reserved bits", communicationType)
+		return nil, fmt.Errorf("%w: communication type %#02x sets reserved bits", ErrInvalidRequest, communicationType)
 	}
 	if communicationType&0x03 == 0 {
-		return nil, fmt.Errorf("UDS communication type %#02x selects neither normal nor network-management communication", communicationType)
+		return nil, fmt.Errorf("%w: communication type %#02x selects neither normal nor network-management communication", ErrInvalidRequest, communicationType)
 	}
 	request := []byte{byte(controlType), byte(communicationType)}
 	if nodeID != nil {
@@ -437,19 +440,19 @@ func communicationControlRequest(controlType CommunicationControlType, communica
 
 func validateMemoryLocation(location MemoryLocation) error {
 	if location.AddressLength < 1 || location.AddressLength > 8 {
-		return fmt.Errorf("UDS memory address length %d must be 1 through 8 bytes", location.AddressLength)
+		return fmt.Errorf("%w: memory address length %d must be 1 through 8 bytes", ErrInvalidRequest, location.AddressLength)
 	}
 	if location.SizeLength < 1 || location.SizeLength > 8 {
-		return fmt.Errorf("UDS memory size length %d must be 1 through 8 bytes", location.SizeLength)
+		return fmt.Errorf("%w: memory size length %d must be 1 through 8 bytes", ErrInvalidRequest, location.SizeLength)
 	}
 	if location.Size == 0 {
-		return fmt.Errorf("UDS memory size must not be zero")
+		return fmt.Errorf("%w: memory size must not be zero", ErrInvalidRequest)
 	}
 	if !fitsWidth(location.Address, location.AddressLength) {
-		return fmt.Errorf("UDS memory address %#x does not fit %d bytes", location.Address, location.AddressLength)
+		return fmt.Errorf("%w: memory address %#x does not fit %d bytes", ErrInvalidRequest, location.Address, location.AddressLength)
 	}
 	if !fitsWidth(location.Size, location.SizeLength) {
-		return fmt.Errorf("UDS memory size %#x does not fit %d bytes", location.Size, location.SizeLength)
+		return fmt.Errorf("%w: memory size %#x does not fit %d bytes", ErrInvalidRequest, location.Size, location.SizeLength)
 	}
 	return nil
 }
@@ -474,9 +477,9 @@ func readBigEndianWidth(source []byte) uint64 {
 }
 
 func invalidServiceResponse(service ServiceID, format string, arguments ...any) error {
-	return fmt.Errorf("%w: UDS service %#02x response %s", ErrInvalidResponse, service, fmt.Sprintf(format, arguments...))
+	return fmt.Errorf("%w: service %#02x response %s", ErrInvalidResponse, service, fmt.Sprintf(format, arguments...))
 }
 
 func unexpectedServiceResponse(service ServiceID, format string, arguments ...any) error {
-	return fmt.Errorf("%w: UDS service %#02x response %s", ErrUnexpectedResponse, service, fmt.Sprintf(format, arguments...))
+	return fmt.Errorf("%w: service %#02x response %s", ErrUnexpectedResponse, service, fmt.Sprintf(format, arguments...))
 }

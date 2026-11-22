@@ -35,7 +35,7 @@ func nativeVectorConfig(channel Channel, config Config, fd bool) (vector.Config,
 		return native, nil
 	}
 	if config.FDTiming.ClockHz != vectorFDClockHz {
-		return vector.Config{}, fmt.Errorf("Vector CAN FD requires an 80 MHz clock, got %d Hz", config.FDTiming.ClockHz)
+		return vector.Config{}, fmt.Errorf("drivers: Vector CAN FD requires an 80 MHz clock, got %d Hz", config.FDTiming.ClockHz)
 	}
 	nominal, data, err := deriveFDBitrates(config.FDTiming)
 	if err != nil {

@@ -10,5 +10,5 @@ import (
 )
 
 func openVector(context.Context, *gocan.Capture, Channel, Config, bool) (gocan.Bus, error) {
-	return nil, fmt.Errorf("Vector driver is unavailable on this Windows architecture")
+	return nil, fmt.Errorf("drivers: Vector driver is unavailable on this Windows architecture")
 }

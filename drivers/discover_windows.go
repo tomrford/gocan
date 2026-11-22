@@ -11,14 +11,7 @@ import (
 	"github.com/tomrford/gocan/drivers/internal/zlg"
 )
 
-// Discover reports the attached PCAN channels followed by the CAN-capable
-// Vector, NI-XNET, and ZLG channels, each in native driver order. ZLG opens
-// and closes each attached adapter to read its channel count, about one second
-// per USBCAN; adapters held by another process are omitted. A vendor stack that is not
-// installed contributes neither channels nor an error; an installed stack
-// that fails to answer contributes no channels and joins its error into the
-// returned error alongside the other driver's channels.
-func Discover() ([]Channel, error) {
+func discoverChannels() ([]Channel, error) {
 	pcanChannels, pcanErr := pcan.Discover()
 	vectorChannels, vectorErr := discoverVector()
 	nixnetChannels, nixnetErr := discoverNIXNET()

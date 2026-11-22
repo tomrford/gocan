@@ -9,7 +9,6 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-// Open reports that this platform has no physical CAN driver.
-func Open(context.Context, *gocan.Capture, Channel, Config) (gocan.Bus, error) {
-	return nil, errors.New("no physical CAN driver is available on this platform")
+func openChannel(context.Context, *gocan.Capture, Channel, Config) (gocan.Bus, error) {
+	return nil, errors.New("drivers: no physical CAN driver is available on this platform")
 }

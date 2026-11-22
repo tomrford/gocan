@@ -2,7 +2,6 @@
 
 package drivers
 
-// Discover reports no channels: this platform has no physical CAN driver.
-func Discover() ([]Channel, error) {
+func discoverChannels() ([]Channel, error) {
 	return nil, nil
 }

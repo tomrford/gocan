@@ -210,7 +210,7 @@ func newCaptureChunk(recordCapacity, payloadCapacity int) *captureChunk {
 // to another Capture, names a position after which Clear or pruning discarded
 // history, lies beyond the capture's end, or follows the end of a requested
 // range.
-var ErrCursorOutOfRange = errors.New("capture cursor is out of range")
+var ErrCursorOutOfRange = errors.New("gocan: capture cursor is out of range")
 
 // CursorOutOfRangeError identifies the cursor a capture could not place.
 // It unwraps to ErrCursorOutOfRange. The caller decides how to recover from
@@ -310,7 +310,7 @@ type RecordWriteError struct {
 }
 
 func (err *RecordWriteError) Error() string {
-	return fmt.Sprintf("write capture record: %v", err.Err)
+	return fmt.Sprintf("gocan: write capture record: %v", err.Err)
 }
 
 func (err *RecordWriteError) Unwrap() error {

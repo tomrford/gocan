@@ -3,13 +3,8 @@ package uds
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 )
-
-// ErrInvalidRequest identifies invalid parameters supplied to a typed
-// fault-memory operation, before any request is sent.
-var ErrInvalidRequest = errors.New("invalid UDS request")
 
 // DTCStatus is the UDS status byte, or a mask selecting its bits. A status-mask
 // request selects DTCs with at least one requested, supported status bit set.

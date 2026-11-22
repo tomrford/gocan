@@ -1,6 +1,7 @@
 package gocan
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
@@ -26,14 +27,14 @@ func TestDLCLengthMapping(t *testing.T) {
 			if slices.Contains(fdLengths, length) && (fd || length <= 8) {
 				continue
 			}
-			if _, err := LengthToDLC(length, fd); err == nil {
-				t.Errorf("LengthToDLC(%d, fd=%t) accepted an unencodable length", length, fd)
+			if _, err := LengthToDLC(length, fd); !errors.Is(err, ErrInvalidFrame) {
+				t.Errorf("LengthToDLC(%d, fd=%t) error = %v, want %v", length, fd, err, ErrInvalidFrame)
 			}
 		}
 	}
 
-	if _, err := DLCToLength(16, true); err == nil {
-		t.Error("DLCToLength(16, fd=true) succeeded, want error")
+	if _, err := DLCToLength(16, true); !errors.Is(err, ErrInvalidFrame) {
+		t.Errorf("DLCToLength(16, fd=true) error = %v, want %v", err, ErrInvalidFrame)
 	}
 }
 
@@ -48,7 +49,7 @@ func TestRemoteFrameCarriesNoPayload(t *testing.T) {
 	if frame.DLC != 8 {
 		t.Errorf("remote frame DLC = %d, want the requested data length 8", frame.DLC)
 	}
-	if _, err := NewFrame(0x123, nil, FrameRemote); err == nil {
-		t.Error("NewFrame accepted FrameRemote, want rejection")
+	if _, err := NewFrame(0x123, nil, FrameRemote); !errors.Is(err, ErrInvalidFrame) {
+		t.Errorf("NewFrame(FrameRemote) error = %v, want %v", err, ErrInvalidFrame)
 	}
 }

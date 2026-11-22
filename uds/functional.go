@@ -17,7 +17,7 @@ type Functional struct {
 // NewFunctional binds a send-only UDS client to link.
 func NewFunctional(link *isotp.Functional) (*Functional, error) {
 	if link == nil {
-		return nil, errors.New("UDS functional client requires an ISO-TP functional path")
+		return nil, errors.New("uds: functional client requires an ISO-TP functional path")
 	}
 	return &Functional{link: link}, nil
 }
@@ -31,7 +31,7 @@ func (functional *Functional) Send(ctx context.Context, request Request) error {
 	if err != nil {
 		return err
 	}
-	return functional.link.Send(ctx, payload)
+	return wrapRequestTransportError(functional.link.Send(ctx, payload))
 }
 
 // SendTesterPresent broadcasts tester present with its positive response

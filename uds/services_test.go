@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,6 +44,28 @@ func TestSemanticClientLifecycle(t *testing.T) {
 	if err := client.ApplySessionTiming(*session.Timing); err != nil {
 		t.Fatalf("ApplySessionTiming: %v", err)
 	}
+
+	var timingWG sync.WaitGroup
+	stopTiming := make(chan struct{})
+	timingWG.Add(1)
+	go func() {
+		defer timingWG.Done()
+		for {
+			select {
+			case <-stopTiming:
+				return
+			default:
+				if err := client.ApplySessionTiming(*session.Timing); err != nil {
+					t.Errorf("concurrent ApplySessionTiming: %v", err)
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stopTiming)
+		timingWG.Wait()
+	}()
 
 	seed, err := client.RequestSeed(ctx, 5, []byte{0xaa})
 	if err != nil || !bytes.Equal(seed, []byte{0x12, 0x34}) {
@@ -109,8 +131,8 @@ func TestSemanticClientLifecycle(t *testing.T) {
 func TestInputOutputControlLifecycle(t *testing.T) {
 	client, server, ctx := newSemanticPair(t)
 	for _, parameter := range []uds.IOControlParameter{0x04, 0x80, 0xff} {
-		if _, err := client.InputOutputControlByIdentifier(ctx, 0x1234, parameter, nil, nil); err == nil || !strings.Contains(err.Error(), "IO control parameter") {
-			t.Fatalf("control %#x error = %v", parameter, err)
+		if _, err := client.InputOutputControlByIdentifier(ctx, 0x1234, parameter, nil, nil); !errors.Is(err, uds.ErrInvalidRequest) {
+			t.Fatalf("control %#x error = %v, want %v", parameter, err, uds.ErrInvalidRequest)
 		}
 	}
 	steps := []struct {
@@ -294,40 +316,44 @@ func serveCDDDataIdentifierLifecycle(ctx context.Context, link *isotp.Link) erro
 
 func TestSemanticClientRejectsInvalidInputs(t *testing.T) {
 	client, server, ctx := newSemanticPair(t)
-	if _, err := client.DiagnosticSessionControl(ctx, 0x83); err == nil || !strings.Contains(err.Error(), "suppressPositiveResponse") {
-		t.Fatalf("suppressed session error = %v", err)
+	invalidRequests := []struct {
+		name string
+		call func() error
+	}{
+		{"suppressed session", func() error { _, err := client.DiagnosticSessionControl(ctx, 0x83); return err }},
+		{"memory address overflow", func() error {
+			location := uds.MemoryLocation{Address: 0x100, Size: 1, AddressLength: 1, SizeLength: 1}
+			_, err := client.RequestDownload(ctx, 0, location)
+			return err
+		}},
+		{"even security level", func() error { _, err := client.RequestSeed(ctx, 2, nil); return err }},
+		{"enhanced communication control", func() error {
+			return client.CommunicationControl(ctx, 0x04, uds.CommunicationTypeNormal)
+		}},
+		{"suppressed communication control", func() error {
+			return client.CommunicationControl(ctx, 0x81, uds.CommunicationTypeNormal)
+		}},
+		{"empty communication type", func() error {
+			return client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x40)
+		}},
+		{"reserved communication type", func() error {
+			return client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x05)
+		}},
+		{"zero reset", func() error { return client.SendECUReset(ctx, 0) }},
+		{"reserved reset", func() error { return client.SendECUReset(ctx, 0x7f) }},
+		{"suppressed reset", func() error { return client.SendECUReset(ctx, 0x81) }},
+		{"node control without node subfunction", func() error { return client.CommunicationControlWithNode(ctx, 0x03, 1, 0x1234) }},
+		{"suppressed node control", func() error { return client.CommunicationControlWithNode(ctx, 0x84, 1, 0x1234) }},
+		{"node control empty type", func() error { return client.CommunicationControlWithNode(ctx, 0x04, 0, 0x1234) }},
+		{"node control reserved type", func() error { return client.CommunicationControlWithNode(ctx, 0x05, 4, 0x1234) }},
 	}
-	location := uds.MemoryLocation{Address: 0x100, Size: 1, AddressLength: 1, SizeLength: 1}
-	if _, err := client.RequestDownload(ctx, 0, location); err == nil || !strings.Contains(err.Error(), "does not fit") {
-		t.Fatalf("memory location error = %v", err)
-	}
-	if err := client.ApplySessionTiming(uds.SessionTiming{}); err == nil || !strings.Contains(err.Error(), "must be positive") {
-		t.Fatalf("session timing error = %v", err)
-	}
-	if err := client.CommunicationControl(ctx, 0x04, uds.CommunicationTypeNormal); err == nil || !strings.Contains(err.Error(), "enhanced address information") {
-		t.Fatalf("enhanced communication control error = %v", err)
-	}
-	if err := client.CommunicationControl(ctx, 0x81, uds.CommunicationTypeNormal); err == nil || !strings.Contains(err.Error(), "suppressPositiveResponse") {
-		t.Fatalf("suppressed communication control error = %v", err)
-	}
-	if err := client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x40); err == nil || !strings.Contains(err.Error(), "selects neither") {
-		t.Fatalf("communication type error = %v", err)
-	}
-	if err := client.CommunicationControl(ctx, uds.CommunicationEnableRxAndTx, 0x05); err == nil || !strings.Contains(err.Error(), "reserved bits") {
-		t.Fatalf("reserved communication type error = %v", err)
-	}
-	for _, resetType := range []uds.ResetType{0, 0x7f, 0x81} {
-		if err := client.SendECUReset(ctx, resetType); err == nil {
-			t.Fatalf("SendECUReset accepted %#x", resetType)
+	for _, test := range invalidRequests {
+		if err := test.call(); !errors.Is(err, uds.ErrInvalidRequest) {
+			t.Fatalf("%s error = %v, want %v", test.name, err, uds.ErrInvalidRequest)
 		}
 	}
-	for _, control := range []struct {
-		typeID uds.CommunicationControlType
-		comm   uds.CommunicationType
-	}{{0x03, 1}, {0x84, 1}, {0x04, 0}, {0x05, 4}} {
-		if err := client.CommunicationControlWithNode(ctx, control.typeID, control.comm, 0x1234); err == nil {
-			t.Fatalf("CommunicationControlWithNode accepted %#v", control)
-		}
+	if err := client.ApplySessionTiming(uds.SessionTiming{}); err == nil {
+		t.Fatal("ApplySessionTiming accepted zero timing")
 	}
 	if err := client.SendECUReset(ctx, uds.ResetHard); err != nil {
 		t.Fatal(err)

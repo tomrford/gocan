@@ -174,13 +174,20 @@ func TestClientExchangeLifecycle(t *testing.T) {
 	}
 
 	for _, send := range []func() error{
+		func() error { _, err := client.Do(ctx, uds.Request{Service: 0x62}); return err },
+		func() error { return client.Send(ctx, uds.Request{Service: 0x62}) },
+		func() error { return functional.Send(ctx, uds.Request{Service: 0x62}) },
 		func() error { return functional.SendECUReset(ctx, 0x81) },
 		func() error { return functional.SendCommunicationControlWithNode(ctx, 0x03, 1, 0x1234) },
 		func() error { return functional.SendCommunicationControl(ctx, 0x04, 1) },
+		func() error { return functional.Send(ctx, uds.Request{Service: 0x3e, Data: make([]byte, 7)}) },
 	} {
-		if err := send(); err == nil {
-			t.Fatal("functional send accepted an invalid subfunction")
+		if err := send(); !errors.Is(err, uds.ErrInvalidRequest) {
+			t.Fatalf("invalid request error = %v, want %v", err, uds.ErrInvalidRequest)
 		}
+	}
+	if err := functional.Send(ctx, uds.Request{Service: 0x3e, Data: make([]byte, 7)}); !errors.Is(err, uds.ErrInvalidRequest) || !errors.Is(err, isotp.ErrPayloadTooLarge) {
+		t.Fatalf("oversized functional error = %v, want ErrInvalidRequest and ErrPayloadTooLarge", err)
 	}
 	broadcasts := []struct {
 		send func() error
