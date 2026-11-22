@@ -13,81 +13,84 @@ import (
 )
 
 func TestTaskLifecycle(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network virtual.Network
-	bus, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "cyclic"})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close() })
-
-	initial, err := gocan.NewFrame(0x123, []byte{1, 2, 3, 4}, 0)
-	if err != nil {
-		t.Fatalf("NewFrame initial: %v", err)
-	}
-	updated, err := gocan.NewFrame(0x123, []byte{5, 6, 7, 8}, 0)
-	if err != nil {
-		t.Fatalf("NewFrame updated: %v", err)
-	}
-
-	cursor := capture.End()
-	task, err := cyclic.Start(context.Background(), bus, initial, cyclic.Config{Period: 10 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = task.Close() })
-
-	key := gocan.FrameKey{
-		Bus:       bus.ID(),
-		ID:        initial.ID,
-		Direction: gocan.DirectionTransmit,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	first, cursor, err := capture.Next(ctx, key, cursor)
-	if err != nil {
-		t.Fatalf("Next initial: %v", err)
-	}
-	if first.Frame != initial {
-		t.Fatalf("initial cyclic frame = %+v, want %+v", first.Frame, initial)
-	}
-
-	if err := task.Update(updated); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	if got := task.Frame(); got != updated {
-		t.Fatalf("Frame after Update = %+v, want %+v", got, updated)
-	}
-	for {
-		var next gocan.FrameEvent
-		next, cursor, err = capture.Next(ctx, key, cursor)
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network virtual.Network
+		bus, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "cyclic"})
 		if err != nil {
-			t.Fatalf("Next updated: %v", err)
+			t.Fatalf("Open: %v", err)
 		}
-		if next.Frame == updated {
-			break
+		t.Cleanup(func() { _ = bus.Close() })
+
+		initial, err := gocan.NewFrame(0x123, []byte{1, 2, 3, 4}, 0)
+		if err != nil {
+			t.Fatalf("NewFrame initial: %v", err)
 		}
-	}
+		updated, err := gocan.NewFrame(0x123, []byte{5, 6, 7, 8}, 0)
+		if err != nil {
+			t.Fatalf("NewFrame updated: %v", err)
+		}
 
-	if err := task.Close(); err != nil {
-		t.Fatalf("Close = %v, want nil", err)
-	}
-	if err := task.Close(); err != nil {
-		t.Fatalf("second Close = %v, want nil", err)
-	}
-	if err := task.Err(); err != nil {
-		t.Fatalf("Err after Close = %v, want nil", err)
-	}
-	if err := task.Update(initial); !errors.Is(err, cyclic.ErrStopped) {
-		t.Fatalf("Update after Stop = %v, want ErrStopped", err)
-	}
+		cursor := capture.End()
+		task, err := cyclic.Start(context.Background(), bus, initial, cyclic.Config{Period: 10 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		t.Cleanup(func() { _ = task.Close() })
 
-	before := len(capture.Series(key))
-	time.Sleep(3 * 10 * time.Millisecond)
-	if after := len(capture.Series(key)); after != before {
-		t.Fatalf("capture gained %d transmissions after Stop", after-before)
-	}
+		key := gocan.FrameKey{
+			Bus:       bus.ID(),
+			ID:        initial.ID,
+			Direction: gocan.DirectionTransmit,
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		first, cursor, err := capture.Next(ctx, key, cursor)
+		if err != nil {
+			t.Fatalf("Next initial: %v", err)
+		}
+		if first.Frame != initial {
+			t.Fatalf("initial cyclic frame = %+v, want %+v", first.Frame, initial)
+		}
+
+		if err := task.Update(updated); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if got := task.Frame(); got != updated {
+			t.Fatalf("Frame after Update = %+v, want %+v", got, updated)
+		}
+		for {
+			var next gocan.FrameEvent
+			next, cursor, err = capture.Next(ctx, key, cursor)
+			if err != nil {
+				t.Fatalf("Next updated: %v", err)
+			}
+			if next.Frame == updated {
+				break
+			}
+		}
+
+		if err := task.Close(); err != nil {
+			t.Fatalf("Close = %v, want nil", err)
+		}
+		if err := task.Close(); err != nil {
+			t.Fatalf("second Close = %v, want nil", err)
+		}
+		if err := task.Err(); err != nil {
+			t.Fatalf("Err after Close = %v, want nil", err)
+		}
+		if err := task.Update(initial); !errors.Is(err, cyclic.ErrStopped) {
+			t.Fatalf("Update after Stop = %v, want ErrStopped", err)
+		}
+
+		before := len(capture.Series(key))
+		time.Sleep(3 * 10 * time.Millisecond)
+		synctest.Wait()
+		if after := len(capture.Series(key)); after != before {
+			t.Fatalf("capture gained %d transmissions after Stop", after-before)
+		}
+	})
 }
 
 func TestStopDuringSend(t *testing.T) {

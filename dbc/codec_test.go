@@ -225,6 +225,9 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	if err := multiplexed.Patch(&inactive, Values{"RootA": uint64(2)}); err == nil || !strings.Contains(err.Error(), "requires a value") {
 		t.Fatalf("incomplete path change error = %v", err)
 	}
+	if err := multiplexed.Patch(&inactive, Values{"Leaf": uint64(1)}); !errors.Is(err, ErrInactiveSignal) {
+		t.Fatalf("inactive Patch error = %v, want %v", err, ErrInactiveSignal)
+	}
 	reactivated := inactive
 	err = multiplexed.Patch(&reactivated, Values{
 		"RootA":         uint64(2),
@@ -446,17 +449,20 @@ BA_ "VFrameFormat" BO_ 2566834942 3;
 		t.Fatalf("EncodePayload second branch = % x, %v; want % x", other, err, wantOther)
 	}
 	for _, test := range []struct {
-		values Values
-		error  string
+		values   Values
+		error    string
+		inactive bool
 	}{
-		{Values{"Selector": uint64(1), "Intel": uint64(1)}, "requires signal"},
-		{Values{"Selector": uint64(2), "Tail": uint64(1), "Intel": uint64(1)}, "inactive"},
-		{Values{"Unknown": uint64(1)}, "has no signal"},
-		{Values{"Selector": uint64(2), "Tail": uint64(256)}, "outside"},
-		{Values{"Intel": uint64(1)}, "requires multiplexor"},
+		{Values{"Selector": uint64(1), "Intel": uint64(1)}, "requires signal", false},
+		{Values{"Selector": uint64(2), "Tail": uint64(1), "Intel": uint64(1)}, "", true},
+		{Values{"Unknown": uint64(1)}, "has no signal", false},
+		{Values{"Selector": uint64(2), "Tail": uint64(256)}, "outside", false},
+		{Values{"Intel": uint64(1)}, "requires multiplexor", false},
 	} {
-		if got, err := message.EncodePayload(test.values); got != nil || err == nil || !strings.Contains(err.Error(), test.error) {
-			t.Fatalf("EncodePayload(%v) = % x, %v; want nil and %q", test.values, got, err, test.error)
+		got, err := message.EncodePayload(test.values)
+		if got != nil || err == nil || errors.Is(err, ErrInactiveSignal) != test.inactive ||
+			(test.error != "" && !strings.Contains(err.Error(), test.error)) {
+			t.Fatalf("EncodePayload(%v) = % x, %v; want nil, %q, inactive=%t", test.values, got, err, test.error, test.inactive)
 		}
 	}
 	if _, err := message.Encode(values); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {

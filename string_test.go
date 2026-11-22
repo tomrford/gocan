@@ -1,22 +1,24 @@
-package gocan
+package gocan_test
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/tomrford/gocan"
 )
 
-func testFrame(t *testing.T, id uint32, data []byte, flags FrameFlags) Frame {
+func testFrame(t *testing.T, id uint32, data []byte, flags gocan.FrameFlags) gocan.Frame {
 	t.Helper()
-	frame, err := NewFrame(id, data, flags)
+	frame, err := gocan.NewFrame(id, data, flags)
 	if err != nil {
 		t.Fatalf("NewFrame(%#x, %d bytes, %v): %v", id, len(data), flags, err)
 	}
 	return frame
 }
 
-func testRemoteFrame(t *testing.T, id uint32, dlc uint8, extended bool) Frame {
+func testRemoteFrame(t *testing.T, id uint32, dlc uint8, extended bool) gocan.Frame {
 	t.Helper()
-	frame, err := NewRemoteFrame(id, dlc, extended)
+	frame, err := gocan.NewRemoteFrame(id, dlc, extended)
 	if err != nil {
 		t.Fatalf("NewRemoteFrame(%#x, dlc %d): %v", id, dlc, err)
 	}
@@ -25,8 +27,8 @@ func testRemoteFrame(t *testing.T, id uint32, dlc uint8, extended bool) Frame {
 
 // rawDLCFrame builds a classical frame whose on-wire DLC is above eight, which
 // only a frame received from a driver can carry.
-func rawDLCFrame(dlc uint8) Frame {
-	frame := Frame{ID: 0x123, DLC: dlc}
+func rawDLCFrame(dlc uint8) gocan.Frame {
+	frame := gocan.Frame{ID: 0x123, DLC: dlc}
 	copy(frame.Data[:8], []byte{1, 2, 3, 4, 5, 6, 7, 8})
 	return frame
 }
@@ -34,18 +36,18 @@ func rawDLCFrame(dlc uint8) Frame {
 func TestFrameString(t *testing.T) {
 	tests := []struct {
 		name  string
-		frame Frame
+		frame gocan.Frame
 		want  string
 	}{
 		{"standard data", testFrame(t, 0x123, []byte{0x11, 0x22}, 0), "123#1122"},
 		{"standard without payload", testFrame(t, 0x123, nil, 0), "123#"},
-		{"standard maximum identifier", testFrame(t, MaxStandardID, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 0), "7FF#0102030405060708"},
-		{"extended data", testFrame(t, 0x1abcde, []byte{0xaa}, FrameExtended), "001ABCDE#AA"},
-		{"extended maximum identifier", testFrame(t, MaxExtendedID, []byte{0xff}, FrameExtended), "1FFFFFFF#FF"},
-		{"can fd without flags", testFrame(t, 0x123, make([]byte, 64), FrameFD), "123##0" + strings.Repeat("00", 64)},
-		{"can fd bit-rate switch", testFrame(t, 0x123, make([]byte, 12), FrameFD|FrameBitRateSwitch), "123##1" + strings.Repeat("00", 12)},
-		{"can fd error state indicator", testFrame(t, 0x1abcde, []byte{1}, FrameExtended|FrameFD|FrameErrorStateIndicator), "001ABCDE##201"},
-		{"can fd both flags", testFrame(t, 0x123, []byte{1}, FrameFD|FrameBitRateSwitch|FrameErrorStateIndicator), "123##301"},
+		{"standard maximum identifier", testFrame(t, gocan.MaxStandardID, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 0), "7FF#0102030405060708"},
+		{"extended data", testFrame(t, 0x1abcde, []byte{0xaa}, gocan.FrameExtended), "001ABCDE#AA"},
+		{"extended maximum identifier", testFrame(t, gocan.MaxExtendedID, []byte{0xff}, gocan.FrameExtended), "1FFFFFFF#FF"},
+		{"can fd without flags", testFrame(t, 0x123, make([]byte, 64), gocan.FrameFD), "123##0" + strings.Repeat("00", 64)},
+		{"can fd bit-rate switch", testFrame(t, 0x123, make([]byte, 12), gocan.FrameFD|gocan.FrameBitRateSwitch), "123##1" + strings.Repeat("00", 12)},
+		{"can fd error state indicator", testFrame(t, 0x1abcde, []byte{1}, gocan.FrameExtended|gocan.FrameFD|gocan.FrameErrorStateIndicator), "001ABCDE##201"},
+		{"can fd both flags", testFrame(t, 0x123, []byte{1}, gocan.FrameFD|gocan.FrameBitRateSwitch|gocan.FrameErrorStateIndicator), "123##301"},
 		{"remote with data length", testRemoteFrame(t, 0x123, 4, false), "123#R4"},
 		{"remote without data length", testRemoteFrame(t, 0x123, 0, false), "123#R"},
 		{"remote extended", testRemoteFrame(t, 0x1abcde, 8, true), "001ABCDE#R8"},
@@ -64,11 +66,11 @@ func TestFrameString(t *testing.T) {
 }
 
 func TestFrameStringInvalidFrame(t *testing.T) {
-	invalid := []Frame{
-		{ID: MaxStandardID + 1},
+	invalid := []gocan.Frame{
+		{ID: gocan.MaxStandardID + 1},
 		{ID: 0x100, DLC: 16},
-		{ID: 0x100, Flags: FrameBitRateSwitch},
-		{ID: 0x100, Flags: FrameRemote | FrameFD},
+		{ID: 0x100, Flags: gocan.FrameBitRateSwitch},
+		{ID: 0x100, Flags: gocan.FrameRemote | gocan.FrameFD},
 		{ID: 0x100, Flags: 1 << 7},
 	}
 	for _, frame := range invalid {

@@ -138,7 +138,7 @@ func (codec *messageCodec) encode(message *Message, data []byte, values Values) 
 		case active[index] && !hasValue:
 			return fmt.Errorf("dbc: message %q requires signal %q", message.Name, signal.Name)
 		case !active[index] && hasValue:
-			return fmt.Errorf("dbc: signal %q is inactive for the selected multiplexing path", signal.Name)
+			return fmt.Errorf("%w: signal %q is inactive for the selected multiplexing path", ErrInactiveSignal, signal.Name)
 		}
 	}
 
@@ -205,7 +205,7 @@ func (message *Message) Patch(frame *gocan.Frame, changes Values) error {
 		case newActive[index] && !oldActive[index] && !isChanged:
 			return fmt.Errorf("dbc: signal %q became active and requires a value", signal.Name)
 		case !newActive[index] && isChanged:
-			return fmt.Errorf("dbc: signal %q is inactive for the selected multiplexing path", signal.Name)
+			return fmt.Errorf("%w: signal %q is inactive for the selected multiplexing path", ErrInactiveSignal, signal.Name)
 		}
 	}
 

@@ -109,9 +109,11 @@ func nextEvent(t *testing.T, capture *gocan.Capture, key gocan.FrameKey, cursor 
 
 func requireClosed(t *testing.T, bus gocan.Bus) {
 	t.Helper()
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
 	select {
 	case <-bus.Done():
-	case <-time.After(waitTimeout):
+	case <-timer.C:
 		t.Fatal("Done was not closed")
 	}
 }

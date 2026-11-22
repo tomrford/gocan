@@ -416,6 +416,7 @@ BA_ "VFrameFormat" BO_ 2566844032 3;
 		fmt.Println(diagnostic)
 	} // Finite input only.
 	// Raw frames remain available in capture, including unsupported traffic.
+
 	// Output:
 	// source 80: 60 degC
 	// source 81: 60 degC

@@ -1,34 +1,38 @@
-package j1939
+package j1939_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/tomrford/gocan/j1939"
+)
 
 func TestHeaderIdentifierRoundTrip(t *testing.T) {
 	tests := []struct {
 		name string
 		id   uint32
-		want Header
+		want j1939.Header
 		edp  uint8
 	}{
 		{
 			name: "PDU1",
 			id:   0x18ea2a80,
-			want: Header{Priority: 6, PGN: 0xea00, Source: 0x80, Destination: 0x2a},
+			want: j1939.Header{Priority: 6, PGN: 0xea00, Source: 0x80, Destination: 0x2a},
 		},
 		{
 			name: "PDU2",
 			id:   0x18feee80,
-			want: Header{Priority: 6, PGN: 0xfeee, Source: 0x80, Destination: GlobalAddress},
+			want: j1939.Header{Priority: 6, PGN: 0xfeee, Source: 0x80, Destination: j1939.GlobalAddress},
 		},
 		{
 			name: "both data pages",
 			id:   0x0ff00401,
-			want: Header{Priority: 3, PGN: 0x3f004, Source: 1, Destination: GlobalAddress},
+			want: j1939.Header{Priority: 3, PGN: 0x3f004, Source: 1, Destination: j1939.GlobalAddress},
 			edp:  1,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			header, err := ParseID(test.id)
+			header, err := j1939.ParseID(test.id)
 			if err != nil {
 				t.Fatalf("ParseID: %v", err)
 			}
@@ -50,9 +54,9 @@ func TestHeaderIdentifierRoundTrip(t *testing.T) {
 }
 
 func TestHeaderRejectsInvalidFields(t *testing.T) {
-	tests := []Header{
-		{Priority: 8, PGN: 0xfeee, Destination: GlobalAddress},
-		{Priority: 6, PGN: MaxPGN + 1, Destination: GlobalAddress},
+	tests := []j1939.Header{
+		{Priority: 8, PGN: 0xfeee, Destination: j1939.GlobalAddress},
+		{Priority: 6, PGN: j1939.MaxPGN + 1, Destination: j1939.GlobalAddress},
 		{Priority: 6, PGN: 0xea2a, Destination: 0x2a},
 		{Priority: 6, PGN: 0xfeee, Destination: 0x2a},
 	}

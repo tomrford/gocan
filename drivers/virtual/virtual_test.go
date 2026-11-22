@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -89,38 +90,41 @@ func TestNetworkOpenHonorsCanceledContext(t *testing.T) {
 }
 
 func TestTerminalFailureRejectsLaterSend(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network Network
-	bus, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "terminal"})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close() })
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network Network
+		bus, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "terminal"})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { _ = bus.Close() })
 
-	bus.fail(gocan.ErrReceiveOverrun)
-	frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	if err := bus.Send(context.Background(), frame); !errors.Is(err, gocan.ErrReceiveOverrun) {
-		t.Fatalf("Send after terminal failure = %v, want ErrReceiveOverrun", err)
-	}
+		bus.fail(gocan.ErrReceiveOverrun)
+		frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
+		if err != nil {
+			t.Fatalf("NewFrame: %v", err)
+		}
+		if err := bus.Send(context.Background(), frame); !errors.Is(err, gocan.ErrReceiveOverrun) {
+			t.Fatalf("Send after terminal failure = %v, want ErrReceiveOverrun", err)
+		}
 
-	select {
-	case <-bus.Done():
-	case <-time.After(time.Second):
-		t.Fatal("bus did not stop after terminal failure")
-	}
-	if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
-		t.Fatalf("Err after terminal failure = %v, want ErrReceiveOverrun", bus.Err())
-	}
-	if got := capture.Series(gocan.FrameKey{
-		Bus:       bus.ID(),
-		ID:        frame.ID,
-		Direction: gocan.DirectionTransmit,
-	}); len(got) != 0 {
-		t.Fatalf("captured %d transmissions after terminal failure, want none", len(got))
-	}
+		synctest.Wait()
+		select {
+		case <-bus.Done():
+		default:
+			t.Fatal("bus did not stop after terminal failure")
+		}
+		if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
+			t.Fatalf("Err after terminal failure = %v, want ErrReceiveOverrun", bus.Err())
+		}
+		if got := capture.Series(gocan.FrameKey{
+			Bus:       bus.ID(),
+			ID:        frame.ID,
+			Direction: gocan.DirectionTransmit,
+		}); len(got) != 0 {
+			t.Fatalf("captured %d transmissions after terminal failure, want none", len(got))
+		}
+	})
 }
 
 func TestBroadcastDetectsOverrun(t *testing.T) {

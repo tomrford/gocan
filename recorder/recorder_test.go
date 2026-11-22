@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -95,87 +96,95 @@ func appendFrame(t *testing.T, capture *gocan.Capture, id uint32) {
 	}
 }
 
-func awaitFlushed(t *testing.T, recorder *recorder.Recorder, want gocan.Cursor) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for recorder.Flushed() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("Flushed = %+v, want %+v", recorder.Flushed(), want)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 func TestRecorderLifecycle(t *testing.T) {
-	capture := gocan.NewCapture()
-	appendFrame(t, capture, 0x100)
-	writer := &writerProbe{}
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		appendFrame(t, capture, 0x100)
+		writer := &writerProbe{}
 
-	rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Millisecond)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	appendFrame(t, capture, 0x101)
-	awaitFlushed(t, rec, capture.End())
-	appendFrame(t, capture, 0x102)
-	if err := rec.Close(); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
-	if err := rec.Close(); err != nil {
-		t.Fatalf("second Close = %v", err)
-	}
+		rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Millisecond)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+		appendFrame(t, capture, 0x101)
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if rec.Flushed() != capture.End() {
+			t.Fatalf("Flushed = %+v, want %+v", rec.Flushed(), capture.End())
+		}
+		appendFrame(t, capture, 0x102)
+		if err := rec.Close(); err != nil {
+			t.Fatalf("Close = %v", err)
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("second Close = %v", err)
+		}
 
-	ids, closes := writer.state()
-	if want := []uint32{0x100, 0x101, 0x102}; !slices.Equal(ids, want) {
-		t.Fatalf("written IDs = %#x, want %#x", ids, want)
-	}
-	if closes != 1 {
-		t.Fatalf("writer closes = %d, want 1", closes)
-	}
-	if rec.Accepted() != capture.End() || rec.Flushed() != capture.End() {
-		t.Fatal("recorder did not finish at the capture end")
-	}
-	if err := rec.Err(); err != nil {
-		t.Fatalf("Err after Close = %v", err)
-	}
+		ids, closes := writer.state()
+		if want := []uint32{0x100, 0x101, 0x102}; !slices.Equal(ids, want) {
+			t.Fatalf("written IDs = %#x, want %#x", ids, want)
+		}
+		if closes != 1 {
+			t.Fatalf("writer closes = %d, want 1", closes)
+		}
+		if rec.Accepted() != capture.End() || rec.Flushed() != capture.End() {
+			t.Fatal("recorder did not finish at the capture end")
+		}
+		if err := rec.Err(); err != nil {
+			t.Fatalf("Err after Close = %v", err)
+		}
+	})
 }
 
 func TestRecorderPublishesFlushBoundary(t *testing.T) {
-	capture := gocan.NewCapture()
-	appendFrame(t, capture, 0x140)
-	writer := &writerProbe{}
-	rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Hour)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	flushed := capture.End()
-	appendFrame(t, capture, 0x141)
-	started, release := writer.blockNextFlush()
-	stopped := make(chan struct{})
-	go func() {
-		_ = rec.Close()
-		close(stopped)
-	}()
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		appendFrame(t, capture, 0x140)
+		writer := &writerProbe{}
+		rec, err := recorder.Start(context.Background(), capture, writer, gocan.Cursor{}, time.Hour)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+		flushed := capture.End()
+		appendFrame(t, capture, 0x141)
+		started, release := writer.blockNextFlush()
+		var releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		defer unblock()
+		stopped := make(chan struct{})
+		go func() {
+			_ = rec.Close()
+			close(stopped)
+		}()
+		defer func() {
+			unblock()
+			<-stopped
+		}()
 
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("final Flush did not start")
-	}
-	if rec.Accepted() != capture.End() || rec.Flushed() != flushed {
-		t.Fatal("accepted and flushed cursors did not expose the blocked Flush")
-	}
-	select {
-	case <-stopped:
-		t.Fatal("Stop returned before Flush completed")
-	default:
-	}
-	close(release)
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not return after Flush completed")
-	}
+		synctest.Wait()
+		select {
+		case <-started:
+		default:
+			t.Fatal("final Flush did not start")
+		}
+		if rec.Accepted() != capture.End() || rec.Flushed() != flushed {
+			t.Fatal("accepted and flushed cursors did not expose the blocked Flush")
+		}
+		select {
+		case <-stopped:
+			t.Fatal("Stop returned before Flush completed")
+		default:
+		}
+		unblock()
+		synctest.Wait()
+		select {
+		case <-stopped:
+		default:
+			t.Fatal("Stop did not return after Flush completed")
+		}
+	})
 }
 
 func TestRecorderFailureCheckpoints(t *testing.T) {

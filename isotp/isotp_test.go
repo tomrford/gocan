@@ -61,174 +61,178 @@ func TestExchangeRoundTrip(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			capture := gocan.NewCapture()
-			var network virtual.Network
-			tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
-			if err != nil {
-				t.Fatalf("Open tester: %v", err)
-			}
-			t.Cleanup(func() { _ = tester.Close() })
-			ecu, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ecu"})
-			if err != nil {
-				t.Fatalf("Open ECU: %v", err)
-			}
-			t.Cleanup(func() { _ = ecu.Close() })
+			synctest.Test(t, func(t *testing.T) {
+				capture := gocan.NewCapture()
+				var network virtual.Network
+				tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
+				if err != nil {
+					t.Fatalf("Open tester: %v", err)
+				}
+				t.Cleanup(func() { _ = tester.Close() })
+				ecu, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ecu"})
+				if err != nil {
+					t.Fatalf("Open ECU: %v", err)
+				}
+				t.Cleanup(func() { _ = ecu.Close() })
 
-			link, err := isotp.New(tester, isotp.Config{
-				TransmitID:               test.transmitID,
-				ReceiveID:                test.receiveID,
-				FrameFlags:               test.flags,
-				TransmitDataLength:       uint8(test.dataLength),
-				TransmitMinDataLength:    8,
-				PaddingByte:              0xcc,
-				MaximumPayloadLength:     8192,
-				AdvertisedBlockSize:      3,
-				AdvertisedSeparationTime: 100 * time.Microsecond,
-				WaitFrameLimit:           1,
-			})
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
+				link, err := isotp.New(tester, isotp.Config{
+					TransmitID:               test.transmitID,
+					ReceiveID:                test.receiveID,
+					FrameFlags:               test.flags,
+					TransmitDataLength:       uint8(test.dataLength),
+					TransmitMinDataLength:    8,
+					PaddingByte:              0xcc,
+					MaximumPayloadLength:     8192,
+					AdvertisedBlockSize:      3,
+					AdvertisedSeparationTime: 100 * time.Microsecond,
+					WaitFrameLimit:           1,
+				})
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			requestPayload := patternedPayload(test.requestLength, 0x22)
-			responsePayload := patternedPayload(test.responseLength, 0x62)
-			peer := rawPeer{
-				bus:        ecu,
-				capture:    capture,
-				cursor:     capture.End(),
-				receiveKey: gocan.FrameKey{Bus: ecu.ID(), ID: test.transmitID, Direction: gocan.DirectionReceive, Extended: test.flags.Has(gocan.FrameExtended)},
-				transmitID: test.receiveID,
-				flags:      test.flags,
-				dataLength: test.dataLength,
-				wantBlock:  3,
-				wantSTmin:  0xf1,
-			}
-			peerErrors := make(chan error, 1)
-			go func() {
-				peerErrors <- peer.exchange(ctx, requestPayload, responsePayload, test.peerBlockSize, test.peerSeparationTime, test.minimumRequestGap, test.waitBeforeContinue)
-			}()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				requestPayload := patternedPayload(test.requestLength, 0x22)
+				responsePayload := patternedPayload(test.responseLength, 0x62)
+				peer := rawPeer{
+					bus:        ecu,
+					capture:    capture,
+					cursor:     capture.End(),
+					receiveKey: gocan.FrameKey{Bus: ecu.ID(), ID: test.transmitID, Direction: gocan.DirectionReceive, Extended: test.flags.Has(gocan.FrameExtended)},
+					transmitID: test.receiveID,
+					flags:      test.flags,
+					dataLength: test.dataLength,
+					wantBlock:  3,
+					wantSTmin:  0xf1,
+				}
+				peerErrors := make(chan error, 1)
+				go func() {
+					peerErrors <- peer.exchange(ctx, requestPayload, responsePayload, test.peerBlockSize, test.peerSeparationTime, test.minimumRequestGap, test.waitBeforeContinue)
+				}()
 
-			exchange, err := link.Begin(ctx, requestPayload)
-			if err != nil {
-				t.Fatalf("Begin: %v", err)
-			}
-			defer exchange.Close()
+				exchange, err := link.Begin(ctx, requestPayload)
+				if err != nil {
+					t.Fatalf("Begin: %v", err)
+				}
+				defer exchange.Close()
 
-			pending, err := exchange.Next(ctx, 0)
-			if err != nil {
-				t.Fatalf("Next pending response: %v", err)
-			}
-			if want := []byte{0x7f, requestPayload[0], 0x78}; !bytes.Equal(pending, want) {
-				t.Fatalf("pending response = %x, want %x", pending, want)
-			}
+				pending, err := exchange.Next(ctx, 0)
+				if err != nil {
+					t.Fatalf("Next pending response: %v", err)
+				}
+				if want := []byte{0x7f, requestPayload[0], 0x78}; !bytes.Equal(pending, want) {
+					t.Fatalf("pending response = %x, want %x", pending, want)
+				}
 
-			response, err := exchange.Next(ctx, 0)
-			if err != nil {
-				t.Fatalf("Next final response: %v", err)
-			}
-			if !bytes.Equal(response, responsePayload) {
-				t.Fatalf("final response length = %d, want %d", len(response), len(responsePayload))
-			}
-			if err := <-peerErrors; err != nil {
-				t.Fatalf("ECU: %v", err)
-			}
-			var lastConsecutive gocan.Frame
-			flowControls := 0
-			for _, event := range capture.Series(gocan.FrameKey{Bus: tester.ID(), ID: test.transmitID, Direction: gocan.DirectionTransmit, Extended: test.flags.Has(gocan.FrameExtended)}) {
-				frame := event.Frame
-				switch frame.Data[0] >> 4 {
-				case 2:
-					lastConsecutive = frame
-				case 3:
-					flowControls++
-					if frame.DataLength() != 8 || !bytes.Equal(frame.Data[3:8], bytes.Repeat([]byte{0xcc}, 5)) {
-						t.Fatalf("Flow Control padding: %+v", frame)
+				response, err := exchange.Next(ctx, 0)
+				if err != nil {
+					t.Fatalf("Next final response: %v", err)
+				}
+				if !bytes.Equal(response, responsePayload) {
+					t.Fatalf("final response length = %d, want %d", len(response), len(responsePayload))
+				}
+				if err := <-peerErrors; err != nil {
+					t.Fatalf("ECU: %v", err)
+				}
+				var lastConsecutive gocan.Frame
+				flowControls := 0
+				for _, event := range capture.Series(gocan.FrameKey{Bus: tester.ID(), ID: test.transmitID, Direction: gocan.DirectionTransmit, Extended: test.flags.Has(gocan.FrameExtended)}) {
+					frame := event.Frame
+					switch frame.Data[0] >> 4 {
+					case 2:
+						lastConsecutive = frame
+					case 3:
+						flowControls++
+						if frame.DataLength() != 8 || !bytes.Equal(frame.Data[3:8], bytes.Repeat([]byte{0xcc}, 5)) {
+							t.Fatalf("Flow Control padding: %+v", frame)
+						}
 					}
 				}
-			}
-			if flowControls == 0 || lastConsecutive.DataLength() != test.lastFrameLength ||
-				!bytes.Equal(lastConsecutive.Data[test.lastFrameUsed:test.lastFrameLength], bytes.Repeat([]byte{0xcc}, test.lastFrameLength-test.lastFrameUsed)) {
-				t.Fatalf("final Consecutive Frame padding: %+v; flow controls: %d", lastConsecutive, flowControls)
-			}
+				if flowControls == 0 || lastConsecutive.DataLength() != test.lastFrameLength ||
+					!bytes.Equal(lastConsecutive.Data[test.lastFrameUsed:test.lastFrameLength], bytes.Repeat([]byte{0xcc}, test.lastFrameLength-test.lastFrameUsed)) {
+					t.Fatalf("final Consecutive Frame padding: %+v; flow controls: %d", lastConsecutive, flowControls)
+				}
+			})
 		})
 	}
 }
 
 func TestFailuresReleaseLink(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network virtual.Network
-	tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
-	if err != nil {
-		t.Fatalf("Open tester: %v", err)
-	}
-	t.Cleanup(func() { _ = tester.Close() })
-	ecu, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ecu"})
-	if err != nil {
-		t.Fatalf("Open ECU: %v", err)
-	}
-	t.Cleanup(func() { _ = ecu.Close() })
-
-	link, err := isotp.New(tester, isotp.Config{
-		TransmitID:         0x7e0,
-		ReceiveID:          0x7e8,
-		FlowControlTimeout: 5 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if _, err := link.Begin(context.Background(), patternedPayload(20, 1)); !errors.Is(err, isotp.ErrFlowControlTimeout) {
-		t.Fatalf("Begin without Flow Control = %v, want ErrFlowControlTimeout", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	waiting, err := link.Begin(ctx, []byte{0x3e, 0})
-	if err != nil {
-		t.Fatalf("Begin before response timeouts: %v", err)
-	}
-	t.Cleanup(func() { _ = waiting.Close() })
-	if _, err := waiting.Next(ctx, 5*time.Millisecond); !errors.Is(err, isotp.ErrFirstFrameTimeout) {
-		t.Fatalf("Next without a response = %v, want ErrFirstFrameTimeout", err)
-	}
-	deadlineContext, cancelDeadline := context.WithTimeout(ctx, time.Millisecond)
-	defer cancelDeadline()
-	if _, err := waiting.Next(deadlineContext, time.Second); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Next past caller deadline = %v, want context.DeadlineExceeded", err)
-	}
-	waiting.Close()
-	peer := rawPeer{
-		bus:        ecu,
-		capture:    capture,
-		cursor:     capture.End(),
-		receiveKey: gocan.FrameKey{Bus: ecu.ID(), ID: 0x7e0, Direction: gocan.DirectionReceive},
-		transmitID: 0x7e8,
-		dataLength: 8,
-	}
-	peerErrors := make(chan error, 1)
-	go func() {
-		_, err := peer.receivePayload(ctx, 0, 0, 0, false)
-		if err == nil {
-			err = peer.sendPayload(ctx, []byte{0x7e, 0})
+	synctest.Test(t, func(t *testing.T) {
+		capture := gocan.NewCapture()
+		var network virtual.Network
+		tester, err := network.Open(context.Background(), capture, virtual.Config{ID: 1, Name: "tester"})
+		if err != nil {
+			t.Fatalf("Open tester: %v", err)
 		}
-		peerErrors <- err
-	}()
-	exchange, err := link.Begin(ctx, []byte{0x3e, 0})
-	if err != nil {
-		t.Fatalf("Begin after timeout: %v", err)
-	}
-	response, err := exchange.Next(ctx, 0)
-	if err != nil {
-		t.Fatalf("Next response: %v", err)
-	}
-	if !bytes.Equal(response, []byte{0x7e, 0}) {
-		t.Fatalf("response = %x", response)
-	}
-	exchange.Close()
-	if err := <-peerErrors; err != nil {
-		t.Fatalf("ECU: %v", err)
-	}
+		t.Cleanup(func() { _ = tester.Close() })
+		ecu, err := network.Open(context.Background(), capture, virtual.Config{ID: 2, Name: "ecu"})
+		if err != nil {
+			t.Fatalf("Open ECU: %v", err)
+		}
+		t.Cleanup(func() { _ = ecu.Close() })
+
+		link, err := isotp.New(tester, isotp.Config{
+			TransmitID:         0x7e0,
+			ReceiveID:          0x7e8,
+			FlowControlTimeout: 5 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := link.Begin(context.Background(), patternedPayload(20, 1)); !errors.Is(err, isotp.ErrFlowControlTimeout) {
+			t.Fatalf("Begin without Flow Control = %v, want ErrFlowControlTimeout", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		waiting, err := link.Begin(ctx, []byte{0x3e, 0})
+		if err != nil {
+			t.Fatalf("Begin before response timeouts: %v", err)
+		}
+		t.Cleanup(func() { _ = waiting.Close() })
+		if _, err := waiting.Next(ctx, 5*time.Millisecond); !errors.Is(err, isotp.ErrFirstFrameTimeout) {
+			t.Fatalf("Next without a response = %v, want ErrFirstFrameTimeout", err)
+		}
+		deadlineContext, cancelDeadline := context.WithTimeout(ctx, time.Millisecond)
+		defer cancelDeadline()
+		if _, err := waiting.Next(deadlineContext, time.Second); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Next past caller deadline = %v, want context.DeadlineExceeded", err)
+		}
+		waiting.Close()
+		peer := rawPeer{
+			bus:        ecu,
+			capture:    capture,
+			cursor:     capture.End(),
+			receiveKey: gocan.FrameKey{Bus: ecu.ID(), ID: 0x7e0, Direction: gocan.DirectionReceive},
+			transmitID: 0x7e8,
+			dataLength: 8,
+		}
+		peerErrors := make(chan error, 1)
+		go func() {
+			_, err := peer.receivePayload(ctx, 0, 0, 0, false)
+			if err == nil {
+				err = peer.sendPayload(ctx, []byte{0x7e, 0})
+			}
+			peerErrors <- err
+		}()
+		exchange, err := link.Begin(ctx, []byte{0x3e, 0})
+		if err != nil {
+			t.Fatalf("Begin after timeout: %v", err)
+		}
+		response, err := exchange.Next(ctx, 0)
+		if err != nil {
+			t.Fatalf("Next response: %v", err)
+		}
+		if !bytes.Equal(response, []byte{0x7e, 0}) {
+			t.Fatalf("response = %x", response)
+		}
+		exchange.Close()
+		if err := <-peerErrors; err != nil {
+			t.Fatalf("ECU: %v", err)
+		}
+	})
 }
 
 func TestInvalidResponsesDoNotEscapeConfiguredBounds(t *testing.T) {
@@ -644,51 +648,55 @@ func TestSegmentationConformance(t *testing.T) {
 	}
 
 	t.Run("reserved separation time slows instead of failing", func(t *testing.T) {
-		link, peer, _ := newPair(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			link, peer, _ := newPair(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 
-		payload := patternedPayload(20, 0x2e)
-		received := make(chan []byte, 1)
-		peerErrors := make(chan error, 1)
-		go func() {
-			got, err := peer.receivePayload(ctx, 0, 0x80, 120*time.Millisecond, false)
-			received <- got
-			peerErrors <- err
-		}()
-		if err := link.Send(ctx, payload); err != nil {
-			t.Fatalf("Send with reserved STmin: %v", err)
-		}
-		if err := <-peerErrors; err != nil {
-			t.Fatalf("ECU: %v", err)
-		}
-		if got := <-received; !bytes.Equal(got, payload) {
-			t.Fatalf("received %d bytes, want %d", len(got), len(payload))
-		}
+			payload := patternedPayload(20, 0x2e)
+			received := make(chan []byte, 1)
+			peerErrors := make(chan error, 1)
+			go func() {
+				got, err := peer.receivePayload(ctx, 0, 0x80, 120*time.Millisecond, false)
+				received <- got
+				peerErrors <- err
+			}()
+			if err := link.Send(ctx, payload); err != nil {
+				t.Fatalf("Send with reserved STmin: %v", err)
+			}
+			if err := <-peerErrors; err != nil {
+				t.Fatalf("ECU: %v", err)
+			}
+			if got := <-received; !bytes.Equal(got, payload) {
+				t.Fatalf("received %d bytes, want %d", len(got), len(payload))
+			}
+		})
 	})
 
 	t.Run("short non-final Consecutive Frame is rejected", func(t *testing.T) {
-		link, peer, _ := newPair(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		synctest.Test(t, func(t *testing.T) {
+			link, peer, _ := newPair(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 
-		peerErrors := make(chan error, 1)
-		go func() {
-			err := peer.sendFrame(ctx, []byte{0x10, 20, 1, 2, 3, 4, 5, 6}, true)
-			if err == nil {
-				_, err = peer.nextFrame(ctx)
+			peerErrors := make(chan error, 1)
+			go func() {
+				err := peer.sendFrame(ctx, []byte{0x10, 20, 1, 2, 3, 4, 5, 6}, true)
+				if err == nil {
+					_, err = peer.nextFrame(ctx)
+				}
+				if err == nil {
+					err = peer.sendFrame(ctx, []byte{0x21, 7}, false)
+				}
+				peerErrors <- err
+			}()
+			if _, err := link.Receive(ctx); !errors.Is(err, isotp.ErrProtocol) {
+				t.Fatalf("short Consecutive Frame = %v, want ErrProtocol", err)
 			}
-			if err == nil {
-				err = peer.sendFrame(ctx, []byte{0x21, 7}, false)
+			if err := <-peerErrors; err != nil {
+				t.Fatalf("ECU: %v", err)
 			}
-			peerErrors <- err
-		}()
-		if _, err := link.Receive(ctx); !errors.Is(err, isotp.ErrProtocol) {
-			t.Fatalf("short Consecutive Frame = %v, want ErrProtocol", err)
-		}
-		if err := <-peerErrors; err != nil {
-			t.Fatalf("ECU: %v", err)
-		}
+		})
 	})
 }
 
