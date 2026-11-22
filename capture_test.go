@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -1053,257 +1054,219 @@ func TestCapturePruneFollowsSlowestCursor(t *testing.T) {
 }
 
 func TestCaptureNext(t *testing.T) {
-	capture := newTestCapture(8, 64)
-	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	synctest.Test(t, func(t *testing.T) {
+		capture := NewCapture()
+		key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 
-	first := testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 0, DirectionReceive)
-	second := testDataEvent(t, testBus0, 0x100, 0, []byte{2}, 1, DirectionReceive)
-	for _, event := range []FrameEvent{first, second} {
-		if err := capture.Append(event); err != nil {
-			t.Fatalf("Append: %v", err)
+		first := testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 0, DirectionReceive)
+		second := testDataEvent(t, testBus0, 0x100, 0, []byte{2}, 1, DirectionReceive)
+		for _, event := range []FrameEvent{first, second} {
+			if err := capture.Append(event); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
 		}
-	}
 
-	event, cursor, err := capture.Next(context.Background(), key, Cursor{})
-	if err != nil || !eventsEqual(event, first) {
-		t.Fatalf("first Next = (%+v, %v), want first event", event, err)
-	}
-	event, cursor, err = capture.Next(context.Background(), key, cursor)
-	if err != nil || !eventsEqual(event, second) {
-		t.Fatalf("second Next = (%+v, %v), want second event", event, err)
-	}
+		event, cursor, err := capture.Next(context.Background(), key, Cursor{})
+		if err != nil || !eventsEqual(event, first) {
+			t.Fatalf("first Next = (%+v, %v), want first event", event, err)
+		}
+		event, cursor, err = capture.Next(context.Background(), key, cursor)
+		if err != nil || !eventsEqual(event, second) {
+			t.Fatalf("second Next = (%+v, %v), want second event", event, err)
+		}
 
-	end := capture.End()
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, _, err := capture.Next(cancelled, key, end); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled Next error = %v, want context.Canceled", err)
-	}
+		end := capture.End()
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, _, err := capture.Next(cancelled, key, end); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Next error = %v, want context.Canceled", err)
+		}
 
-	type nextResult struct {
-		event  FrameEvent
-		cursor Cursor
-		err    error
-	}
-	results := make(chan nextResult, 2)
-	waitContext, stopWaiting := context.WithTimeout(context.Background(), time.Second)
-	defer stopWaiting()
-	for range 2 {
-		go func() {
-			event, cursor, err := capture.Next(waitContext, key, end)
-			results <- nextResult{event: event, cursor: cursor, err: err}
-		}()
-	}
+		type nextResult struct {
+			event  FrameEvent
+			cursor Cursor
+			err    error
+		}
+		results := make(chan nextResult, 2)
+		waitContext, stopWaiting := context.WithTimeout(context.Background(), time.Second)
+		defer stopWaiting()
+		for range 2 {
+			go func() {
+				event, cursor, err := capture.Next(waitContext, key, end)
+				results <- nextResult{event: event, cursor: cursor, err: err}
+			}()
+		}
+		synctest.Wait()
 
-	registrationDeadline := time.Now().Add(time.Second)
-	for {
-		capture.mu.RLock()
-		waiterCount := 0
-		if waiter := capture.waiters[key]; waiter != nil {
-			waiterCount = waiter.count
+		third := testDataEvent(t, testBus0, 0x100, 0, []byte{3}, 2, DirectionReceive)
+		if err := capture.Append(third); err != nil {
+			t.Fatalf("Append third: %v", err)
 		}
-		capture.mu.RUnlock()
-		if waiterCount == 2 {
-			break
+		synctest.Wait()
+		for range 2 {
+			var result nextResult
+			select {
+			case result = <-results:
+			default:
+				t.Fatal("Next waiter did not wake")
+			}
+			if result.err != nil || !eventsEqual(result.event, third) {
+				t.Fatalf("waiting Next = (%+v, %v), want third event", result.event, result.err)
+			}
+			if result.cursor != capture.End() {
+				t.Fatalf("waiting Next cursor = %+v, want current end %+v", result.cursor, capture.End())
+			}
 		}
-		if time.Now().After(registrationDeadline) {
-			t.Fatal("Next waiters did not register")
-		}
-		runtime.Gosched()
-	}
-
-	third := testDataEvent(t, testBus0, 0x100, 0, []byte{3}, 2, DirectionReceive)
-	if err := capture.Append(third); err != nil {
-		t.Fatalf("Append third: %v", err)
-	}
-	for range 2 {
-		var result nextResult
-		select {
-		case result = <-results:
-		case <-time.After(time.Second):
-			t.Fatal("Next waiter did not wake")
-		}
-		if result.err != nil || !eventsEqual(result.event, third) {
-			t.Fatalf("waiting Next = (%+v, %v), want third event", result.event, result.err)
-		}
-		if result.cursor != capture.End() {
-			t.Fatalf("waiting Next cursor = %+v, want current end %+v", result.cursor, capture.End())
-		}
-	}
-}
-
-func waitForCaptureWaiter(t *testing.T, capture *Capture, key FrameKey) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		capture.mu.RLock()
-		parked := capture.waiters[key] != nil
-		capture.mu.RUnlock()
-		if parked {
-			return
-		}
-		runtime.Gosched()
-	}
-	t.Fatal("no Next parked on the key")
+	})
 }
 
 func TestCaptureNextAcrossClear(t *testing.T) {
-	capture := newTestCapture(8, 64)
-	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
-	other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
-	if err := capture.Append(testDataEvent(t, testBus0, key.ID, 0, []byte{1}, 0, DirectionReceive)); err != nil {
-		t.Fatalf("append first frame: %v", err)
-	}
-	held := capture.End()
+	synctest.Test(t, func(t *testing.T) {
+		capture := NewCapture()
+		key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+		other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
+		if err := capture.Append(testDataEvent(t, testBus0, key.ID, 0, []byte{1}, 0, DirectionReceive)); err != nil {
+			t.Fatalf("append first frame: %v", err)
+		}
+		held := capture.End()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	type result struct {
-		event  FrameEvent
-		cursor Cursor
-		err    error
-	}
-	pending := make(chan result, 1)
-	go func() {
-		event, next, err := capture.Next(ctx, key, held)
-		pending <- result{event, next, err}
-	}()
-	waitForCaptureWaiter(t, capture, key)
-	capture.Clear()
+		type result struct {
+			event  FrameEvent
+			cursor Cursor
+			err    error
+		}
+		pending := make(chan result, 1)
+		go func() {
+			event, next, err := capture.Next(ctx, key, held)
+			pending <- result{event, next, err}
+		}()
+		synctest.Wait()
+		capture.Clear()
+		synctest.Wait()
 
-	select {
-	case got := <-pending:
-		t.Fatalf("registered Next returned (%+v, %v) during Clear", got.event, got.err)
-	default:
-	}
+		select {
+		case got := <-pending:
+			t.Fatalf("registered Next returned (%+v, %v) during Clear", got.event, got.err)
+		default:
+		}
 
-	if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, []byte{2}, 1, DirectionReceive)); err != nil {
-		t.Fatalf("append unrelated frame: %v", err)
-	}
-	select {
-	case got := <-pending:
-		t.Fatalf("registered Next returned unrelated frame (%+v, %v)", got.event, got.err)
-	default:
-	}
+		if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, []byte{2}, 1, DirectionReceive)); err != nil {
+			t.Fatalf("append unrelated frame: %v", err)
+		}
+		synctest.Wait()
+		select {
+		case got := <-pending:
+			t.Fatalf("registered Next returned unrelated frame (%+v, %v)", got.event, got.err)
+		default:
+		}
 
-	revived := testDataEvent(t, testBus0, key.ID, 0, []byte{3}, 2, DirectionReceive)
-	if err := capture.Append(revived); err != nil {
-		t.Fatalf("append after Clear: %v", err)
-	}
-	got := <-pending
-	if got.err != nil || !eventsEqual(got.event, revived) {
-		t.Fatalf("registered Next across Clear = (%+v, %v), want %+v", got.event, got.err, revived)
-	}
-	if got.cursor != capture.End() {
-		t.Fatalf("registered Next cursor = %+v, want %+v", got.cursor, capture.End())
-	}
+		revived := testDataEvent(t, testBus0, key.ID, 0, []byte{3}, 2, DirectionReceive)
+		if err := capture.Append(revived); err != nil {
+			t.Fatalf("append after Clear: %v", err)
+		}
+		got := <-pending
+		if got.err != nil || !eventsEqual(got.event, revived) {
+			t.Fatalf("registered Next across Clear = (%+v, %v), want %+v", got.event, got.err, revived)
+		}
+		if got.cursor != capture.End() {
+			t.Fatalf("registered Next cursor = %+v, want %+v", got.cursor, capture.End())
+		}
 
-	if event, next, err := capture.Next(context.Background(), key, held); !errors.Is(err, ErrCursorOutOfRange) || event != (FrameEvent{}) || next != held {
-		t.Fatalf("new Next from cleared cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
-	}
+		if event, next, err := capture.Next(context.Background(), key, held); !errors.Is(err, ErrCursorOutOfRange) || event != (FrameEvent{}) || next != held {
+			t.Fatalf("new Next from cleared cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
+		}
+	})
 }
 
 func TestCaptureNextAcrossPrune(t *testing.T) {
-	capture := newTestCapture(4, 24)
-	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
-	other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
-	var discarded, sealed Cursor
-	for seq := range 3 {
-		id := other.ID
-		if seq == 0 {
-			id = key.ID
+	synctest.Test(t, func(t *testing.T) {
+		capture := newTestCapture(4, 24)
+		key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+		other := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
+		var discarded, sealed Cursor
+		for seq := range 3 {
+			id := other.ID
+			if seq == 0 {
+				id = key.ID
+			}
+			data := make([]byte, 8)
+			binary.LittleEndian.PutUint32(data, uint32(seq))
+			event := testDataEvent(t, testBus0, id, 0, data, seq, DirectionReceive)
+			if err := capture.Append(event); err != nil {
+				t.Fatalf("Append %d: %v", seq, err)
+			}
+			if seq == 0 {
+				discarded = capture.End()
+			}
+			sealed = capture.End()
 		}
-		data := make([]byte, 8)
-		binary.LittleEndian.PutUint32(data, uint32(seq))
-		event := testDataEvent(t, testBus0, id, 0, data, seq, DirectionReceive)
-		if err := capture.Append(event); err != nil {
-			t.Fatalf("Append %d: %v", seq, err)
+		if discarded == sealed {
+			t.Fatal("sealed chunk has one record, want a discarded cursor distinct from the prune point")
 		}
-		if seq == 0 {
-			discarded = capture.End()
+		if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, make([]byte, 8), 3, DirectionReceive)); err != nil {
+			t.Fatalf("append unrelated frame: %v", err)
 		}
-		sealed = capture.End()
-	}
-	if discarded == sealed {
-		t.Fatal("sealed chunk has one record, want a discarded cursor distinct from the prune point")
-	}
-	if err := capture.Append(testDataEvent(t, testBus0, other.ID, 0, make([]byte, 8), 3, DirectionReceive)); err != nil {
-		t.Fatalf("append unrelated frame: %v", err)
-	}
-	if len(capture.chunks) != 2 {
-		t.Fatalf("capture holds %d chunks, want a sealed chunk and an active one", len(capture.chunks))
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	type result struct {
-		event  FrameEvent
-		cursor Cursor
-		err    error
-	}
-	stale := make(chan result, 1)
-	seam := make(chan result, 1)
-	go func() {
-		event, next, err := capture.Next(ctx, key, discarded)
-		stale <- result{event, next, err}
-	}()
-	go func() {
-		event, next, err := capture.Next(ctx, key, sealed)
-		seam <- result{event, next, err}
-	}()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		capture.mu.RLock()
-		parked := 0
-		if waiter := capture.waiters[key]; waiter != nil {
-			parked = waiter.count
+		if len(capture.chunks) != 2 {
+			t.Fatalf("capture holds %d chunks, want a sealed chunk and an active one", len(capture.chunks))
 		}
-		capture.mu.RUnlock()
-		if parked == 2 {
-			break
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		type result struct {
+			event  FrameEvent
+			cursor Cursor
+			err    error
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("Next waiters did not register")
+		stale := make(chan result, 1)
+		seam := make(chan result, 1)
+		go func() {
+			event, next, err := capture.Next(ctx, key, discarded)
+			stale <- result{event, next, err}
+		}()
+		go func() {
+			event, next, err := capture.Next(ctx, key, sealed)
+			seam <- result{event, next, err}
+		}()
+		synctest.Wait()
+
+		if err := capture.Prune(sealed); err != nil {
+			t.Fatalf("Prune at the chunk seam: %v", err)
 		}
-		runtime.Gosched()
-	}
+		synctest.Wait()
 
-	if err := capture.Prune(sealed); err != nil {
-		t.Fatalf("Prune at the chunk seam: %v", err)
-	}
-
-	for label, result := range map[string]<-chan result{
-		"discarded-cursor Next": stale,
-		"prune-point Next":      seam,
-	} {
-		select {
-		case got := <-result:
-			t.Fatalf("%s returned (%+v, %v) during Prune", label, got.event, got.err)
-		default:
+		for label, result := range map[string]<-chan result{
+			"discarded-cursor Next": stale,
+			"prune-point Next":      seam,
+		} {
+			select {
+			case got := <-result:
+				t.Fatalf("%s returned (%+v, %v) during Prune", label, got.event, got.err)
+			default:
+			}
 		}
-	}
 
-	revived := testDataEvent(t, testBus0, key.ID, 0, []byte{4}, 4, DirectionReceive)
-	if err := capture.Append(revived); err != nil {
-		t.Fatalf("append after Prune: %v", err)
-	}
-	for label, result := range map[string]<-chan result{
-		"discarded-cursor Next": stale,
-		"prune-point Next":      seam,
-	} {
-		got := <-result
-		if got.err != nil || !eventsEqual(got.event, revived) || got.cursor != capture.End() {
-			t.Fatalf("%s = (%+v, %+v, %v), want %+v at %+v", label, got.event, got.cursor, got.err, revived, capture.End())
+		revived := testDataEvent(t, testBus0, key.ID, 0, []byte{4}, 4, DirectionReceive)
+		if err := capture.Append(revived); err != nil {
+			t.Fatalf("append after Prune: %v", err)
 		}
-	}
+		for label, result := range map[string]<-chan result{
+			"discarded-cursor Next": stale,
+			"prune-point Next":      seam,
+		} {
+			got := <-result
+			if got.err != nil || !eventsEqual(got.event, revived) || got.cursor != capture.End() {
+				t.Fatalf("%s = (%+v, %+v, %v), want %+v at %+v", label, got.event, got.cursor, got.err, revived, capture.End())
+			}
+		}
 
-	if event, next, err := capture.Next(context.Background(), key, discarded); !errors.Is(err, ErrCursorOutOfRange) || event != (FrameEvent{}) || next != discarded {
-		t.Fatalf("new Next from pruned cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
-	}
-
+		if event, next, err := capture.Next(context.Background(), key, discarded); !errors.Is(err, ErrCursorOutOfRange) || event != (FrameEvent{}) || next != discarded {
+			t.Fatalf("new Next from pruned cursor = (%+v, %+v, %v), want ErrCursorOutOfRange", event, next, err)
+		}
+	})
 }
 
 func TestCaptureConcurrentClear(t *testing.T) {
@@ -1724,82 +1687,84 @@ func TestCaptureConcurrent(t *testing.T) {
 }
 
 func TestCaptureFirstSinceAndNormalization(t *testing.T) {
-	capture := newTestCapture(2, 16)
-	key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	synctest.Test(t, func(t *testing.T) {
+		capture := NewCapture()
+		key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 
-	if ev, cur, ok, err := capture.FirstSince(key, Cursor{}); err != nil || ok || ev != (FrameEvent{}) || cur != (Cursor{}) {
-		t.Fatalf("empty FirstSince = (%+v, %+v, %t, %v)", ev, cur, ok, err)
-	}
-
-	// Dirty trailing bytes beyond DLC and a non-UTC timestamp with monotonic reading.
-	localZone := time.FixedZone("EST", -5*3600)
-	dirty := FrameEvent{
-		Bus:       testBus0,
-		Timestamp: time.Now().In(localZone),
-		Direction: DirectionReceive,
-		Frame: Frame{
-			ID:   0x100,
-			DLC:  2,
-			Data: [MaxDataLength]byte{0xAA, 0xBB, 0xFF, 0xEE, 0xDD},
-		},
-	}
-	if err := capture.Append(dirty); err != nil {
-		t.Fatalf("Append dirty: %v", err)
-	}
-	latest, ok := capture.Latest(key)
-	if !ok {
-		t.Fatal("Latest missing after Append")
-	}
-	for i := 2; i < MaxDataLength; i++ {
-		if latest.Frame.Data[i] != 0 {
-			t.Fatalf("Latest trailing byte %d = %#x, want 0", i, latest.Frame.Data[i])
+		if ev, cur, ok, err := capture.FirstSince(key, Cursor{}); err != nil || ok || ev != (FrameEvent{}) || cur != (Cursor{}) {
+			t.Fatalf("empty FirstSince = (%+v, %+v, %t, %v)", ev, cur, ok, err)
 		}
-	}
-	if latest.Timestamp.Location() != time.UTC || latest.Timestamp.String() != time.Unix(0, dirty.Timestamp.UnixNano()).UTC().String() {
-		t.Fatalf("Latest timestamp = %q (%v), want UTC without monotonic clock", latest.Timestamp, latest.Timestamp.Location())
-	}
 
-	// Retained frame is returned even when Next's context is already canceled.
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	got, firstCur, err := capture.Next(cancelled, key, Cursor{})
-	if err != nil || got != latest {
-		t.Fatalf("Next retained with canceled ctx = (%+v, %v), want %+v", got, err, latest)
-	}
-	if gotFirst, firstCur2, ok, err := capture.FirstSince(key, Cursor{}); err != nil || !ok || gotFirst != latest || firstCur2 != firstCur {
-		t.Fatalf("FirstSince = (%+v, %+v, %t, %v), want %+v at %+v", gotFirst, firstCur2, ok, err, latest, firstCur)
-	}
-	if ev, cur, ok, err := capture.FirstSince(key, firstCur); err != nil || ok || ev != (FrameEvent{}) || cur != firstCur {
-		t.Fatalf("FirstSince at tail = (%+v, %+v, %t, %v)", ev, cur, ok, err)
-	}
+		// Dirty trailing bytes beyond DLC and a non-UTC timestamp with monotonic reading.
+		localZone := time.FixedZone("EST", -5*3600)
+		dirty := FrameEvent{
+			Bus:       testBus0,
+			Timestamp: time.Now().In(localZone),
+			Direction: DirectionReceive,
+			Frame: Frame{
+				ID:   0x100,
+				DLC:  2,
+				Data: [MaxDataLength]byte{0xAA, 0xBB, 0xFF, 0xEE, 0xDD},
+			},
+		}
+		if err := capture.Append(dirty); err != nil {
+			t.Fatalf("Append dirty: %v", err)
+		}
+		latest, ok := capture.Latest(key)
+		if !ok {
+			t.Fatal("Latest missing after Append")
+		}
+		for i := 2; i < MaxDataLength; i++ {
+			if latest.Frame.Data[i] != 0 {
+				t.Fatalf("Latest trailing byte %d = %#x, want 0", i, latest.Frame.Data[i])
+			}
+		}
+		if latest.Timestamp.Location() != time.UTC || latest.Timestamp.String() != time.Unix(0, dirty.Timestamp.UnixNano()).UTC().String() {
+			t.Fatalf("Latest timestamp = %q (%v), want UTC without monotonic clock", latest.Timestamp, latest.Timestamp.Location())
+		}
 
-	// Verify waiting Next receives the same normalized FrameEvent (zeroed trailing bytes + UTC).
-	waitCtx, stopWait := context.WithTimeout(context.Background(), 2*time.Second)
-	defer stopWait()
-	type wakeResult struct {
-		event FrameEvent
-		err   error
-	}
-	woken := make(chan wakeResult, 1)
-	go func() {
-		ev, _, err := capture.Next(waitCtx, key, firstCur)
-		woken <- wakeResult{event: ev, err: err}
-	}()
-	waitForCaptureWaiter(t, capture, key)
+		// Retained frame is returned even when Next's context is already canceled.
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		got, firstCur, err := capture.Next(cancelled, key, Cursor{})
+		if err != nil || got != latest {
+			t.Fatalf("Next retained with canceled ctx = (%+v, %v), want %+v", got, err, latest)
+		}
+		if gotFirst, firstCur2, ok, err := capture.FirstSince(key, Cursor{}); err != nil || !ok || gotFirst != latest || firstCur2 != firstCur {
+			t.Fatalf("FirstSince = (%+v, %+v, %t, %v), want %+v at %+v", gotFirst, firstCur2, ok, err, latest, firstCur)
+		}
+		if ev, cur, ok, err := capture.FirstSince(key, firstCur); err != nil || ok || ev != (FrameEvent{}) || cur != firstCur {
+			t.Fatalf("FirstSince at tail = (%+v, %+v, %t, %v)", ev, cur, ok, err)
+		}
 
-	dirty2 := dirty
-	dirty2.Frame.Data[0] = 0xCC
-	dirty2.Frame.Data[7] = 0x99
-	if err := capture.Append(dirty2); err != nil {
-		t.Fatalf("Append dirty2: %v", err)
-	}
-	gotWake := <-woken
-	if gotWake.err != nil {
-		t.Fatalf("waiting Next: %v", gotWake.err)
-	}
-	if gotWake.event.Frame.Data[7] != 0 || gotWake.event.Timestamp.Location() != time.UTC {
-		t.Fatalf("waiter received unnormalized frame: data[7]=%#x loc=%v", gotWake.event.Frame.Data[7], gotWake.event.Timestamp.Location())
-	}
+		// Verify waiting Next receives the same normalized FrameEvent (zeroed trailing bytes + UTC).
+		waitCtx, stopWait := context.WithTimeout(context.Background(), 2*time.Second)
+		defer stopWait()
+		type wakeResult struct {
+			event FrameEvent
+			err   error
+		}
+		woken := make(chan wakeResult, 1)
+		go func() {
+			ev, _, err := capture.Next(waitCtx, key, firstCur)
+			woken <- wakeResult{event: ev, err: err}
+		}()
+		synctest.Wait()
+
+		dirty2 := dirty
+		dirty2.Frame.Data[0] = 0xCC
+		dirty2.Frame.Data[7] = 0x99
+		if err := capture.Append(dirty2); err != nil {
+			t.Fatalf("Append dirty2: %v", err)
+		}
+		gotWake := <-woken
+		if gotWake.err != nil {
+			t.Fatalf("waiting Next: %v", gotWake.err)
+		}
+		if gotWake.event.Frame.Data[7] != 0 || gotWake.event.Timestamp.Location() != time.UTC {
+			t.Fatalf("waiter received unnormalized frame: data[7]=%#x loc=%v", gotWake.event.Frame.Data[7], gotWake.event.Timestamp.Location())
+		}
+	})
 }
 
 func TestCaptureChunkGrowthLifecycle(t *testing.T) {

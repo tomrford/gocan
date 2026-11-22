@@ -1,10 +1,12 @@
-package dbc
+package dbc_test
 
 import (
 	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tomrford/gocan/dbc"
 )
 
 func TestParseFile(t *testing.T) {
@@ -21,12 +23,12 @@ func TestParseFile(t *testing.T) {
 	windows1252Source = append(windows1252Source, suffix...)
 
 	path := filepath.Join(t.TempDir(), "vehicle.dbc")
-	parse := func(source []byte) *Database {
+	parse := func(source []byte) *dbc.Database {
 		t.Helper()
 		if err := os.WriteFile(path, source, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		db, err := ParseFile(path)
+		db, err := dbc.ParseFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -36,7 +38,7 @@ func TestParseFile(t *testing.T) {
 		return db
 	}
 
-	for encoding, db := range map[string]*Database{
+	for encoding, db := range map[string]*dbc.Database{
 		"UTF-8 with BOM": parse(utf8Source),
 		"Windows-1252":   parse(windows1252Source),
 	} {
