@@ -26,10 +26,10 @@ const (
 )
 
 // ErrProtocol identifies malformed or inconsistent J1939 transport traffic.
-var ErrProtocol = errors.New("J1939 protocol error")
+var ErrProtocol = errors.New("j1939: protocol error")
 
 // ErrUnsupported identifies traffic outside classical J1939-21 support.
-var ErrUnsupported = errors.New("unsupported J1939 semantics")
+var ErrUnsupported = errors.New("j1939: unsupported semantics")
 
 // Message is one complete J1939 parameter group reconstructed from one or more
 // raw CAN frames. Payload owns its storage.
@@ -59,10 +59,12 @@ type Diagnostic struct {
 	Err       error
 }
 
+// Error returns the underlying diagnostic error message.
 func (diagnostic Diagnostic) Error() string {
 	return diagnostic.Err.Error()
 }
 
+// Unwrap returns the underlying diagnostic error.
 func (diagnostic Diagnostic) Unwrap() error {
 	return diagnostic.Err
 }

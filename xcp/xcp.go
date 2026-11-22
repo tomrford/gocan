@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -16,14 +17,28 @@ import (
 )
 
 var (
-	ErrClosed                  = errors.New("XCP client is closed")
-	ErrNotConnected            = errors.New("XCP session capabilities are not known; CONNECT required")
-	ErrSynchronizationRequired = errors.New("XCP command outcome is uncertain; SYNCH required")
-	ErrTimeout                 = errors.New("XCP response timeout")
-	ErrInvalidResponse         = errors.New("invalid XCP response")
-	ErrUnsupported             = errors.New("unsupported XCP operation")
-	ErrSessionTerminated       = errors.New("XCP session terminated by ECU")
+	// ErrClosed indicates an operation on a client that has been closed.
+	ErrClosed = errors.New("xcp: client is closed")
+	// ErrNotConnected indicates that session capabilities are unknown and
+	// Connect must succeed before issuing this command.
+	ErrNotConnected = errors.New("xcp: session capabilities are not known; CONNECT required")
+	// ErrSynchronizationRequired indicates that a prior accepted command has no
+	// trusted final reply and Synchronize must succeed before ordinary commands
+	// can resume.
+	ErrSynchronizationRequired = errors.New("xcp: command outcome is uncertain; SYNCH required")
+	// ErrTimeout indicates that no final response arrived before Config.Timeout
+	// (restarted by EV_CMD_PENDING events).
+	ErrTimeout = errors.New("xcp: response timeout")
+	// ErrInvalidResponse identifies a malformed or truncated XCP response packet.
+	ErrInvalidResponse = errors.New("xcp: invalid response")
+	// ErrUnsupported identifies an XCP command, mode, or capability outside the
+	// client's supported subset.
+	ErrUnsupported = errors.New("xcp: unsupported operation")
+	// ErrSessionTerminated indicates that the ECU reported EV_SESSION_TERMINATED.
+	ErrSessionTerminated = errors.New("xcp: session terminated by ECU")
 )
+
+var _ io.Closer = (*Client)(nil)
 
 // Command is the first byte of a command packet. These are the commands with
 // typed support here; Do can also send other sequential, single-response commands.
@@ -79,6 +94,7 @@ type Capabilities struct {
 	TransportVersion   uint8
 }
 
+// Request is one raw sequential XCP command packet.
 type Request struct {
 	Command Command
 	// Data contains command parameters without the command byte or CAN padding.
@@ -97,14 +113,16 @@ type NegativeResponseError struct {
 	Code    byte
 }
 
+// Error formats the command identifier and XCP error code.
 func (err *NegativeResponseError) Error() string {
-	return fmt.Sprintf("XCP command %#02x returned error %#02x", err.Command, err.Code)
+	return fmt.Sprintf("xcp: command %#02x returned error %#02x", err.Command, err.Code)
 }
 
 // Client owns command sequencing, not the Bus or Capture. Complete memory reads
-// and Do calls share one cancellable gate. Close cancels active and queued calls
-// without disconnecting the ECU or closing the caller's bus; use Disconnect
-// explicitly when an acknowledged protocol disconnect is wanted.
+// and Do calls share one cancellable gate. Close cancels active and queued
+// calls, waits for any in-flight command to unwind, and does not disconnect
+// the ECU or close the caller's bus; use Disconnect explicitly when an
+// acknowledged protocol disconnect is wanted.
 //
 // After an accepted command has no trustworthy final response, ordinary commands
 // fail with ErrSynchronizationRequired. Synchronize must receive ERR_CMD_SYNCH
@@ -115,13 +133,15 @@ func (err *NegativeResponseError) Error() string {
 // Once a SYNCH send is accepted, further CONNECT retries are blocked until
 // synchronisation succeeds, so an old marker cannot fence a newer CONNECT.
 type Client struct {
-	bus     gocan.Bus
-	capture *gocan.Capture
-	config  Config
-	key     gocan.FrameKey
-	gate    chan struct{}
-	ctx     context.Context
-	cancel  context.CancelCauseFunc
+	bus       gocan.Bus
+	capture   *gocan.Capture
+	config    Config
+	key       gocan.FrameKey
+	gate      chan struct{}
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
+	closeOnce sync.Once
+	done      chan struct{}
 	// Session fields are protected by gate.
 	capabilities   Capabilities
 	connected      bool
@@ -132,18 +152,21 @@ type Client struct {
 	retaining bool
 }
 
+// New validates config and prepares a sequential XCP client on bus without
+// transmitting any frames. Call Connect before issuing session or memory
+// commands.
 func New(bus gocan.Bus, config Config) (*Client, error) {
 	if bus == nil || bus.Capture() == nil {
-		return nil, errors.New("XCP requires a bus with a capture")
+		return nil, errors.New("xcp: requires a bus with a capture")
 	}
 	if config.FrameFlags & ^(gocan.FrameExtended|gocan.FrameFD|gocan.FrameBitRateSwitch) != 0 {
-		return nil, errors.New("invalid XCP frame flags")
+		return nil, errors.New("xcp: invalid frame flags")
 	}
 	if config.TransmitDataLength == 0 {
 		config.TransmitDataLength = 8
 	}
 	if config.TransmitDataLength < 8 {
-		return nil, errors.New("XCP frame capacity must be at least 8 bytes")
+		return nil, errors.New("xcp: frame capacity must be at least 8 bytes")
 	}
 	for _, id := range []uint32{config.TransmitID, config.ReceiveID} {
 		if _, err := gocan.NewFrame(id, make([]byte, config.TransmitDataLength), config.FrameFlags); err != nil {
@@ -151,23 +174,47 @@ func New(bus gocan.Bus, config Config) (*Client, error) {
 		}
 	}
 	if config.TransmitID == config.ReceiveID {
-		return nil, errors.New("XCP transmit and receive IDs must differ")
+		return nil, errors.New("xcp: transmit and receive IDs must differ")
 	}
 	if config.Timeout < 0 {
-		return nil, errors.New("XCP timeout must not be negative")
+		return nil, errors.New("xcp: timeout must not be negative")
+	}
+	if config.TransmitRetryTimeout < 0 {
+		return nil, errors.New("xcp: transmit retry timeout must not be negative")
 	}
 	if config.Timeout == 0 {
 		config.Timeout = time.Second
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
-	client := &Client{bus: bus, capture: bus.Capture(), config: config, gate: make(chan struct{}, 1), ctx: ctx, cancel: cancel,
-		key: gocan.FrameKey{ID: config.ReceiveID, Bus: bus.ID(), Direction: gocan.DirectionReceive, Extended: config.FrameFlags.Has(gocan.FrameExtended)}}
+	client := &Client{
+		bus:     bus,
+		capture: bus.Capture(),
+		config:  config,
+		gate:    make(chan struct{}, 1),
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		key:     gocan.FrameKey{ID: config.ReceiveID, Bus: bus.ID(), Direction: gocan.DirectionReceive, Extended: config.FrameFlags.Has(gocan.FrameExtended)},
+	}
 	client.gate <- struct{}{}
 	return client, nil
 }
 
-// Close is idempotent. An already accepted native send cannot be revoked.
-func (client *Client) Close() { client.cancel(ErrClosed) }
+// Close cancels active and queued calls, waits for any in-flight command to
+// unwind, and returns nil. It is idempotent and does not disconnect the ECU or
+// close the bus. An already accepted native send cannot be revoked.
+func (client *Client) Close() error {
+	client.cancel(ErrClosed)
+	client.closeOnce.Do(func() {
+		<-client.gate
+		client.mu.Lock()
+		client.retaining = false
+		client.mu.Unlock()
+		close(client.done)
+	})
+	<-client.done
+	return nil
+}
 
 // RetentionCursor protects active receive progress and an unanswered SYNCH.
 // Pass it alongside other readers' cursors to Capture.Prune. Otherwise idle
@@ -185,6 +232,9 @@ func (client *Client) RetentionCursor() gocan.Cursor {
 }
 
 func (client *Client) begin(parent context.Context) (context.Context, func(), error) {
+	if err := context.Cause(client.ctx); err != nil {
+		return nil, nil, err
+	}
 	ctx, cancel := context.WithCancelCause(parent)
 	stop := context.AfterFunc(client.ctx, func() { cancel(ErrClosed) })
 	cancelBus := func() {
@@ -250,6 +300,9 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 	return client.command(ctx, request)
 }
 
+// Connect sends CONNECT in normal mode, caches the ECU's reported
+// Capabilities, and returns them. When recovering an unanswered CONNECT or
+// DISCONNECT, Connect performs a SYNCH barrier followed by a fresh CONNECT.
 func (client *Client) Connect(ctx context.Context) (Capabilities, error) {
 	ctx, finish, err := client.begin(ctx)
 	if err != nil {
@@ -263,6 +316,8 @@ func (client *Client) Connect(ctx context.Context) (Capabilities, error) {
 	return client.capabilities, nil
 }
 
+// Disconnect sends DISCONNECT to end the active ECU session and clears cached
+// connection capabilities.
 func (client *Client) Disconnect(ctx context.Context) error {
 	_, err := client.Do(ctx, Request{Command: CommandDisconnect})
 	return err
@@ -288,6 +343,8 @@ type Status struct {
 	ConfigurationID uint16
 }
 
+// Status sends GET_STATUS and returns the ECU's current session, protection,
+// state, and configuration identifier.
 func (client *Client) Status(ctx context.Context) (Status, error) {
 	ctx, finish, err := client.begin(ctx)
 	if err != nil {
@@ -312,6 +369,9 @@ type CommunicationInfo struct {
 	DriverVersion     byte
 }
 
+// CommunicationInfo sends GET_COMM_MODE_INFO and returns the optional
+// communication parameters advertised by the ECU. It returns ErrUnsupported
+// when CONNECT did not advertise optional communication information.
 func (client *Client) CommunicationInfo(ctx context.Context) (CommunicationInfo, error) {
 	response, err := client.Do(ctx, Request{Command: CommandGetCommModeInfo})
 	if err != nil {

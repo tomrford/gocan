@@ -40,7 +40,7 @@ func (header Header) EDP() uint8 { return uint8(header.PGN >> 17 & 1) }
 // ParseID decodes a 29-bit CAN identifier into its J1939 fields.
 func ParseID(id uint32) (Header, error) {
 	if id > gocan.MaxExtendedID {
-		return Header{}, fmt.Errorf("J1939 identifier %#x exceeds %#x", id, gocan.MaxExtendedID)
+		return Header{}, fmt.Errorf("j1939: identifier %#x exceeds %#x", id, gocan.MaxExtendedID)
 	}
 
 	pgn := PGN((id >> 8) & uint32(MaxPGN))
@@ -60,7 +60,7 @@ func ParseID(id uint32) (Header, error) {
 // ID encodes header as a 29-bit CAN identifier.
 func (header Header) ID() (uint32, error) {
 	if header.Priority > 7 {
-		return 0, fmt.Errorf("J1939 priority %d exceeds 7", header.Priority)
+		return 0, fmt.Errorf("j1939: priority %d exceeds 7", header.Priority)
 	}
 	if err := header.PGN.validate(); err != nil {
 		return 0, err
@@ -70,7 +70,7 @@ func (header Header) ID() (uint32, error) {
 	if pgn.isPDU1() {
 		pgn |= PGN(header.Destination)
 	} else if header.Destination != GlobalAddress {
-		return 0, fmt.Errorf("J1939 PDU2 PGN %#x requires the global destination", pgn)
+		return 0, fmt.Errorf("j1939: PDU2 PGN %#x requires the global destination", pgn)
 	}
 
 	return uint32(header.Priority)<<26 |
@@ -80,10 +80,10 @@ func (header Header) ID() (uint32, error) {
 
 func (pgn PGN) validate() error {
 	if pgn > MaxPGN {
-		return fmt.Errorf("J1939 PGN %#x exceeds %#x", pgn, MaxPGN)
+		return fmt.Errorf("j1939: PGN %#x exceeds %#x", pgn, MaxPGN)
 	}
 	if pgn.isPDU1() && pgn&0xff != 0 {
-		return fmt.Errorf("J1939 PDU1 PGN %#x includes a destination", pgn)
+		return fmt.Errorf("j1939: PDU1 PGN %#x includes a destination", pgn)
 	}
 	return nil
 }

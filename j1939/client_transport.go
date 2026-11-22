@@ -84,13 +84,17 @@ func (c *Client) startSend(r *sendRequest) {
 }
 
 func (c *Client) sendFrame(r *sendRequest, pgn PGN, priority uint8, data []byte) error {
-	if err := context.Cause(c.ctx); err != nil {
+	if err := c.contextError(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(r.ctx)
 	stop := context.AfterFunc(c.ctx, cancel)
 	defer func() { stop(); cancel() }()
-	return c.frame(ctx, priority, pgn, c.config.Address, r.destination, data)
+	err := c.frame(ctx, priority, pgn, c.config.Address, r.destination, data)
+	if err != nil && r.ctx.Err() == nil && c.ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		return c.contextError()
+	}
+	return err
 }
 
 func (c *Client) finishSend(err error) {

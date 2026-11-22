@@ -98,7 +98,7 @@ func openActive(t *testing.T, b *activeBus) *j1939.Client {
 		t.Fatal(err)
 	}
 	wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
-	t.Cleanup(c.Close)
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 func sendActive(c *j1939.Client, ctx context.Context, dst j1939.Address, data []byte) <-chan error {
@@ -307,8 +307,16 @@ func TestActiveSendFailuresCancelAndRecover(t *testing.T) {
 				}
 				r = sendActive(c, context.Background(), 0x22, activePayload)
 				wire(t, b, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
-				c.Close()
+				if err := c.Close(); err != nil {
+					t.Fatalf("Close = %v, want nil", err)
+				}
+				if err := c.Err(); err != nil {
+					t.Fatalf("Err after Close = %v, want nil", err)
+				}
 				resultIs(t, r, j1939.ErrClosed)
+				if err := c.Send(context.Background(), 6, 0xfeca, j1939.GlobalAddress, []byte{1}); !errors.Is(err, j1939.ErrClosed) {
+					t.Fatalf("Send after Close = %v, want ErrClosed", err)
+				}
 				wire(t, b, 0x1cec2280, 0xff, 2, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
 				quiet(t, b)
 			})
@@ -633,7 +641,7 @@ func TestActiveClientsOverVirtualBus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(client.Close)
+			t.Cleanup(func() { _ = client.Close() })
 			clients = append(clients, client)
 		}
 		for i, destination := range []j1939.Address{0x22, 0x80} {
