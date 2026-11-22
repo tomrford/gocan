@@ -1,6 +1,8 @@
 package cdd_test
 
 import (
+	"bytes"
+	"encoding/binary"
 	"path/filepath"
 	"testing"
 
@@ -48,7 +50,7 @@ func TestParseRecordLayouts(t *testing.T) {
 		t.Fatalf("unexpected thermal field offsets: %#v", thermalFields)
 	}
 	coolant := thermalFields[1]
-	if coolant.ByteOrder != cdd.ByteOrderLittle || coolant.Conversion == nil || coolant.Conversion.Scale != 0.5 || coolant.Conversion.Offset != -40 {
+	if coolant.ByteOrder != binary.LittleEndian || coolant.Conversion == nil || coolant.Conversion.Scale != 0.5 || coolant.Conversion.Offset != -40 {
 		t.Fatalf("unexpected coolant field: %#v", coolant)
 	}
 
@@ -85,7 +87,7 @@ func parseCatalogFile(path string) (*cdd.Database, error) {
 }
 
 func parseCatalog(name string, source []byte) (*cdd.Database, error) {
-	document, err := cdd.Parse(name, source)
+	document, err := cdd.Parse(name, bytes.NewReader(source))
 	if err != nil {
 		return nil, err
 	}

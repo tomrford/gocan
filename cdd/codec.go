@@ -11,6 +11,7 @@ import (
 
 type recordCodec struct {
 	fieldsByName map[string]struct{}
+	choices      [][]scalar.Choice
 	err          error
 }
 
@@ -32,33 +33,33 @@ func (record *Record) Encode(values Values) ([]byte, error) {
 	}
 	for name := range values {
 		if _, ok := codec.fieldsByName[name]; !ok {
-			return nil, fmt.Errorf("CDD record %q has no field %q", record.Name, name)
+			return nil, fmt.Errorf("cdd: record %q has no field %q", record.Name, name)
 		}
 	}
 
 	payload := make([]byte, record.Length)
-	for _, field := range record.Fields {
+	for index, field := range record.Fields {
 		value, ok := values[field.Name]
 		if !ok {
-			return nil, fmt.Errorf("CDD record %q requires field %q", record.Name, field.Name)
+			return nil, fmt.Errorf("cdd: record %q requires field %q", record.Name, field.Name)
 		}
 		if field.Bitfield != nil {
-			raw, err := encodeScalar(field, value, true)
+			raw, err := encodeScalar(field, codec.choices[index], value, true)
 			if err != nil {
-				return nil, fmt.Errorf("encode CDD field %q: %w", field.Name, err)
+				return nil, fmt.Errorf("cdd: encode field %q: %w", field.Name, err)
 			}
 			writePacked(payload, field, raw)
 			continue
 		}
-		encoded, err := encodeField(field, value)
+		encoded, err := encodeField(field, codec.choices[index], value)
 		if err != nil {
-			return nil, fmt.Errorf("encode CDD field %q: %w", field.Name, err)
+			return nil, fmt.Errorf("cdd: encode field %q: %w", field.Name, err)
 		}
 		start := int(field.BitOffset / 8)
 		end := start + len(encoded)
 		if end > len(payload) {
 			if field.Variable == nil || end > int(record.MaxLength) {
-				return nil, fmt.Errorf("encode CDD field %q: encoded data exceeds record length", field.Name)
+				return nil, fmt.Errorf("cdd: encode field %q: encoded data exceeds record length", field.Name)
 			}
 			payload = append(payload, make([]byte, end-len(payload))...)
 		}
@@ -71,20 +72,21 @@ func (record *Record) Encode(values Values) ([]byte, error) {
 // scalar value carrying a choice label decodes to its label; other values
 // decode numerically.
 func (record *Record) Decode(payload []byte) (Values, error) {
-	if _, err := record.usableCodec(); err != nil {
+	codec, err := record.usableCodec()
+	if err != nil {
 		return nil, err
 	}
 	if err := record.validatePayloadLength(len(payload)); err != nil {
 		return nil, err
 	}
 	values := make(Values, len(record.Fields))
-	for _, field := range record.Fields {
+	for index, field := range record.Fields {
 		if field.Bitfield != nil {
 			raw := readPacked(payload, field)
 			if err := validateConversionRaw(field, raw); err != nil {
-				return nil, fmt.Errorf("decode CDD field %q: %w", field.Name, err)
+				return nil, fmt.Errorf("cdd: decode field %q: %w", field.Name, err)
 			}
-			values[field.Name] = decodeScalar(field, raw, true)
+			values[field.Name] = decodeScalar(field, codec.choices[index], raw, true)
 			continue
 		}
 		start := int(field.BitOffset / 8)
@@ -92,9 +94,9 @@ func (record *Record) Decode(payload []byte) (Values, error) {
 		if field.Variable != nil {
 			end = len(payload)
 		}
-		value, err := decodeField(field, payload[start:end])
+		value, err := decodeField(field, codec.choices[index], payload[start:end])
 		if err != nil {
-			return nil, fmt.Errorf("decode CDD field %q: %w", field.Name, err)
+			return nil, fmt.Errorf("cdd: decode field %q: %w", field.Name, err)
 		}
 		values[field.Name] = value
 	}
@@ -103,20 +105,23 @@ func (record *Record) Decode(payload []byte) (Values, error) {
 
 func (record *Record) usableCodec() (*recordCodec, error) {
 	if record == nil {
-		return nil, fmt.Errorf("CDD record is nil")
+		return nil, fmt.Errorf("cdd: record is nil")
 	}
 	if record.codec == nil {
-		return nil, fmt.Errorf("CDD record %q record has no resolved codec; obtain records from Document.Select", record.Name)
+		return nil, fmt.Errorf("cdd: record %q has no resolved codec; obtain records from Document.Select", record.Name)
 	}
 	if record.codec.err != nil {
-		return nil, fmt.Errorf("CDD record %q codec: %w", record.Name, record.codec.err)
+		return nil, fmt.Errorf("cdd: record %q codec: %w", record.Name, record.codec.err)
 	}
 	return record.codec, nil
 }
 
 func compileRecordCodec(record *Record) *recordCodec {
-	codec := &recordCodec{fieldsByName: make(map[string]struct{}, len(record.Fields))}
-	for _, field := range record.Fields {
+	codec := &recordCodec{
+		fieldsByName: make(map[string]struct{}, len(record.Fields)),
+		choices:      make([][]scalar.Choice, len(record.Fields)),
+	}
+	for index, field := range record.Fields {
 		if _, exists := codec.fieldsByName[field.Name]; exists {
 			codec.err = fmt.Errorf("field name %q is repeated", field.Name)
 			return codec
@@ -134,11 +139,24 @@ func compileRecordCodec(record *Record) *recordCodec {
 			codec.err = fmt.Errorf("field %q: %w", field.Name, err)
 			return codec
 		}
+		if len(field.Choices) > 0 {
+			choices := make([]scalar.Choice, len(field.Choices))
+			for i, choice := range field.Choices {
+				choices[i] = scalar.Choice{Value: choice.Value, Label: choice.Label}
+			}
+			codec.choices[index] = choices
+		}
 	}
 	return codec
 }
 
 func validateFieldEncoding(field Field) error {
+	if field.ByteOrder != binary.BigEndian && field.ByteOrder != binary.LittleEndian {
+		return fmt.Errorf("unsupported byte order %v", field.ByteOrder)
+	}
+	if field.Bitfield != nil && field.Bitfield.ByteOrder != binary.BigEndian && field.Bitfield.ByteOrder != binary.LittleEndian {
+		return fmt.Errorf("bitfield has unsupported byte order %v", field.Bitfield.ByteOrder)
+	}
 	switch field.Encoding {
 	case EncodingUnsigned, EncodingSigned:
 	case EncodingFloat:
@@ -181,7 +199,7 @@ func validateFieldEncoding(field Field) error {
 
 func (record *Record) validatePayloadLength(length int) error {
 	if length < int(record.Length) || length > int(record.MaxLength) {
-		return fmt.Errorf("CDD record %q payload length %d is outside %d through %d", record.Name, length, record.Length, record.MaxLength)
+		return fmt.Errorf("cdd: record %q payload length %d is outside %d through %d", record.Name, length, record.Length, record.MaxLength)
 	}
 	if record.Length == record.MaxLength {
 		return nil
@@ -190,16 +208,16 @@ func (record *Record) validatePayloadLength(length int) error {
 	elementBytes := int(last.BitLength / 8)
 	start := int(last.BitOffset / 8)
 	if length < start || (length-start)%elementBytes != 0 {
-		return fmt.Errorf("CDD record %q payload length %d does not contain whole %d-byte elements for field %q", record.Name, length, elementBytes, last.Name)
+		return fmt.Errorf("cdd: record %q payload length %d does not contain whole %d-byte elements for field %q", record.Name, length, elementBytes, last.Name)
 	}
 	count := (length - start) / elementBytes
 	if count < int(last.Variable.MinCount) || count > int(last.Variable.MaxCount) {
-		return fmt.Errorf("CDD record %q field %q has %d elements, want %d through %d", record.Name, last.Name, count, last.Variable.MinCount, last.Variable.MaxCount)
+		return fmt.Errorf("cdd: record %q field %q has %d elements, want %d through %d", record.Name, last.Name, count, last.Variable.MinCount, last.Variable.MaxCount)
 	}
 	return nil
 }
 
-func encodeField(field Field, value any) ([]byte, error) {
+func encodeField(field Field, choices []scalar.Choice, value any) ([]byte, error) {
 	if field.Encoding == EncodingASCII {
 		text, ok := scalar.StringValue(value)
 		if !ok {
@@ -240,7 +258,7 @@ func encodeField(field Field, value any) ([]byte, error) {
 		if isArray {
 			element = reflected.Index(index).Interface()
 		}
-		raw, err := encodeScalar(field, element, !isArray)
+		raw, err := encodeScalar(field, choices, element, !isArray)
 		if err != nil {
 			return nil, fmt.Errorf("element %d: %w", index, err)
 		}
@@ -249,7 +267,7 @@ func encodeField(field Field, value any) ([]byte, error) {
 	return encoded, nil
 }
 
-func decodeField(field Field, encoded []byte) (any, error) {
+func decodeField(field Field, choices []scalar.Choice, encoded []byte) (any, error) {
 	if field.Encoding == EncodingASCII {
 		for _, octet := range encoded {
 			if octet > 0x7f {
@@ -268,25 +286,25 @@ func decodeField(field Field, encoded []byte) (any, error) {
 		}
 	}
 	if field.Count == 1 && field.Variable == nil {
-		return decodeScalar(field, readRaw(encoded, field.ByteOrder), true), nil
+		return decodeScalar(field, choices, readRaw(encoded, field.ByteOrder), true), nil
 	}
 	switch fieldScalarKind(field) {
 	case reflect.Uint64:
 		values := make([]uint64, count)
 		for index := range count {
-			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(uint64)
+			values[index] = decodeScalar(field, choices, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(uint64)
 		}
 		return values, nil
 	case reflect.Int64:
 		values := make([]int64, count)
 		for index := range count {
-			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(int64)
+			values[index] = decodeScalar(field, choices, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(int64)
 		}
 		return values, nil
 	default:
 		values := make([]float64, count)
 		for index := range count {
-			values[index] = decodeScalar(field, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(float64)
+			values[index] = decodeScalar(field, choices, readRaw(encoded[index*elementBytes:(index+1)*elementBytes], field.ByteOrder), false).(float64)
 		}
 		return values, nil
 	}
@@ -304,20 +322,20 @@ func validateElementCount(field Field, count int) error {
 	return nil
 }
 
-func encodeScalar(field Field, value any, allowLabel bool) (uint64, error) {
-	raw, err := encodeScalarValue(field, value, allowLabel)
+func encodeScalar(field Field, choices []scalar.Choice, value any, allowLabel bool) (uint64, error) {
+	raw, err := encodeScalarValue(field, choices, value, allowLabel)
 	if err != nil {
 		return 0, err
 	}
 	return raw, validateConversionRaw(field, raw)
 }
 
-func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) {
+func encodeScalarValue(field Field, choices []scalar.Choice, value any, allowLabel bool) (uint64, error) {
 	if label, ok := scalar.StringValue(value); ok {
 		if !allowLabel {
 			return 0, fmt.Errorf("choice labels are supported only for scalar fields")
 		}
-		return scalar.RawForLabel(field.Choices, label, field.BitLength, field.Encoding == EncodingSigned)
+		return scalar.RawForLabel(choices, label, field.BitLength, field.Encoding == EncodingSigned)
 	}
 	if field.Encoding == EncodingFloat || field.Encoding == EncodingDouble {
 		floating, err := scalar.NumericFloat(value, int(field.BitLength))
@@ -367,7 +385,7 @@ func encodeScalarValue(field Field, value any, allowLabel bool) (uint64, error) 
 	return scalar.EncodeUnsigned(field.BitLength, integer)
 }
 
-func decodeScalar(field Field, raw uint64, allowLabel bool) any {
+func decodeScalar(field Field, choices []scalar.Choice, raw uint64, allowLabel bool) any {
 	if field.Encoding == EncodingFloat {
 		return float64(math.Float32frombits(uint32(raw)))
 	}
@@ -378,7 +396,7 @@ func decodeScalar(field Field, raw uint64, allowLabel bool) any {
 	if field.Conversion != nil {
 		scale, offset = field.Conversion.Scale, field.Conversion.Offset
 	}
-	return scalar.DecodeLinear(field.BitLength, field.Encoding == EncodingSigned, raw, scale, offset, field.Choices, allowLabel)
+	return scalar.DecodeLinear(field.BitLength, field.Encoding == EncodingSigned, raw, scale, offset, choices, allowLabel)
 }
 
 func fieldScalarKind(field Field) reflect.Kind {
@@ -394,9 +412,9 @@ func fieldScalarKind(field Field) reflect.Kind {
 	return reflect.Uint64
 }
 
-func writeRaw(destination []byte, raw uint64, order ByteOrder) {
+func writeRaw(destination []byte, raw uint64, order binary.ByteOrder) {
 	var bytes [8]byte
-	if order == ByteOrderLittle {
+	if order == binary.LittleEndian {
 		binary.LittleEndian.PutUint64(bytes[:], raw)
 		copy(destination, bytes[:len(destination)])
 		return
@@ -405,9 +423,9 @@ func writeRaw(destination []byte, raw uint64, order ByteOrder) {
 	copy(destination, bytes[len(bytes)-len(destination):])
 }
 
-func readRaw(source []byte, order ByteOrder) uint64 {
+func readRaw(source []byte, order binary.ByteOrder) uint64 {
 	var bytes [8]byte
-	if order == ByteOrderLittle {
+	if order == binary.LittleEndian {
 		copy(bytes[:], source)
 		return binary.LittleEndian.Uint64(bytes[:])
 	}

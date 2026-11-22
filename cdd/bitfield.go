@@ -1,6 +1,7 @@
 package cdd
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -35,9 +36,9 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 		if err != nil {
 			return sourceError(resolver.name, "STRUCT: %v", err)
 		}
-		order = ByteOrderBig
+		order = binary.BigEndian
 		if reverse {
-			order = ByteOrderLittle
+			order = binary.LittleEndian
 		}
 	} else if container.BitLength > 64 || (container.Encoding != EncodingUnsigned && container.Encoding != EncodingSigned) {
 		return sourceError(resolver.name, "STRUCT atomic containers require integers up to 64 bits")
@@ -143,7 +144,7 @@ func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) 
 func packedBit(field Field, bit uint32) (int, byte) {
 	position := field.BitOffset + bit
 	index := position / 8
-	if field.Bitfield.ByteOrder == ByteOrderBig {
+	if field.Bitfield.ByteOrder == binary.BigEndian {
 		index = field.Bitfield.BitLength/8 - 1 - index
 	}
 	return int(field.Bitfield.BitOffset/8 + index), byte(1 << (position % 8))
