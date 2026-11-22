@@ -156,23 +156,23 @@ type BitTiming struct {
 func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config, error) {
 	switch {
 	case capture == nil:
-		return Config{}, errors.New("physical CAN bus requires a capture")
+		return Config{}, errors.New("drivers: physical CAN bus requires a capture")
 	case channel.driver == driverUnknown:
-		return Config{}, errors.New("physical CAN bus requires a channel returned by Discover")
+		return Config{}, errors.New("drivers: physical CAN bus requires a channel returned by Discover")
 	case config.ID == 0:
-		return Config{}, errors.New("physical CAN bus requires an ID")
+		return Config{}, errors.New("drivers: physical CAN bus requires an ID")
 	case config.Name == "":
-		return Config{}, errors.New("physical CAN bus requires a name")
+		return Config{}, errors.New("drivers: physical CAN bus requires a name")
 	}
 
 	if config.Termination > TerminationOn {
-		return Config{}, errors.New("invalid CAN termination choice")
+		return Config{}, errors.New("drivers: invalid CAN termination choice")
 	}
 	if config.Termination != TerminationDefault && !channel.supportsTermination {
-		return Config{}, fmt.Errorf("%s does not support switchable termination", channel.Identifier())
+		return Config{}, fmt.Errorf("drivers: %s does not support switchable termination", channel.Identifier())
 	}
 	if config.NIXNETConcurrentIO && channel.driver != driverNIXNET {
-		return Config{}, errors.New("NIXNETConcurrentIO requires an NI-XNET channel")
+		return Config{}, errors.New("drivers: NIXNETConcurrentIO requires an NI-XNET channel")
 	}
 
 	fd := config.FDTiming != (FDTiming{})
@@ -187,25 +187,25 @@ func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config
 		choices++
 	}
 	if choices != 1 {
-		return Config{}, errors.New("physical CAN bus requires exactly one of Bitrate (optionally with DataBitrate), FDTiming, and External")
+		return Config{}, errors.New("drivers: physical CAN bus requires exactly one of Bitrate (optionally with DataBitrate), FDTiming, and External")
 	}
 
 	if channel.external && !config.External {
-		return Config{}, fmt.Errorf("%s is configured externally; set Config.External", channel.Identifier())
+		return Config{}, fmt.Errorf("drivers: %s is configured externally; set Config.External", channel.Identifier())
 	}
 	if !channel.external && config.External {
-		return Config{}, fmt.Errorf("%s requires programmable bit timing", channel.Identifier())
+		return Config{}, fmt.Errorf("drivers: %s requires programmable bit timing", channel.Identifier())
 	}
 	if config.DataBitrate != 0 && config.Bitrate == 0 {
-		return Config{}, errors.New("CAN FD DataBitrate requires a nominal Bitrate")
+		return Config{}, errors.New("drivers: CAN FD DataBitrate requires a nominal Bitrate")
 	}
 	if fd || config.DataBitrate != 0 {
 		if !channel.supportsFD {
-			return Config{}, fmt.Errorf("%s does not support CAN FD", channel.Identifier())
+			return Config{}, fmt.Errorf("drivers: %s does not support CAN FD", channel.Identifier())
 		}
 		if channel.driver == driverZLG {
 			if fd || !slices.Contains(zlgFDRates[:], FDRatePreset{config.Bitrate, config.DataBitrate}) {
-				return Config{}, fmt.Errorf("%s accepts only its CAN FD rate presets", channel.Identifier())
+				return Config{}, fmt.Errorf("drivers: %s accepts only its CAN FD rate presets", channel.Identifier())
 			}
 			return config, nil
 		}
@@ -230,12 +230,12 @@ func fdRatePreset(channel Channel, nominal, data uint32) (FDTiming, error) {
 			return preset.timing, nil
 		}
 	}
-	return FDTiming{}, fmt.Errorf("unsupported CAN FD rate pair %d/%d bits/s; use FDTiming for custom timing", nominal, data)
+	return FDTiming{}, fmt.Errorf("drivers: unsupported CAN FD rate pair %d/%d bits/s; use FDTiming for custom timing", nominal, data)
 }
 
 func deriveFDBitrates(timing FDTiming) (uint32, uint32, error) {
 	if timing.ClockHz == 0 {
-		return 0, 0, errors.New("CAN FD timing requires a nonzero clock")
+		return 0, 0, errors.New("drivers: CAN FD timing requires a nonzero clock")
 	}
 	nominal, err := deriveBitrate(timing.ClockHz, "nominal", timing.Nominal)
 	if err != nil {
@@ -250,18 +250,18 @@ func deriveFDBitrates(timing FDTiming) (uint32, uint32, error) {
 
 func deriveBitrate(clock uint32, phase string, timing BitTiming) (uint32, error) {
 	if timing.BRP == 0 || timing.TSEG1 == 0 || timing.TSEG2 == 0 || timing.SJW == 0 {
-		return 0, fmt.Errorf("CAN FD %s timing requires nonzero BRP, TSEG1, TSEG2, and SJW", phase)
+		return 0, fmt.Errorf("drivers: CAN FD %s timing requires nonzero BRP, TSEG1, TSEG2, and SJW", phase)
 	}
 	if timing.SJW > timing.TSEG2 {
-		return 0, fmt.Errorf("CAN FD %s SJW %d exceeds TSEG2 %d", phase, timing.SJW, timing.TSEG2)
+		return 0, fmt.Errorf("drivers: CAN FD %s SJW %d exceeds TSEG2 %d", phase, timing.SJW, timing.TSEG2)
 	}
 	quanta := uint64(1) + uint64(timing.TSEG1) + uint64(timing.TSEG2)
 	if quanta > math.MaxUint64/uint64(timing.BRP) {
-		return 0, fmt.Errorf("CAN FD %s timing denominator overflows", phase)
+		return 0, fmt.Errorf("drivers: CAN FD %s timing denominator overflows", phase)
 	}
 	denominator := uint64(timing.BRP) * quanta
 	if uint64(clock)%denominator != 0 {
-		return 0, fmt.Errorf("CAN FD %s timing does not divide %d Hz into an integral bitrate", phase, clock)
+		return 0, fmt.Errorf("drivers: CAN FD %s timing does not divide %d Hz into an integral bitrate", phase, clock)
 	}
 	return uint32(uint64(clock) / denominator), nil
 }

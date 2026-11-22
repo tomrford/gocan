@@ -11,12 +11,7 @@ import (
 	"github.com/tomrford/gocan/drivers/internal/zlg"
 )
 
-// Open configures and opens a discovered physical CAN channel. Context
-// controls opening only; canceling it after Open returns does not stop the bus.
-// NI-XNET uses ISO FD, rejects classical DLC above 8 and transmit ESI, and
-// cannot report receive ESI. Its FD timing uses multiples of 25 ns; transmitter
-// delay compensation is derived from the sample point above 1 Mbit/s.
-func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config Config) (gocan.Bus, error) {
+func openChannel(ctx context.Context, capture *gocan.Capture, channel Channel, config Config) (gocan.Bus, error) {
 	config, err := prepareOpen(capture, channel, config)
 	if err != nil {
 		return nil, err
@@ -42,7 +37,7 @@ func Open(ctx context.Context, capture *gocan.Capture, channel Channel, config C
 			Termination: uint8(config.Termination),
 		})
 	default:
-		return nil, fmt.Errorf("driver %q is not available on Windows", channel.Driver())
+		return nil, fmt.Errorf("drivers: driver %q is not available on Windows", channel.Driver())
 	}
 }
 

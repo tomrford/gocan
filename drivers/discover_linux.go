@@ -4,9 +4,7 @@ package drivers
 
 import "github.com/tomrford/gocan/drivers/internal/socketcan"
 
-// Discover reports the SocketCAN interfaces on this host, including
-// interfaces which are down, in kernel order.
-func Discover() ([]Channel, error) {
+func discoverChannels() ([]Channel, error) {
 	interfaces, err := socketcan.Discover()
 	if err != nil {
 		return nil, err

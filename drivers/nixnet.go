@@ -27,7 +27,7 @@ func nixnetFDTiming(timing FDTiming) (uint64, uint64, error) {
 func nixnetBitTiming(clock uint32, timing BitTiming, data bool) (uint64, error) {
 	nanos := uint64(timing.BRP) * 1_000_000_000
 	if clock == 0 || nanos%uint64(clock) != 0 {
-		return 0, fmt.Errorf("NI-XNET timing requires integral time quanta in nanoseconds")
+		return 0, fmt.Errorf("drivers: NI-XNET timing requires integral time quanta in nanoseconds")
 	}
 	tq := nanos / uint64(clock)
 	maxTQ, maxTSEG1, maxTSEG2, maxSJW := uint64(12800), uint32(256), uint32(128), uint32(128)
@@ -39,7 +39,7 @@ func nixnetBitTiming(clock uint32, timing BitTiming, data bool) (uint64, error) 
 		minTSEG1 = 1
 	}
 	if tq < 25 || tq > maxTQ || tq%25 != 0 || timing.TSEG1 < minTSEG1 || timing.TSEG1 > maxTSEG1 || timing.TSEG2 == 0 || timing.TSEG2 > maxTSEG2 || timing.SJW == 0 || timing.SJW > maxSJW || timing.SJW > timing.TSEG2 {
-		return 0, fmt.Errorf("NI-XNET timing exceeds %s phase limits or requires a quantum other than multiples of 25 ns", phase)
+		return 0, fmt.Errorf("drivers: NI-XNET timing exceeds %s phase limits or requires a quantum other than multiples of 25 ns", phase)
 	}
 	// Encode nxPropSession_IntfBaudRate64 and IntfCanFdBaudRate64.
 	if data {
