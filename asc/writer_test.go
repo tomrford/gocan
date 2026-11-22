@@ -180,6 +180,42 @@ func TestWriterTimestampField(t *testing.T) {
 	}
 }
 
+func TestWriterControllerStates(t *testing.T) {
+	start := time.Date(2026, time.August, 1, 12, 34, 56, 0, time.UTC)
+	var output bytes.Buffer
+	writer := asc.NewWriter(&output)
+	states := []struct {
+		state gocan.ControllerState
+		want  string
+	}{
+		{gocan.ControllerActive, "error active"},
+		{gocan.ControllerWarning, "error warning"},
+		{gocan.ControllerPassive, "error passive"},
+		{gocan.ControllerBusOff, "bus off"},
+	}
+	for i, tc := range states {
+		event, err := gocan.NewControllerStateEvent(1, start.Add(time.Duration(i)*time.Millisecond), tc.state, 0, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.WriteEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
+	records := lines[len(lines)-1-len(states) : len(lines)-1]
+	for i, tc := range states {
+		wantSuffix := "CAN 1 Status:chip status " + tc.want
+		if !strings.HasSuffix(records[i], wantSuffix) {
+			t.Fatalf("ASC state line %d = %q, want suffix %q", i, records[i], wantSuffix)
+		}
+	}
+}
+
 func BenchmarkWriter(b *testing.B) {
 	for _, size := range []int{8, 64} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
@@ -194,6 +230,10 @@ func BenchmarkWriter(b *testing.B) {
 			event := gocan.FrameEvent{Bus: 1, Timestamp: time.Now(), Direction: gocan.DirectionReceive, Frame: frame}
 			writer := asc.NewWriter(io.Discard)
 			b.Cleanup(func() { _ = writer.Close() })
+			if err := writer.WriteFrame(event); err != nil {
+				b.Fatal(err)
+			}
+			event.Timestamp = event.Timestamp.Add(1234 * time.Microsecond)
 			b.ReportAllocs()
 			for b.Loop() {
 				if err := writer.WriteFrame(event); err != nil {
@@ -202,4 +242,23 @@ func BenchmarkWriter(b *testing.B) {
 			}
 		})
 	}
+	b.Run("event", func(b *testing.B) {
+		start := time.Now()
+		event, err := gocan.NewControllerStateEvent(1, start, gocan.ControllerWarning, 96, 12, true)
+		if err != nil {
+			b.Fatal(err)
+		}
+		writer := asc.NewWriter(io.Discard)
+		b.Cleanup(func() { _ = writer.Close() })
+		if err := writer.WriteEvent(event); err != nil {
+			b.Fatal(err)
+		}
+		event.Timestamp = start.Add(1234 * time.Microsecond)
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := writer.WriteEvent(event); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
