@@ -9,8 +9,7 @@ across multiple hardware vendors.
 - If you must test a system in isolation, first write down all the ways it could fail, then write the code.
 - A test that breaks under a behavior-preserving refactor is asserting implementation, not behavior. Do not add it.
 - Never delete or weaken a failing test to make the suite pass. Fix the code, or ask.
-- Go-native scheduling and receive-loop performance appears satisfactory; do not consider provider-native cyclic transmission or receive batching without measured evidence. Exception: NI-XNET offers no receive-ready event, so its driver polls and reads bounded batches. Native reads are serialized with transmission by default; Config.NIXNETConcurrentIO opts into reading outside the transmit lock, because a measured native read held that lock for 38 ms while sends waited (October 2026). Each batch is published under one lock in either mode.
-- Canonical checks: `go test -race ./...`, `go vet ./...`, and `gofmt -l .`.
+- Go-native scheduling and receive-loop performance appears satisfactory; do not consider provider-native cyclic transmission or receive batching without measured evidence. Exception: NI-XNET polls bounded batches because its native API has no receive-ready event.
 
 ## Reference sources
 

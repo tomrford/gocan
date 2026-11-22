@@ -1,7 +1,8 @@
 // Package cdd reads CANdela documents into selected diagnostic service catalogs.
 // It preserves source metadata and reports unsupported service/message layouts.
 // Data-record codecs support byte-aligned integers up to 64 bits, 32/64-bit
-// floats, 8-bit ASCII, fixed arrays, and a variable array in final position.
+// floats, 8-bit ASCII, fixed arrays, a variable array in final position, packed
+// STRUCT bitfields, linear conversions, and text-table choices.
 // Complete service-message encoding and ECU execution are outside this package.
 package cdd
 

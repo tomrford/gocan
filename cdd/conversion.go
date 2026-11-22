@@ -8,11 +8,10 @@ import (
 	"github.com/tomrford/gocan/internal/scalar"
 )
 
-// CANdelaStudio 9.1 and 17 English help specify physical = (f/div)*raw + o,
-// with div defaulting to 1. These rules were transcribed from installed Vector
-// help; the exact 10.0.108 DTD was not available. Missing f/o remain unsupported
-// rather than acquiring invented defaults. Zero f needs an explicit inverse,
-// which the codec does not implement.
+// CANdelaStudio linear conversions define physical = (f/div)*raw + o, with div
+// defaulting to 1. Missing f or o remain unsupported rather than acquiring
+// invented defaults. Zero f needs an explicit inverse, which the codec does not
+// implement.
 func parseConversion(comp *element, signed bool) (*LinearConversion, error) {
 	parameters := [3]float64{0, 0, 1}
 	for index, name := range []string{"f", "o", "div"} {

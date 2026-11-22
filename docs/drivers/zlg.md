@@ -29,9 +29,12 @@ load. The soak test can expose this limitation. USBCANFD has not been qualified
 on hardware; tested SDKs provide error information but no controller status or
 error counters for it.
 
-Only ZLG's rate presets are accepted. Classical DLC 9–15 cannot be sent.
-USBCANFD uses ISO CAN FD, cannot transmit the error-state indicator, and
-supports `Config.Termination`; the default keeps ZLG's last saved setting.
+Only ZLG's rate presets are accepted: `5_000` through `1_000_000` bits/s on
+USBCAN, `50_000` through `1_000_000` bits/s on USBCANFD, and CAN FD rate pairs
+from `Channel.FDRatePresets` (80% sample point, except 75% at 5 Mbit/s data).
+Classical DLC 9–15 cannot be sent. USBCANFD uses ISO CAN FD, cannot transmit
+the error-state indicator, and supports `Config.Termination`; the default keeps
+ZLG's last saved setting.
 
 `Send` captures and queues up to 256 frames. Transmissions the SDK does not
 confirm produce error-frame events and are never retried, because it can

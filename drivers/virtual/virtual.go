@@ -18,7 +18,9 @@ type Config struct {
 	// ID is the one-based trace channel assigned to the bus.
 	ID gocan.BusID
 	// Name is the human-readable name of the bus.
-	Name               string
+	Name string
+	// ReceiveOwnMessages delivers frames sent on this bus back to its own
+	// receive path in addition to peer buses on the network.
 	ReceiveOwnMessages bool
 }
 

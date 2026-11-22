@@ -171,7 +171,7 @@ func (c *Client) RetentionCursor() gocan.Cursor { c.mu.Lock(); defer c.mu.Unlock
 // Send transmits an opaque PGN payload (0..1785 bytes). Single frames and BAM
 // complete when the bus accepts their frames; directed TP requires matching
 // EOMA. A caller deadline bounds the entire transfer, including repeated CTS
-// pauses/retransmissions. Busy is returned without starting another TP session.
+// pauses/retransmissions. ErrBusy is returned without starting another TP session.
 // Directed DT retries a full native transmit queue within its packet deadline.
 // While BAM is outgoing, all other Send/Request calls return ErrBusy so caller
 // traffic cannot delay its DT packets. Mandatory protocol replies still run.

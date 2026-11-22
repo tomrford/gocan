@@ -8,9 +8,9 @@ import (
 	"unicode/utf8"
 )
 
-// MDF comments use the standard HDcomment/FHcomment XML vocabulary. Property
-// names and values are application-owned; the writer only validates and escapes
-// them. See asammdf's HeaderBlock.comment in the pinned reference.
+// MDF comments use the ASAM MDF 4.10 HDcomment/FHcomment XML vocabulary.
+// Property names and values are application-owned; the writer only validates
+// and escapes them.
 func (config Config) comments() (header, history string, err error) {
 	for _, value := range []string{config.ToolName, config.ToolVersion, config.Comment} {
 		if !validXMLText(value) {

@@ -1,8 +1,5 @@
 // Package gocan provides raw CAN and CAN FD values, capture storage, and the
 // common vocabulary used by hardware drivers and higher protocol packages.
-//
-// The package is under initial development. Its public API may change before
-// version 1.
 package gocan
 
 import (
