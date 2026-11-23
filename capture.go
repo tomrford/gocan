@@ -33,13 +33,19 @@ type Capture struct {
 	mu     sync.RWMutex
 	origin time.Time
 
-	generation   uint64
-	chunks       []*captureChunk
-	active       *captureChunk
-	latest       map[FrameKey]FrameEvent
-	latestStates map[BusID]Event
-	waiters      map[FrameKey]*captureWaiter
-	length       int
+	generation uint64
+	chunks     []*captureChunk
+	active     *captureChunk
+	next       *captureChunk
+
+	allocatingNext bool
+	nextFor        *captureChunk
+	nextRecordCap  int
+	nextPayloadCap int
+	latest         map[FrameKey]FrameEvent
+	latestStates   map[BusID]Event
+	waiters        map[FrameKey]*captureWaiter
+	length         int
 	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
 	pruneSeam Cursor
 }
@@ -48,19 +54,19 @@ var captureEpochs atomic.Uint64
 
 // NewCapture creates an empty capture.
 func NewCapture() *Capture {
-	return newCapture(
+	active := newCaptureChunk(
 		initialCaptureChunkRecordCapacity,
 		initialCaptureChunkPayloadCapacity,
 	)
-}
-
-func newCapture(recordCapacity, payloadCapacity int) *Capture {
-	active := newCaptureChunk(recordCapacity, payloadCapacity)
 	return &Capture{
-		origin:       time.Now(),
-		generation:   captureEpochs.Add(1),
-		chunks:       []*captureChunk{active},
-		active:       active,
+		origin:     time.Now(),
+		generation: captureEpochs.Add(1),
+		chunks:     []*captureChunk{active},
+		active:     active,
+		next: newCaptureChunk(
+			initialCaptureChunkRecordCapacity*2,
+			initialCaptureChunkPayloadCapacity*2,
+		),
 		latest:       make(map[FrameKey]FrameEvent),
 		latestStates: make(map[BusID]Event),
 	}
@@ -371,11 +377,17 @@ func (capture *Capture) rotate(payloadLength int) {
 	}
 
 	filled := capture.active
-	recordCapacity, payloadCapacity := nextChunkCapacities(filled, len(filled.records), len(filled.payload))
-	next := newCaptureChunk(recordCapacity, payloadCapacity)
+	next := capture.next
+	capture.next = nil
+	if next == nil || cap(next.payload) < payloadLength || cap(next.records) == 0 {
+		recordCapacity, payloadCapacity := nextChunkCapacities(filled, len(filled.records), len(filled.payload))
+		next = newCaptureChunk(recordCapacity, payloadCapacity)
+	}
 	next.sequence = filled.sequence + 1
 	capture.active = next
 	capture.chunks = append(capture.chunks, capture.active)
+	recordCapacity, payloadCapacity := nextChunkCapacities(capture.active, len(filled.records), len(filled.payload))
+	capture.prepareNextLocked(recordCapacity, payloadCapacity)
 }
 
 // nextChunkCapacities grows the chunk budget geometrically up to the cap while
@@ -399,6 +411,48 @@ func nextChunkCapacities(base *captureChunk, records, payloadBytes int) (recordC
 		payloadCapacity = int(int64(payloadBytes) * int64(targetRecords) / int64(records))
 	}
 	return max(recordCapacity, minRecords), max(payloadCapacity, minPayload)
+}
+
+func (capture *Capture) prepareNextLocked(recordCapacity, payloadCapacity int) {
+	if capture.next != nil {
+		return
+	}
+
+	capture.nextFor = capture.active
+	capture.nextRecordCap = recordCapacity
+	capture.nextPayloadCap = payloadCapacity
+	if capture.allocatingNext {
+		return
+	}
+	capture.allocatingNext = true
+	go capture.allocateNext()
+}
+
+func (capture *Capture) allocateNext() {
+	capture.mu.Lock()
+	for {
+		active := capture.nextFor
+		recordCapacity := capture.nextRecordCap
+		payloadCapacity := capture.nextPayloadCap
+		if capture.active != active || capture.next != nil {
+			capture.allocatingNext = false
+			capture.nextFor = nil
+			capture.mu.Unlock()
+			return
+		}
+		capture.mu.Unlock()
+
+		next := newCaptureChunk(recordCapacity, payloadCapacity)
+
+		capture.mu.Lock()
+		if capture.active == active && capture.next == nil {
+			capture.next = next
+			capture.allocatingNext = false
+			capture.nextFor = nil
+			capture.mu.Unlock()
+			return
+		}
+	}
 }
 
 // Append adds a frame event to the capture.
@@ -844,7 +898,11 @@ func (capture *Capture) Clear() {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
-	fresh := newCaptureChunk(cap(capture.active.records), cap(capture.active.payload))
+	fresh := capture.next
+	capture.next = nil
+	if fresh == nil {
+		fresh = newCaptureChunk(cap(capture.active.records), cap(capture.active.payload))
+	}
 	capture.generation = captureEpochs.Add(1)
 	capture.active = fresh
 	capture.chunks = []*captureChunk{fresh}
@@ -852,4 +910,5 @@ func (capture *Capture) Clear() {
 	clear(capture.latestStates)
 	capture.length = 0
 	capture.pruneSeam = Cursor{}
+	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))
 }

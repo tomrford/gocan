@@ -155,7 +155,15 @@ func TestCaptureLiveClock(t *testing.T) {
 }
 
 func newTestCapture(recordCapacity, payloadCapacity int) *Capture {
-	return newCapture(recordCapacity, payloadCapacity)
+	active := newCaptureChunk(recordCapacity, payloadCapacity)
+	return &Capture{
+		origin:       time.Now(),
+		generation:   captureEpochs.Add(1),
+		chunks:       []*captureChunk{active},
+		active:       active,
+		latest:       make(map[FrameKey]FrameEvent),
+		latestStates: make(map[BusID]Event),
+	}
 }
 
 func collectAllFrames(t *testing.T, capture *Capture) []FrameEvent {
