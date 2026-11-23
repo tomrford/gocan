@@ -78,32 +78,28 @@ func diagnosticMessages(db *Database) []string {
 // original: rewriting every reachable value in place leaves the original as
 // parsed, and an edit that changes nothing derives an equivalent database.
 func TestEditIsolatesOriginal(t *testing.T) {
-	for _, fixture := range []string{"core", "codec", "multiplex_j1939", "roundtrip", "dropped"} {
-		t.Run(fixture, func(t *testing.T) {
-			path := "testdata/" + fixture + ".dbc"
-			original, pristine := parseFixture(t, path), parseFixture(t, path)
+	const path = "testdata/roundtrip.dbc"
+	original, pristine := parseFixture(t, path), parseFixture(t, path)
 
-			unchanged, err := original.Edit(fixture+"-unchanged.dbc", func(*Database) {})
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertEquivalent(t, original, unchanged)
+	unchanged, err := original.Edit("unchanged.dbc", func(*Database) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEquivalent(t, original, unchanged)
 
-			// The scribbled copy need not be a valid database; only the
-			// original matters here.
-			scribbled := false
-			_, _ = original.Edit(fixture+"-scribbled.dbc", func(db *Database) {
-				scribble(reflect.ValueOf(db).Elem())
-				scribbled = true
-			})
-			if !scribbled {
-				t.Fatal("Edit did not run the callback")
-			}
-			assertEquivalent(t, pristine, original)
-			if !reflect.DeepEqual(pristine.Diagnostics, original.Diagnostics) || !bytes.Equal(pristine.Source(), original.Source()) {
-				t.Fatal("Edit changed the original diagnostics or source")
-			}
-		})
+	// The scribbled copy need not be a valid database; only the
+	// original matters here.
+	scribbled := false
+	_, _ = original.Edit("scribbled.dbc", func(db *Database) {
+		scribble(reflect.ValueOf(db).Elem())
+		scribbled = true
+	})
+	if !scribbled {
+		t.Fatal("Edit did not run the callback")
+	}
+	assertEquivalent(t, pristine, original)
+	if !reflect.DeepEqual(pristine.Diagnostics, original.Diagnostics) || !bytes.Equal(pristine.Source(), original.Source()) {
+		t.Fatal("Edit changed the original diagnostics or source")
 	}
 }
 

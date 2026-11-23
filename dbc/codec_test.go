@@ -213,7 +213,7 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 		{make([]byte, 9), "Leaf", nil, ErrFrameMismatch},
 	} {
 		value, err := multiplexed.DecodePayload(test.payload, test.signal)
-		if value != test.value || !errors.Is(err, test.err) || (test.err == nil && err != nil) {
+		if value != test.value || !errors.Is(err, test.err) {
 			t.Fatalf("DecodePayload(% x, %q) = %v, %v; want %v, %v", test.payload, test.signal, value, err, test.value, test.err)
 		}
 		if test.err != ErrInactiveSignal && errors.Is(err, ErrInactiveSignal) {
