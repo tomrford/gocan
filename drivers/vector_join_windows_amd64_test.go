@@ -200,7 +200,7 @@ func waitForFrameSince(t *testing.T, capture *gocan.Capture, on gocan.Bus, ident
 func requireOpen(t *testing.T, bus gocan.Bus) {
 	t.Helper()
 	select {
-	case <-bus.Done():
+	case <-bus.Context().Done():
 		t.Fatalf("%s stopped: %v", bus.Name(), bus.Err())
 	default:
 	}

@@ -62,6 +62,10 @@ func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config
 		return nil, err
 	}
 
+	busCtx, cancel := context.WithCancelCause(context.Background())
+	// Eagerly initialize the done channel so it belongs to the creator's
+	// testing/synctest bubble rather than whichever goroutine first selects on it.
+	_ = busCtx.Done()
 	bus := &Bus{
 		id:                 config.ID,
 		name:               config.Name,
@@ -72,7 +76,8 @@ func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config
 		incoming:           make(chan gocan.Frame, receiveQueueCapacity),
 		failures:           make(chan error, 1),
 		stop:               make(chan struct{}),
-		done:               make(chan struct{}),
+		ctx:                busCtx,
+		cancel:             cancel,
 	}
 	network.buses[config.ID] = bus
 	go bus.run()
@@ -96,7 +101,8 @@ type Bus struct {
 	incoming chan gocan.Frame
 	failures chan error
 	stop     chan struct{}
-	done     chan struct{}
+	ctx      context.Context
+	cancel   context.CancelCauseFunc
 
 	closeOnce sync.Once
 	stateMu   sync.Mutex
@@ -146,14 +152,14 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	case bus.sends <- request:
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-bus.done:
+	case <-bus.ctx.Done():
 		return bus.operationError()
 	}
 
 	select {
 	case err := <-request.result:
 		return err
-	case <-bus.done:
+	case <-bus.ctx.Done():
 		select {
 		case err := <-request.result:
 			return err
@@ -163,9 +169,10 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	}
 }
 
-// Done is closed when this bus stops.
-func (bus *Bus) Done() <-chan struct{} {
-	return bus.done
+// Context returns a context that is cancelled once this bus stops, with Err
+// (or gocan.ErrBusClosed after normal Close) as its cause.
+func (bus *Bus) Context() context.Context {
+	return bus.ctx
 }
 
 // Err returns the background failure that stopped this bus, if any.
@@ -183,7 +190,7 @@ func (bus *Bus) Close() error {
 		close(bus.stop)
 	})
 	bus.stateMu.Unlock()
-	<-bus.done
+	<-bus.ctx.Done()
 	return nil
 }
 
@@ -194,7 +201,7 @@ func (bus *Bus) run() {
 		bus.err = runErr
 		bus.errMu.Unlock()
 		bus.network.remove(bus)
-		close(bus.done)
+		bus.cancel(transport.StopError(runErr))
 	}()
 
 	for {
@@ -263,7 +270,7 @@ func (bus *Bus) fail(err error) {
 	bus.terminal = err
 	select {
 	case bus.failures <- err:
-	case <-bus.done:
+	case <-bus.ctx.Done():
 	default:
 	}
 }
@@ -291,7 +298,7 @@ func (network *Network) broadcast(source *Bus, received gocan.Frame) {
 		}
 		select {
 		case destination.incoming <- received:
-		case <-destination.done:
+		case <-destination.ctx.Done():
 		default:
 			destination.fail(gocan.ErrReceiveOverrun)
 		}

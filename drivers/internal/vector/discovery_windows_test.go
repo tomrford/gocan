@@ -125,7 +125,7 @@ func TestDiscoverVectorHardware(t *testing.T) {
 	}
 	assertDiscoveredVectorChannel(t, channels, channelIndex)
 	select {
-	case <-bus.Done():
+	case <-bus.Context().Done():
 		t.Fatalf("Vector bus stopped during discovery: %v", bus.Err())
 	default:
 	}

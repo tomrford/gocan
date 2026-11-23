@@ -40,7 +40,7 @@ func TestVCanInjectedErrorPackets(t *testing.T) {
 	sendErrorPacket(t, sender, unix.CAN_ERR_BUSOFF, [8]byte{})
 
 	select {
-	case <-bus.Done():
+	case <-bus.Context().Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("bus did not stop after bus-off")
 	}
@@ -82,7 +82,7 @@ func TestVCanInjectedReceiveOverrun(t *testing.T) {
 	})
 
 	select {
-	case <-bus.Done():
+	case <-bus.Context().Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("bus did not stop after receive overrun")
 	}

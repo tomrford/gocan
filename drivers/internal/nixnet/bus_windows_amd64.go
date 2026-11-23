@@ -112,12 +112,12 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (_ *Bus, e
 	return bus, nil
 }
 
-func (bus *Bus) ID() gocan.BusID         { return bus.config.ID }
-func (bus *Bus) Name() string            { return bus.config.Name }
-func (bus *Bus) Capture() *gocan.Capture { return bus.capture }
-func (bus *Bus) Done() <-chan struct{}   { return bus.lifecycle.Done() }
-func (bus *Bus) Err() error              { return bus.lifecycle.Err() }
-func (bus *Bus) Close() error            { bus.lifecycle.Stop(nil); <-bus.Done(); return bus.cleanupErr }
+func (bus *Bus) ID() gocan.BusID          { return bus.config.ID }
+func (bus *Bus) Name() string             { return bus.config.Name }
+func (bus *Bus) Capture() *gocan.Capture  { return bus.capture }
+func (bus *Bus) Context() context.Context { return bus.lifecycle.Context() }
+func (bus *Bus) Err() error               { return bus.lifecycle.Err() }
+func (bus *Bus) Close() error             { bus.lifecycle.Stop(nil); <-bus.lifecycle.Done(); return bus.cleanupErr }
 
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	data, size, err := encodeFrame(frame, bus.config.FD)

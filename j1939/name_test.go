@@ -3,6 +3,7 @@ package j1939_test
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestObservedNameLifecycle(t *testing.T) {
 	otherBus.Bus = 2
 	decoder.Push(otherBus)
 	challenger := frameEvent(t, 1, 0x18eeff80, []byte{135, 214, 82, 83, 130, 111, 254, 82})
-	messages, diagnostics := decoder.PushBatch([]gocan.FrameEvent{challenger})
+	messages, diagnostics := decoder.PushBatch(slices.Values([]gocan.FrameEvent{challenger}))
 	if len(messages) != 1 || len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrAmbiguous) {
 		t.Fatalf("competition: %v, %v", messages, diagnostics)
 	}
@@ -54,10 +55,10 @@ func TestObservedNameLifecycle(t *testing.T) {
 		t.Fatalf("other bus=%v", got)
 	}
 	for _, source := range []uint32{0x80, 0x82} {
-		_, diagnostics := decoder.PushBatch([]gocan.FrameEvent{
+		_, diagnostics := decoder.PushBatch(slices.Values([]gocan.FrameEvent{
 			frameEvent(t, 2, 0x18ecff00|source, []byte{32, 9, 0, 2, 255, 202, 254, 0}),
 			frameEvent(t, 2, 0x18ebff00|source, []byte{1, 1, 2, 3, 4, 5, 6, 7}),
-		})
+		}))
 		if len(diagnostics) != 0 {
 			t.Fatal(diagnostics)
 		}

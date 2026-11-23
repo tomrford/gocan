@@ -121,7 +121,7 @@ func TestPCANClassicEvents(t *testing.T) {
 		return false
 	})
 	select {
-	case <-target.Done():
+	case <-target.Context().Done():
 		t.Fatalf("PCAN bus stopped in error-passive: %v", target.Err())
 	default:
 	}

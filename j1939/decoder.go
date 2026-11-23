@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"time"
 
@@ -157,12 +158,16 @@ func (decoder *Decoder) Push(event gocan.FrameEvent) (message Message, complete 
 	}
 }
 
-// PushBatch consumes frames in order and continues after malformed transport
-// traffic. Diagnostics retain the frame metadata for every rejected operation.
-func (decoder *Decoder) PushBatch(events []gocan.FrameEvent) ([]Message, []Diagnostic) {
+// PushBatch consumes frames from events in order and continues after malformed
+// transport traffic. Diagnostics retain the frame metadata for every rejected
+// operation. Passing a nil sequence returns nil slices.
+func (decoder *Decoder) PushBatch(events iter.Seq[gocan.FrameEvent]) ([]Message, []Diagnostic) {
+	if events == nil {
+		return nil, nil
+	}
 	var messages []Message
 	var diagnostics []Diagnostic
-	for _, event := range events {
+	for event := range events {
 		message, complete, err := decoder.Push(event)
 		if err != nil {
 			diagnostics = append(diagnostics, Diagnostic{

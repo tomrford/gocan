@@ -73,7 +73,7 @@ func TestDecoderReassemblesBAMForDBC(t *testing.T) {
 		t.Fatalf("Frames first batch: %v", err)
 	}
 	var decoder j1939.Decoder
-	messages, diagnostics := decoder.PushBatch(slices.Collect(first))
+	messages, diagnostics := decoder.PushBatch(first)
 	if len(messages) != 0 || len(diagnostics) != 0 {
 		t.Fatalf("first PushBatch = %v, %v", messages, diagnostics)
 	}
@@ -87,7 +87,7 @@ func TestDecoderReassemblesBAMForDBC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Frames second batch: %v", err)
 	}
-	messages, diagnostics = decoder.PushBatch(slices.Collect(second))
+	messages, diagnostics = decoder.PushBatch(second)
 	if len(diagnostics) != 0 {
 		t.Fatalf("PushBatch diagnostics = %v", diagnostics)
 	}
@@ -178,8 +178,8 @@ func TestDecoderDiscardsInvalidatedPayloads(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var decoder j1939.Decoder
-			decoder.PushBatch([]gocan.FrameEvent{start, first})
-			messages, diagnostics := decoder.PushBatch([]gocan.FrameEvent{test.broken})
+			decoder.PushBatch(slices.Values([]gocan.FrameEvent{start, first}))
+			messages, diagnostics := decoder.PushBatch(slices.Values([]gocan.FrameEvent{test.broken}))
 			if len(diagnostics) == 0 {
 				t.Fatal("missing diagnostic")
 			}
@@ -189,7 +189,7 @@ func TestDecoderDiscardsInvalidatedPayloads(t *testing.T) {
 			if _, complete, err := decoder.Push(last); complete || !errors.Is(err, j1939.ErrProtocol) {
 				t.Fatalf("stale completion=%v err=%v", complete, err)
 			}
-			messages, diagnostics = decoder.PushBatch([]gocan.FrameEvent{start, first, last})
+			messages, diagnostics = decoder.PushBatch(slices.Values([]gocan.FrameEvent{start, first, last}))
 			if len(messages) != 1 || len(diagnostics) != 0 {
 				t.Fatalf("recovery=%v, %v", messages, diagnostics)
 			}
@@ -199,7 +199,7 @@ func TestDecoderDiscardsInvalidatedPayloads(t *testing.T) {
 	capture.Append(start)
 	frames, cursor, _ := capture.Frames(gocan.Range{})
 	var decoder j1939.Decoder
-	decoder.PushBatch(slices.Collect(frames))
+	decoder.PushBatch(frames)
 	capture.Clear()
 	capture.Append(last)
 	if _, _, err := capture.Frames(gocan.Since(cursor)); !errors.Is(err, gocan.ErrCursorOutOfRange) {
@@ -207,7 +207,7 @@ func TestDecoderDiscardsInvalidatedPayloads(t *testing.T) {
 	}
 	decoder.Reset()
 	frames, _, _ = capture.Frames(gocan.Range{})
-	if messages, diagnostics := decoder.PushBatch(slices.Collect(frames)); len(messages) != 0 || len(diagnostics) != 1 {
+	if messages, diagnostics := decoder.PushBatch(frames); len(messages) != 0 || len(diagnostics) != 1 {
 		t.Fatalf("lost history=%v, %v", messages, diagnostics)
 	}
 }
@@ -224,17 +224,17 @@ func TestDecoderCTSRetryAndPause(t *testing.T) {
 		frameEvent(t, 2000, 0x18eb2180, []byte{1, 1, 2, 3, 4, 5, 6, 7}),
 		frameEvent(t, 2700, 0x18eb2180, []byte{2, 8, 9, 255, 255, 255, 255, 255}),
 	}
-	messages, diagnostics := decoder.PushBatch(frames)
+	messages, diagnostics := decoder.PushBatch(slices.Values(frames))
 	if len(diagnostics) != 0 || len(messages) != 1 || !reflect.DeepEqual(messages[0].Payload, []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}) {
 		t.Fatalf("retry=%v, %v", messages, diagnostics)
 	}
-	decoder.PushBatch(frames[:6])
+	decoder.PushBatch(slices.Values(frames[:6]))
 	late := frames[6]
 	late.Timestamp = frames[5].Timestamp.Add(751 * time.Millisecond)
 	if _, complete, err := decoder.Push(late); complete || !errors.Is(err, j1939.ErrProtocol) {
 		t.Fatalf("late DT: %v, %v", complete, err)
 	}
-	decoder.PushBatch(frames[:4])
+	decoder.PushBatch(slices.Values(frames[:4]))
 	duringPause := frames[2]
 	duringPause.Timestamp = frames[3].Timestamp
 	if _, complete, err := decoder.Push(duringPause); complete || !errors.Is(err, j1939.ErrProtocol) {
@@ -252,11 +252,11 @@ func TestDecoderRejectsCTSBeforeWindowCompletes(t *testing.T) {
 		frameEvent(t, 4, 0x18eb2180, []byte{2, 8, 9, 10, 11, 12, 13, 14}),
 		frameEvent(t, 5, 0x18eb2180, []byte{3, 15, 16, 17, 18, 19, 20, 255}),
 	}
-	messages, diagnostics := decoder.PushBatch(frames)
+	messages, diagnostics := decoder.PushBatch(slices.Values(frames))
 	if len(messages) != 0 || len(diagnostics) != 3 || diagnostics[0].Timestamp != frames[3].Timestamp || !errors.Is(diagnostics[0], j1939.ErrProtocol) {
 		t.Fatalf("overlapping CTS: %v, %v", messages, diagnostics)
 	}
-	messages, diagnostics = decoder.PushBatch(append(frames[:3:3], frames[4:]...))
+	messages, diagnostics = decoder.PushBatch(slices.Values(append(frames[:3:3], frames[4:]...)))
 	if len(messages) != 1 || len(diagnostics) != 0 {
 		t.Fatalf("recovery: %v, %v", messages, diagnostics)
 	}
@@ -270,7 +270,7 @@ func TestDecoderInterleavedMaximumBAM(t *testing.T) {
 	otherBus.Bus = 2
 	otherDirection := otherSource
 	otherDirection.Direction = gocan.DirectionTransmit
-	if _, diagnostics := decoder.PushBatch([]gocan.FrameEvent{start, otherSource, otherBus, otherDirection}); len(diagnostics) != 0 {
+	if _, diagnostics := decoder.PushBatch(slices.Values([]gocan.FrameEvent{start, otherSource, otherBus, otherDirection})); len(diagnostics) != 0 {
 		t.Fatal(diagnostics)
 	}
 	for _, stream := range []gocan.FrameEvent{otherSource, otherBus, otherDirection} {
@@ -324,22 +324,22 @@ func TestDecoderReportsBrokenTransportLifecycle(t *testing.T) {
 	wrongSequence := frameEvent(t, 1, 0x18ebff80, []byte{2, 0, 1, 2, 3, 4, 5, 6})
 
 	var decoder j1939.Decoder
-	_, diagnostics := decoder.PushBatch([]gocan.FrameEvent{start, wrongSequence})
+	_, diagnostics := decoder.PushBatch(slices.Values([]gocan.FrameEvent{start, wrongSequence}))
 	if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) {
 		t.Fatalf("sequence diagnostics = %v", diagnostics)
 	}
 
-	decoder.PushBatch([]gocan.FrameEvent{start})
+	decoder.PushBatch(slices.Values([]gocan.FrameEvent{start}))
 	flushed := decoder.Flush()
 	if len(flushed) != 1 || !errors.Is(flushed[0], j1939.ErrProtocol) {
 		t.Fatalf("Flush diagnostics = %v", flushed)
 	}
 
 	rts := frameEvent(t, 0, 0x18ec2180, []byte{16, 9, 0, 2, 2, 202, 254, 0})
-	decoder.PushBatch([]gocan.FrameEvent{rts})
+	decoder.PushBatch(slices.Values([]gocan.FrameEvent{rts}))
 	abort := frameEvent(t, 2, 0x18ec8021, []byte{0xff, 3, 0, 0, 0, 0xca, 0xfe, 0x00})
 	abort.Direction = gocan.DirectionTransmit
-	_, diagnostics = decoder.PushBatch([]gocan.FrameEvent{abort})
+	_, diagnostics = decoder.PushBatch(slices.Values([]gocan.FrameEvent{abort}))
 	if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) {
 		t.Fatalf("abort diagnostics = %v", diagnostics)
 	}
@@ -399,7 +399,7 @@ BA_ "VFrameFormat" BO_ 2566844032 3;
 		panic(err)
 	}
 	cursor = next
-	messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
+	messages, diagnostics := decoder.PushBatch(frames)
 	for _, diagnostic := range diagnostics {
 		fmt.Println(diagnostic)
 	}

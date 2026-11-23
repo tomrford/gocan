@@ -3,6 +3,7 @@
 `gocan` is a Go stack for communicating with automotive CAN networks
 across multiple hardware vendors.
 
+- The module is pre-v1.0 (0ver); prefer clean API simplifications over preserving backwards compatibility.
 - Keep tests curated, vertical, and multi-stage/lifecycle-focused.
 - Never write unit tests after you write code.
 - Highly prefer E2E or integration tests as the sole testing mechanism. Use them to verify complex features work. At the end of those tests, produce a verifiable and repeatable artifact.

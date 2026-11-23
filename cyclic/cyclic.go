@@ -225,7 +225,7 @@ func (task *Task) run(anchor time.Time) {
 			runErr = context.Cause(task.ctx)
 			return
 
-		case <-task.bus.Done():
+		case <-task.bus.Context().Done():
 			runErr = transport.BusError(task.bus)
 			return
 
@@ -281,7 +281,7 @@ func (task *Task) send(anchor time.Time) error {
 		task.misses = 0
 	} else if task.ctx.Err() == nil && (errors.Is(err, ErrOccurrenceMissed) || errors.Is(err, gocan.ErrTransmitQueueFull)) {
 		select {
-		case <-task.bus.Done():
+		case <-task.bus.Context().Done():
 			cause := transport.BusError(task.bus)
 			if errors.Is(err, cause) {
 				return err
