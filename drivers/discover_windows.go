@@ -4,50 +4,28 @@ package drivers
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/tomrford/gocan"
-	"github.com/tomrford/gocan/drivers/internal/pcan"
-	"github.com/tomrford/gocan/drivers/internal/zlg"
 )
 
-func discoverChannels() ([]Channel, error) {
-	pcanChannels, pcanErr := pcan.Discover()
-	vectorChannels, vectorErr := discoverVector()
-	nixnetChannels, nixnetErr := discoverNIXNET()
-	zlgChannels, zlgErr := zlg.Discover()
-	if errors.Is(nixnetErr, gocan.ErrDriverUnavailable) {
-		nixnetErr = nil
-	}
-	if errors.Is(pcanErr, gocan.ErrDriverUnavailable) {
-		pcanErr = nil
-	}
-	if errors.Is(vectorErr, gocan.ErrDriverUnavailable) {
-		vectorErr = nil
-	}
-	if errors.Is(zlgErr, gocan.ErrDriverUnavailable) {
-		zlgErr = nil
-	}
+var windowsDrivers = [...]*driverDescriptor{
+	&pcanDriver,
+	&vectorDriver,
+	&nixnetDriver,
+	&zlgDriver,
+}
 
-	channels := make([]Channel, 0, len(pcanChannels)+len(vectorChannels)+len(nixnetChannels)+len(zlgChannels))
-	for _, channel := range pcanChannels {
-		channels = append(channels, Channel{
-			driver:     driverPCAN,
-			name:       fmt.Sprintf("%s (%d)", channel.Name, channel.Channel.Bus()),
-			native:     uint64(channel.Channel),
-			supportsFD: channel.SupportsFD,
-		})
+func discoverChannels() ([]Channel, error) {
+	var (
+		channels []Channel
+		errs     []error
+	)
+	for _, driver := range windowsDrivers {
+		found, err := driver.discoverChannels()
+		if err != nil && !errors.Is(err, gocan.ErrDriverUnavailable) {
+			errs = append(errs, err)
+		}
+		channels = append(channels, found...)
 	}
-	channels = append(channels, vectorChannels...)
-	channels = append(channels, nixnetChannels...)
-	for _, channel := range zlgChannels {
-		channels = append(channels, Channel{
-			driver:              driverZLG,
-			name:                fmt.Sprintf("%s (%d:%d)", channel.HardwareType, channel.Device, channel.Channel),
-			native:              zlgNative(channel.DeviceType, channel.Device, channel.Channel),
-			supportsFD:          channel.SupportsFD,
-			supportsTermination: channel.SupportsFD,
-		})
-	}
-	return channels, errors.Join(pcanErr, vectorErr, nixnetErr, zlgErr)
+	return channels, errors.Join(errs...)
 }

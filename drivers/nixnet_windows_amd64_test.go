@@ -34,7 +34,14 @@ func nixnetPair(t testing.TB, capture *gocan.Capture, dataRate uint32, concurren
 			}
 			found = true
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			bus, err := Open(ctx, capture, channel, Config{ID: gocan.BusID(index + 1), Name: name, Bitrate: 500000, DataBitrate: dataRate, Termination: TerminationOn, NIXNETConcurrentIO: concurrent})
+			bus, err := Open(ctx, capture, channel, Config{
+				ID:          gocan.BusID(index + 1),
+				Name:        name,
+				Bitrate:     500000,
+				DataBitrate: dataRate,
+				Termination: TerminationOn,
+				Vendor:      NIXNETOptions{ConcurrentIO: concurrent},
+			})
 			cancel()
 			if err != nil {
 				t.Fatal(err)

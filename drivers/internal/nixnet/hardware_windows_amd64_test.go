@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 )
 
 func TestQueueContractsHardware(t *testing.T) {
@@ -22,7 +23,7 @@ func TestQueueContractsHardware(t *testing.T) {
 		t.Fatal("distinct interfaces required")
 	}
 	capture := gocan.NewCapture()
-	a, err := Open(context.Background(), capture, Config{ID: 1, Name: aName, Interface: aName, Baud: 500000, Termination: 2})
+	a, err := Open(context.Background(), capture, Config{ID: 1, Name: aName, Interface: aName, Baud: 500000, Termination: drivercfg.TerminationOn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +32,7 @@ func TestQueueContractsHardware(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	b, err := Open(context.Background(), capture, Config{ID: 2, Name: bName, Interface: bName, Baud: 500000, Termination: 2})
+	b, err := Open(context.Background(), capture, Config{ID: 2, Name: bName, Interface: bName, Baud: 500000, Termination: drivercfg.TerminationOn})
 	if err != nil {
 		t.Fatal(err)
 	}

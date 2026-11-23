@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 	"github.com/tomrford/gocan/internal/devicechange"
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
@@ -74,7 +75,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if !fd {
 		code, ok := classicalBitrates[config.Bitrate]
 		if !ok {
-			return nil, fmt.Errorf("PCAN classical bitrate %d is not a PCAN-Basic predefined rate", config.Bitrate)
+			return nil, fmt.Errorf("%w: PCAN classical bitrate %d is not a PCAN-Basic predefined rate", drivercfg.ErrInvalidConfig, config.Bitrate)
 		}
 		bitrateCode = code
 	}

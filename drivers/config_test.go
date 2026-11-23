@@ -1,177 +1,381 @@
-package drivers
+package drivers_test
 
 import (
+	"context"
+	"errors"
 	"math"
-	"slices"
-	"strings"
 	"testing"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers"
 )
 
-var qualifiedFDTiming = FDTiming{
+var qualifiedFDTiming = drivers.FDTiming{
 	ClockHz: 80_000_000,
-	Nominal: BitTiming{BRP: 1, TSEG1: 119, TSEG2: 40, SJW: 1},
-	Data:    BitTiming{BRP: 1, TSEG1: 29, TSEG2: 10, SJW: 1},
+	Nominal: drivers.BitTiming{BRP: 1, TSEG1: 119, TSEG2: 40, SJW: 1},
+	Data:    drivers.BitTiming{BRP: 1, TSEG1: 29, TSEG2: 10, SJW: 1},
 }
 
-func TestConfigRequiresExactlyOneTimingMode(t *testing.T) {
-	channel := Channel{driver: driverPCAN, name: "PCAN-USB FD", native: 0x51, supportsFD: true}
-	externalChannel := Channel{driver: driverSocketCAN, name: "can0", nativeName: "can0", supportsFD: true, external: true}
+func canceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func TestOpenAcceptsValidConfigurations(t *testing.T) {
+	ctx := canceledContext()
 	capture := gocan.NewCapture()
+
 	tests := []struct {
-		name   string
-		config Config
-		wantFD bool
-	}{
-		{name: "classic", config: Config{ID: 1, Name: "can", Bitrate: 500_000}},
-		{name: "FD", config: Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}, wantFD: true},
-		{name: "custom FD rates", config: Config{ID: 1, Name: "can", FDTiming: FDTiming{
-			ClockHz: 80_000_000,
-			Nominal: BitTiming{BRP: 1, TSEG1: 63, TSEG2: 16, SJW: 16},
-			Data:    BitTiming{BRP: 1, TSEG1: 7, TSEG2: 2, SJW: 2},
-		}}, wantFD: true},
-		{name: "external", config: Config{ID: 1, Name: "can", External: true}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			testChannel := channel
-			if test.config.External {
-				testChannel = externalChannel
-			}
-			got, err := prepareOpen(capture, testChannel, test.config)
-			if err != nil || (got.FDTiming != (FDTiming{})) != test.wantFD || got != test.config {
-				t.Fatalf("prepareOpen = %+v, %v; want unchanged config, FD=%t", got, err, test.wantFD)
-			}
-		})
-	}
-
-	invalid := []Config{
-		{ID: 1, Name: "can"},
-		{ID: 1, Name: "can", Bitrate: 500_000, External: true},
-		{ID: 1, Name: "can", Bitrate: 500_000, FDTiming: qualifiedFDTiming},
-		{ID: 1, Name: "can", FDTiming: qualifiedFDTiming, External: true},
-		{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000, External: true},
-		{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000, FDTiming: qualifiedFDTiming},
-		{ID: 1, Name: "can", DataBitrate: 2_000_000, FDTiming: qualifiedFDTiming},
-		{ID: 1, Name: "can", DataBitrate: 2_000_000, External: true},
-	}
-	for index, config := range invalid {
-		if _, err := prepareOpen(capture, channel, config); err == nil || !strings.Contains(err.Error(), "exactly one") {
-			t.Errorf("invalid config %d error = %v, want exactly-one rejection", index, err)
-		}
-	}
-}
-
-func TestConfigRejectsTimingOwnedByTheWrongLayer(t *testing.T) {
-	capture := gocan.NewCapture()
-	programmable := Channel{driver: driverPCAN, native: 0x51, supportsFD: true}
-	external := Channel{driver: driverSocketCAN, nativeName: "can0", supportsFD: true, external: true}
-	if _, err := prepareOpen(capture, programmable, Config{ID: 1, Name: "can", External: true}); err == nil || !strings.Contains(err.Error(), "programmable") {
-		t.Fatalf("programmable channel external timing error = %v", err)
-	}
-	if _, err := prepareOpen(capture, external, Config{ID: 1, Name: "can", Bitrate: 500_000}); err == nil || !strings.Contains(err.Error(), "externally") {
-		t.Fatalf("external channel bitrate error = %v", err)
-	}
-}
-
-func TestFDRatePresets(t *testing.T) {
-	capture := gocan.NewCapture()
-	for _, driver := range []driverKind{driverPCAN, driverVector} {
-		t.Run(driver.String(), func(t *testing.T) {
-			channel := Channel{driver: driver, supportsFD: true}
-			want := []FDRatePreset{{Bitrate: 500_000, DataBitrate: 2_000_000}, {Bitrate: 500_000, DataBitrate: 4_000_000}}
-			presets := channel.FDRatePresets()
-			if !slices.Equal(presets, want) {
-				t.Fatalf("FDRatePresets = %v; want %v", presets, want)
-			}
-			presets[0] = FDRatePreset{Bitrate: 1, DataBitrate: 2}
-			presets = channel.FDRatePresets()
-			if !slices.Equal(presets, want) {
-				t.Fatalf("consumer changed shared presets: %v", presets)
-			}
-			for _, preset := range presets {
-				request := Config{ID: 3, Name: "powertrain", Bitrate: preset.Bitrate, DataBitrate: preset.DataBitrate}
-				got, err := prepareOpen(capture, channel, request)
-				if err != nil {
-					t.Fatalf("prepareOpen %v: %v", preset, err)
-				}
-				if got.ID != request.ID || got.Name != request.Name || got.Bitrate != 0 || got.DataBitrate != 0 || got.External {
-					t.Fatalf("resolved config = %+v", got)
-				}
-				nominal, actualData, err := deriveFDBitrates(got.FDTiming)
-				if err != nil || nominal != preset.Bitrate || actualData != preset.DataBitrate {
-					t.Fatalf("resolved rates = %d/%d, %v; want %v", nominal, actualData, err, preset)
-				}
-				for _, phase := range []BitTiming{got.FDTiming.Nominal, got.FDTiming.Data} {
-					// Both presets sample at 80% of the bit and allow SJW up to
-					// the remaining 20%, as in PEAK's published 500k/2M example.
-					if 5*(1+phase.TSEG1) != 4*(1+phase.TSEG1+phase.TSEG2) || phase.SJW != phase.TSEG2 {
-						t.Fatalf("unexpected sample point or SJW: %+v", phase)
-					}
-				}
-				if again, err := prepareOpen(capture, channel, got); err != nil || again != got {
-					t.Fatalf("explicit timing = %+v, %v; want %+v", again, err, got)
-				}
-			}
-		})
-	}
-}
-
-func TestFDRatePresetsUnavailable(t *testing.T) {
-	for _, channel := range []Channel{
-		{},
-		{driver: driverPCAN},
-		{driver: driverVector},
-		{driver: driverSocketCAN, supportsFD: true, external: true},
-		{driver: driverPCAN, supportsFD: true, external: true},
-	} {
-		if presets := channel.FDRatePresets(); len(presets) != 0 {
-			t.Fatalf("channel %+v lists unavailable presets: %v", channel, presets)
-		}
-	}
-}
-
-func TestFDRatePresetRejections(t *testing.T) {
-	capture := gocan.NewCapture()
-	for _, test := range []struct {
 		name    string
-		channel Channel
-		nominal uint32
-		data    uint32
-		want    string
+		channel drivers.Channel
+		config  drivers.Config
 	}{
-		{"missing nominal", Channel{driver: driverPCAN, supportsFD: true}, 0, 2_000_000, "requires a nominal Bitrate"},
-		{"unsupported nominal", Channel{driver: driverPCAN, supportsFD: true}, 250_000, 2_000_000, "unsupported CAN FD rate pair"},
-		{"unsupported data", Channel{driver: driverVector, supportsFD: true}, 500_000, 3_000_000, "unsupported CAN FD rate pair"},
-		{"classic channel", Channel{driver: driverPCAN}, 500_000, 2_000_000, "does not support CAN FD"},
-		{"external timing", Channel{driver: driverSocketCAN, external: true, supportsFD: true}, 500_000, 2_000_000, "configured externally"},
-	} {
+		{
+			name:    "PCAN classic",
+			channel: drivers.PCANTestChannel(true),
+			config:  drivers.Config{ID: 1, Name: "pcan", Bitrate: 500_000},
+		},
+		{
+			name:    "PCAN custom FD timing",
+			channel: drivers.PCANTestChannel(true),
+			config:  drivers.Config{ID: 1, Name: "pcan", FDTiming: qualifiedFDTiming},
+		},
+		{
+			name:    "Vector classic",
+			channel: drivers.VectorTestChannel(true, false),
+			config:  drivers.Config{ID: 1, Name: "vector", Bitrate: 500_000},
+		},
+		{
+			name:    "Vector custom FD timing",
+			channel: drivers.VectorTestChannel(true, false),
+			config:  drivers.Config{ID: 1, Name: "vector", FDTiming: qualifiedFDTiming},
+		},
+		{
+			name:    "Vector external join",
+			channel: drivers.VectorTestChannel(true, true),
+			config:  drivers.Config{ID: 1, Name: "vector", External: true},
+		},
+		{
+			name:    "NI-XNET classic with termination off",
+			channel: drivers.NIXNETTestChannel(true, true),
+			config:  drivers.Config{ID: 1, Name: "ni", Bitrate: 500_000, Termination: drivers.TerminationOff},
+		},
+		{
+			name:    "NI-XNET classic with termination on",
+			channel: drivers.NIXNETTestChannel(true, true),
+			config:  drivers.Config{ID: 1, Name: "ni", Bitrate: 500_000, Termination: drivers.TerminationOn},
+		},
+		{
+			name:    "NI-XNET equivalent 80 MHz FD timing",
+			channel: drivers.NIXNETTestChannel(true, true),
+			config: drivers.Config{
+				ID: 1, Name: "ni",
+				FDTiming: drivers.FDTiming{
+					ClockHz: 80_000_000,
+					Nominal: drivers.BitTiming{BRP: 2, TSEG1: 63, TSEG2: 16, SJW: 16},
+					Data:    drivers.BitTiming{BRP: 2, TSEG1: 15, TSEG2: 4, SJW: 4},
+				},
+			},
+		},
+		{
+			name:    "ZLG classic USBCAN",
+			channel: drivers.ZLGTestChannel(false),
+			config:  drivers.Config{ID: 1, Name: "zlg", Bitrate: 500_000},
+		},
+		{
+			name:    "ZLG classic on USBCANFD with termination",
+			channel: drivers.ZLGTestChannel(true),
+			config:  drivers.Config{ID: 1, Name: "zlg", Bitrate: 500_000, Termination: drivers.TerminationOn},
+		},
+		{
+			name:    "SocketCAN external",
+			channel: drivers.SocketCANTestChannel(true),
+			config:  drivers.Config{ID: 1, Name: "can0", External: true},
+		},
+	}
+
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config := Config{ID: 1, Name: "can", Bitrate: test.nominal, DataBitrate: test.data}
-			if _, err := prepareOpen(capture, test.channel, config); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("prepareOpen error = %v; want %q", err, test.want)
+			bus, err := drivers.Open(ctx, capture, test.channel, test.config)
+			if bus != nil {
+				_ = bus.Close()
+				t.Fatal("Open returned a bus with a canceled context")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Open error = %v; want %v (valid configuration)", err, context.Canceled)
 			}
 		})
 	}
 }
 
-func TestFDTimingRejectsInvalidValues(t *testing.T) {
+func TestOpenRejectsInvalidConfigurations(t *testing.T) {
+	ctx := canceledContext()
+	capture := gocan.NewCapture()
+	pcanFD := drivers.PCANTestChannel(true)
+	pcanClassic := drivers.PCANTestChannel(false)
+	vectorFD := drivers.VectorTestChannel(true, false)
+	vectorExternal := drivers.VectorTestChannel(true, true)
+	nixnetFD := drivers.NIXNETTestChannel(true, true)
+	nixnetNoTerm := drivers.NIXNETTestChannel(true, false)
+	zlgFD := drivers.ZLGTestChannel(true)
+	zlgClassic := drivers.ZLGTestChannel(false)
+	socketcanFD := drivers.SocketCANTestChannel(true)
+
 	tests := []struct {
-		name   string
-		timing FDTiming
-		want   string
+		name    string
+		capture *gocan.Capture
+		channel drivers.Channel
+		config  drivers.Config
 	}{
-		{name: "zero clock", timing: FDTiming{}, want: "nonzero clock"},
-		{name: "zero segment", timing: FDTiming{ClockHz: 80_000_000}, want: "requires nonzero"},
-		{name: "SJW exceeds TSEG2", timing: FDTiming{ClockHz: 80_000_000, Nominal: BitTiming{BRP: 1, TSEG1: 119, TSEG2: 1, SJW: 2}, Data: qualifiedFDTiming.Data}, want: "exceeds TSEG2"},
-		{name: "nonintegral", timing: FDTiming{ClockHz: 80_000_001, Nominal: qualifiedFDTiming.Nominal, Data: qualifiedFDTiming.Data}, want: "integral bitrate"},
-		{name: "overflow", timing: FDTiming{ClockHz: 80_000_000, Nominal: BitTiming{BRP: math.MaxUint32, TSEG1: math.MaxUint32, TSEG2: math.MaxUint32, SJW: 1}, Data: qualifiedFDTiming.Data}, want: "overflows"},
+		// Missing required arguments.
+		{"nil capture", nil, pcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000}},
+		{"undiscovered channel", capture, drivers.Channel{}, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000}},
+		{"missing ID", capture, pcanFD, drivers.Config{Name: "can", Bitrate: 500_000}},
+		{"missing name", capture, pcanFD, drivers.Config{ID: 1, Bitrate: 500_000}},
+
+		// Timing mode exclusivity.
+		{"no timing mode", capture, pcanFD, drivers.Config{ID: 1, Name: "can"}},
+		{"bitrate and external", capture, pcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, External: true}},
+		{"bitrate and FDTiming", capture, pcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, FDTiming: qualifiedFDTiming}},
+		{"FDTiming and external", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming, External: true}},
+		{"preset and external", capture, pcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000, External: true}},
+		{"preset and FDTiming", capture, pcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000, FDTiming: qualifiedFDTiming}},
+		{"data bitrate and FDTiming", capture, pcanFD, drivers.Config{ID: 1, Name: "can", DataBitrate: 2_000_000, FDTiming: qualifiedFDTiming}},
+		{"data bitrate and external", capture, pcanFD, drivers.Config{ID: 1, Name: "can", DataBitrate: 2_000_000, External: true}},
+		{"data bitrate without nominal", capture, pcanFD, drivers.Config{ID: 1, Name: "can", DataBitrate: 2_000_000}},
+
+		// Timing ownership mismatches.
+		{"programmable channel with external", capture, pcanFD, drivers.Config{ID: 1, Name: "can", External: true}},
+		{"SocketCAN with bitrate", capture, socketcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000}},
+		{"SocketCAN with FD preset", capture, socketcanFD, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000}},
+		{"shared Vector with bitrate", capture, vectorExternal, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000}},
+
+		// Capability mismatches.
+		{"classic PCAN with FD preset", capture, pcanClassic, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000}},
+		{"classic PCAN with FDTiming", capture, pcanClassic, drivers.Config{ID: 1, Name: "can", FDTiming: qualifiedFDTiming}},
+		{"classic ZLG with FD preset", capture, zlgClassic, drivers.Config{ID: 1, Name: "can", Bitrate: 500_000, DataBitrate: 2_000_000}},
+
+		// Termination validation.
+		{"unknown termination value", capture, nixnetFD, drivers.Config{ID: 1, Name: "ni", Bitrate: 500_000, Termination: drivers.Termination(3)}},
+		{"termination off unsupported", capture, nixnetNoTerm, drivers.Config{ID: 1, Name: "ni", Bitrate: 500_000, Termination: drivers.TerminationOff}},
+		{"termination on unsupported", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", Bitrate: 500_000, Termination: drivers.TerminationOn}},
+		{"termination on classic ZLG", capture, zlgClassic, drivers.Config{ID: 1, Name: "zlg", Bitrate: 500_000, Termination: drivers.TerminationOn}},
+
+		// Generic FDTiming bounds. Each case isolates a single rule.
+		{"FDTiming zero clock", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{Nominal: qualifiedFDTiming.Nominal, Data: qualifiedFDTiming.Data}}},
+		{"FDTiming zero BRP", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: drivers.BitTiming{BRP: 0, TSEG1: 119, TSEG2: 40, SJW: 1},
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		{"FDTiming zero TSEG1", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 0, TSEG2: 39, SJW: 1},
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		{"FDTiming zero TSEG2", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 159, TSEG2: 0, SJW: 1},
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		{"FDTiming zero SJW", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 119, TSEG2: 40, SJW: 0},
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		// 1 + 158 + 1 = 160 quanta divides 80 MHz cleanly, isolating SJW > TSEG2.
+		{"FDTiming SJW exceeds TSEG2", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 158, TSEG2: 1, SJW: 2},
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		{"FDTiming nonintegral bitrate", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_001,
+			Nominal: qualifiedFDTiming.Nominal,
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		// (2^32 - 1) * (2^32 + 2) wraps mod 2^64 to 0xfffffffe, which divides ClockHz
+		// evenly, so only the overflow guard rejects this input.
+		{"FDTiming denominator overflow", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
+			ClockHz: 0xfffffffe,
+			Nominal: drivers.BitTiming{BRP: math.MaxUint32, TSEG1: 1<<31 + 1, TSEG2: 1 << 31, SJW: 1},
+			Data:    drivers.BitTiming{BRP: 1, TSEG1: 1, TSEG2: 0xfffffffe - 2, SJW: 1},
+		}}},
+
+		// Driver-specific bitrate and timing rules.
+		{"PCAN unsupported classical bitrate", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", Bitrate: 300_000}},
+		{"PCAN unsupported FD nominal preset", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", Bitrate: 250_000, DataBitrate: 2_000_000}},
+		{"Vector unsupported FD data preset", capture, vectorFD, drivers.Config{ID: 1, Name: "vector", Bitrate: 500_000, DataBitrate: 3_000_000}},
+		{"Vector non-80MHz FD clock", capture, vectorFD, drivers.Config{ID: 1, Name: "vector", FDTiming: drivers.FDTiming{
+			ClockHz: 40_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 63, TSEG2: 16, SJW: 16},
+			Data:    drivers.BitTiming{BRP: 1, TSEG1: 15, TSEG2: 4, SJW: 4},
+		}}},
+		{"NI-XNET non-25ns FD quantum", capture, nixnetFD, drivers.Config{ID: 1, Name: "ni", FDTiming: qualifiedFDTiming}},
+		// 1 + 257 + 62 = 320 quanta divides 40 MHz cleanly, isolating nominal TSEG1 > 256.
+		{"NI-XNET nominal TSEG1 exceeds limit", capture, nixnetFD, drivers.Config{ID: 1, Name: "ni", FDTiming: drivers.FDTiming{
+			ClockHz: 40_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 257, TSEG2: 62, SJW: 1},
+			Data:    drivers.BitTiming{BRP: 1, TSEG1: 15, TSEG2: 4, SJW: 4},
+		}}},
+		// 1 + 33 + 6 = 40 quanta divides 40 MHz cleanly, isolating data TSEG1 > 32.
+		{"NI-XNET data TSEG1 exceeds limit", capture, nixnetFD, drivers.Config{ID: 1, Name: "ni", FDTiming: drivers.FDTiming{
+			ClockHz: 40_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 63, TSEG2: 16, SJW: 16},
+			Data:    drivers.BitTiming{BRP: 1, TSEG1: 33, TSEG2: 6, SJW: 1},
+		}}},
+		{"ZLG custom FDTiming rejected", capture, zlgFD, drivers.Config{ID: 1, Name: "zlg", FDTiming: qualifiedFDTiming}},
+		{"ZLG unsupported FD preset", capture, zlgFD, drivers.Config{ID: 1, Name: "zlg", Bitrate: 500_000, DataBitrate: 3_000_000}},
+		{"ZLG unsupported classical bitrate", capture, zlgClassic, drivers.Config{ID: 1, Name: "zlg", Bitrate: 300_000}},
+		{"ZLG USBCANFD unsupported classical bitrate", capture, zlgFD, drivers.Config{ID: 1, Name: "zlg", Bitrate: 300_000}},
 	}
+
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, _, err := deriveFDBitrates(test.timing); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("deriveFDBitrates error = %v, want %q", err, test.want)
+			bus, err := drivers.Open(ctx, test.capture, test.channel, test.config)
+			if bus != nil {
+				_ = bus.Close()
+				t.Fatal("Open unexpectedly returned a bus")
+			}
+			if !errors.Is(err, drivers.ErrInvalidConfig) {
+				t.Fatalf("Open error = %v; want %v", err, drivers.ErrInvalidConfig)
+			}
+		})
+	}
+}
+
+func TestFDRatePresetsContract(t *testing.T) {
+	ctx := canceledContext()
+	capture := gocan.NewCapture()
+
+	fdChannels := []drivers.Channel{
+		drivers.PCANTestChannel(true),
+		drivers.VectorTestChannel(true, false),
+		drivers.NIXNETTestChannel(true, true),
+		drivers.ZLGTestChannel(true),
+	}
+	for _, channel := range fdChannels {
+		t.Run(channel.Driver(), func(t *testing.T) {
+			presets := channel.FDRatePresets()
+			if len(presets) == 0 {
+				t.Fatalf("%s returned no FD rate presets", channel.Driver())
+			}
+
+			// Mutating the returned slice must not alter driver state.
+			first := presets[0]
+			presets[0] = drivers.FDRatePreset{Bitrate: 1, DataBitrate: 2}
+			again := channel.FDRatePresets()
+			if len(again) != len(presets) || again[0] != first {
+				t.Fatalf("consumer mutation leaked into %s presets: got %v, want first=%v", channel.Driver(), again, first)
+			}
+
+			// Every advertised preset must pass Open validation.
+			for _, preset := range again {
+				_, err := drivers.Open(ctx, capture, channel, drivers.Config{
+					ID:          3,
+					Name:        "powertrain",
+					Bitrate:     preset.Bitrate,
+					DataBitrate: preset.DataBitrate,
+				})
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Open(%s, preset %+v) = %v; want %v", channel.Driver(), preset, err, context.Canceled)
+				}
+			}
+		})
+	}
+
+	unavailable := []drivers.Channel{
+		{},
+		drivers.PCANTestChannel(false),
+		drivers.VectorTestChannel(false, false),
+		drivers.VectorTestChannel(true, true),
+		drivers.NIXNETTestChannel(false, false),
+		drivers.ZLGTestChannel(false),
+		drivers.SocketCANTestChannel(true),
+	}
+	for _, channel := range unavailable {
+		if presets := channel.FDRatePresets(); len(presets) != 0 {
+			t.Errorf("channel %s lists unavailable presets: %v", channel, presets)
+		}
+	}
+}
+
+type foreignVendorOptions struct {
+	drivers.VendorOptions
+}
+
+type wrappedNIXNETOptions struct {
+	drivers.NIXNETOptions
+}
+
+func TestVendorOptions(t *testing.T) {
+	ctx := canceledContext()
+	capture := gocan.NewCapture()
+
+	nixnetCh := drivers.NIXNETTestChannel(true, true)
+	for _, tc := range []struct {
+		name   string
+		vendor drivers.VendorOptions
+	}{
+		{"nil", nil},
+		{"value false", drivers.NIXNETOptions{ConcurrentIO: false}},
+		{"value true", drivers.NIXNETOptions{ConcurrentIO: true}},
+		{"pointer true", &drivers.NIXNETOptions{ConcurrentIO: true}},
+	} {
+		t.Run("nixnet accepts "+tc.name, func(t *testing.T) {
+			_, err := drivers.Open(ctx, capture, nixnetCh, drivers.Config{
+				ID:      1,
+				Name:    "ni",
+				Bitrate: 500_000,
+				Vendor:  tc.vendor,
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Open(nixnet, %s) = %v; want %v", tc.name, err, context.Canceled)
+			}
+		})
+	}
+
+	// Typed nil and foreign/wrapped option types must be rejected on NI-XNET too.
+	for _, tc := range []struct {
+		name   string
+		vendor drivers.VendorOptions
+	}{
+		{"typed nil pointer", (*drivers.NIXNETOptions)(nil)},
+		{"embedded interface", foreignVendorOptions{}},
+		{"embedded NIXNETOptions", wrappedNIXNETOptions{}},
+	} {
+		t.Run("nixnet rejects "+tc.name, func(t *testing.T) {
+			_, err := drivers.Open(ctx, capture, nixnetCh, drivers.Config{
+				ID:      1,
+				Name:    "ni",
+				Bitrate: 500_000,
+				Vendor:  tc.vendor,
+			})
+			if !errors.Is(err, drivers.ErrInvalidConfig) {
+				t.Fatalf("Open(nixnet, %s) = %v; want %v", tc.name, err, drivers.ErrInvalidConfig)
+			}
+		})
+	}
+
+	// Non-NI-XNET drivers must reject mismatched or unknown vendor options.
+	rejectedByOtherDrivers := []struct {
+		name    string
+		channel drivers.Channel
+		config  drivers.Config
+	}{
+		{"pcan mismatched zero", drivers.PCANTestChannel(true), drivers.Config{ID: 1, Name: "pcan", Bitrate: 500_000, Vendor: drivers.NIXNETOptions{}}},
+		{"pcan foreign", drivers.PCANTestChannel(true), drivers.Config{ID: 1, Name: "pcan", Bitrate: 500_000, Vendor: foreignVendorOptions{}}},
+		{"vector mismatched", drivers.VectorTestChannel(true, false), drivers.Config{ID: 1, Name: "vector", Bitrate: 500_000, Vendor: drivers.NIXNETOptions{ConcurrentIO: true}}},
+		{"vector external mismatched", drivers.VectorTestChannel(true, true), drivers.Config{ID: 1, Name: "vector", External: true, Vendor: drivers.NIXNETOptions{ConcurrentIO: true}}},
+		{"zlg mismatched", drivers.ZLGTestChannel(true), drivers.Config{ID: 1, Name: "zlg", Bitrate: 500_000, Vendor: drivers.NIXNETOptions{ConcurrentIO: true}}},
+		{"socketcan mismatched", drivers.SocketCANTestChannel(true), drivers.Config{ID: 1, Name: "can0", External: true, Vendor: drivers.NIXNETOptions{ConcurrentIO: true}}},
+	}
+	for _, tc := range rejectedByOtherDrivers {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := drivers.Open(ctx, capture, tc.channel, tc.config)
+			if !errors.Is(err, drivers.ErrInvalidConfig) {
+				t.Fatalf("Open(%s) = %v; want %v", tc.name, err, drivers.ErrInvalidConfig)
 			}
 		})
 	}

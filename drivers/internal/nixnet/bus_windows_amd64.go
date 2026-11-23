@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
 )
@@ -31,6 +32,19 @@ var _ gocan.Bus = (*Bus)(nil)
 func Open(ctx context.Context, capture *gocan.Capture, config Config) (_ *Bus, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	var (
+		termValue uint32
+		setTerm   bool
+	)
+	switch config.Termination {
+	case drivercfg.TerminationDefault:
+	case drivercfg.TerminationOff:
+		termValue, setTerm = 0, true
+	case drivercfg.TerminationOn:
+		termValue, setTerm = 1, true
+	default:
+		return nil, fmt.Errorf("%w: invalid NI-XNET termination choice %d", drivercfg.ErrInvalidConfig, config.Termination)
 	}
 	a, err := loadAPI()
 	if err != nil {
@@ -80,8 +94,8 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (_ *Bus, e
 			return nil, err
 		}
 	}
-	if config.Termination != 0 {
-		if err = a.set32(bus.tx, propTermination, uint32(config.Termination-1)); err != nil {
+	if setTerm {
+		if err = a.set32(bus.tx, propTermination, termValue); err != nil {
 			return nil, err
 		}
 	}
@@ -142,9 +156,7 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 func (bus *Bus) receiveLoop() {
 	defer func() { bus.ioMu.Lock(); bus.cleanupErr = bus.cleanup(); bus.ioMu.Unlock(); bus.lifecycle.MarkDone() }()
 	idle := time.NewTimer(time.Hour)
-	if !idle.Stop() {
-		<-idle.C
-	}
+	idle.Stop()
 	defer idle.Stop()
 	nextState := time.Now()
 	for {

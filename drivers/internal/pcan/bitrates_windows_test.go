@@ -4,23 +4,24 @@ package pcan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 )
 
 func TestPCANOpenRejectsUnknownClassicalBitrate(t *testing.T) {
 	_, err := Open(context.Background(), gocan.NewCapture(), Config{
 		ID: 1, Name: "can", Channel: ChannelUSB1, Bitrate: 300_000,
 	})
-	if err == nil || !strings.Contains(err.Error(), "predefined") {
-		t.Fatalf("Open with an unknown bitrate = %v", err)
+	if !errors.Is(err, drivercfg.ErrInvalidConfig) {
+		t.Fatalf("Open with an unknown bitrate = %v, want %v", err, drivercfg.ErrInvalidConfig)
 	}
 }
 

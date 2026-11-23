@@ -49,6 +49,13 @@ var classicalBitrates = map[uint32]uint16{
 	1_000_000: 0x0014,
 }
 
+// ValidClassicalBitrate reports whether bitrate is a predefined PCAN-Basic
+// classical CAN rate.
+func ValidClassicalBitrate(bitrate uint32) bool {
+	_, ok := classicalBitrates[bitrate]
+	return ok
+}
+
 type Config struct {
 	ID      gocan.BusID
 	Name    string

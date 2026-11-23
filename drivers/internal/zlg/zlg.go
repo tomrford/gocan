@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 )
 
 type Config struct {
@@ -26,9 +27,26 @@ type Config struct {
 	// DataBitrate selects CAN FD on USBCANFD adapters using one of ZLG's
 	// predefined data rates. Zero selects classical CAN.
 	DataBitrate uint32
-	// Termination is 0 to leave a USBCANFD adapter's terminator unchanged, 1 to
-	// disable it, or 2 to enable it.
-	Termination uint8
+	// Termination selects switchable termination on USBCANFD adapters.
+	Termination drivercfg.Termination
+}
+
+// FDRate is a nominal/data bitrate pair in bits per second supported by ZLG
+// USBCANFD built-in timing.
+type FDRate struct {
+	Bitrate     uint32
+	DataBitrate uint32
+}
+
+// FDRates are rate pairs that ZLG USBCANFD adapters configure from their own
+// built-in timing, sampling at 80% except at 5 Mbit/s data (75%).
+var FDRates = [...]FDRate{
+	{Bitrate: 500_000, DataBitrate: 2_000_000},
+	{Bitrate: 500_000, DataBitrate: 4_000_000},
+	{Bitrate: 500_000, DataBitrate: 5_000_000},
+	{Bitrate: 1_000_000, DataBitrate: 2_000_000},
+	{Bitrate: 1_000_000, DataBitrate: 4_000_000},
+	{Bitrate: 1_000_000, DataBitrate: 5_000_000},
 }
 
 // zlgcan.dll maps ZCAN_USBCAN1 and ZCAN_USBCAN2 to the same kernel DLL, so
@@ -70,31 +88,38 @@ var sja1000Timings = map[uint32][2]uint8{
 }
 
 // USBCANFD.dll's canfd_abit_baud_rate choices for its 60 MHz clock, from ZLG's
-// devices_property/usbcanfd-200u.xml. The drivers package admits only its
-// preset data rates.
+// devices_property/usbcanfd-200u.xml.
 var usbcanfdNominalRates = []uint32{50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000}
 
-func validateConfig(config Config) error {
-	if !isFDDevice(config.DeviceType) {
-		if config.DeviceType != deviceTypeUSBCAN2 {
-			return fmt.Errorf("unsupported ZLG device type %d", config.DeviceType)
-		}
+// ValidateConfig checks ZLG device type, termination, and predefined bitrates.
+func ValidateConfig(config Config) error {
+	fdDevice := isFDDevice(config.DeviceType)
+	if !fdDevice && config.DeviceType != deviceTypeUSBCAN2 {
+		return fmt.Errorf("%w: unsupported ZLG device type %d", drivercfg.ErrInvalidConfig, config.DeviceType)
+	}
+	if !config.Termination.Valid() {
+		return fmt.Errorf("%w: invalid ZLG termination choice %d", drivercfg.ErrInvalidConfig, config.Termination)
+	}
+	if !fdDevice {
 		switch {
 		case config.DataBitrate != 0:
-			return errors.New("ZLG USBCAN adapters do not support CAN FD")
-		case config.Termination != 0:
-			return errors.New("ZLG USBCAN adapters have no switchable termination")
+			return fmt.Errorf("%w: ZLG USBCAN adapters do not support CAN FD", drivercfg.ErrInvalidConfig)
+		case config.Termination != drivercfg.TerminationDefault:
+			return fmt.Errorf("%w: ZLG USBCAN adapters have no switchable termination", drivercfg.ErrInvalidConfig)
 		}
 		if _, ok := sja1000Timings[config.Bitrate]; !ok {
-			return fmt.Errorf("ZLG classical bitrate %d is not a ZLG predefined rate", config.Bitrate)
+			return fmt.Errorf("%w: ZLG classical bitrate %d is not a ZLG predefined rate", drivercfg.ErrInvalidConfig, config.Bitrate)
 		}
 		return nil
 	}
-	switch {
-	case !slices.Contains(usbcanfdNominalRates, config.Bitrate):
-		return fmt.Errorf("ZLG USBCANFD bitrate %d is not a ZLG predefined rate", config.Bitrate)
-	case config.Termination > 2:
-		return fmt.Errorf("invalid ZLG termination choice %d", config.Termination)
+	if config.DataBitrate != 0 {
+		if !slices.Contains(FDRates[:], FDRate{Bitrate: config.Bitrate, DataBitrate: config.DataBitrate}) {
+			return fmt.Errorf("%w: ZLG USBCANFD rate pair %d/%d is not a ZLG predefined rate", drivercfg.ErrInvalidConfig, config.Bitrate, config.DataBitrate)
+		}
+		return nil
+	}
+	if !slices.Contains(usbcanfdNominalRates, config.Bitrate) {
+		return fmt.Errorf("%w: ZLG USBCANFD bitrate %d is not a ZLG predefined rate", drivercfg.ErrInvalidConfig, config.Bitrate)
 	}
 	return nil
 }

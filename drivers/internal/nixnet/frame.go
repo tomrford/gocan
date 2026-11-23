@@ -10,16 +10,17 @@ import (
 	"fmt"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 )
 
 // Config is prepared by package drivers; Baud and FDBaud may be NI's encoded
-// 64-bit timing values. Termination is 0 (default), 1 (off), or 2 (on).
+// 64-bit timing values.
 type Config struct {
 	ID              gocan.BusID
 	Name, Interface string
 	Baud, FDBaud    uint64
 	FD              bool
-	Termination     uint8
+	Termination     drivercfg.Termination
 	ConcurrentIO    bool
 }
 
