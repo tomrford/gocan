@@ -12,7 +12,7 @@ import (
 const (
 	initialCaptureChunkPayloadCapacity = 256 << 10
 	initialCaptureChunkRecordCapacity  = initialCaptureChunkPayloadCapacity / MaxDataLength
-	maxCaptureChunkPayloadCapacity     = 8 << 20
+	maxCaptureChunkPayloadCapacity     = 4 << 20
 	maxCaptureChunkRecordCapacity      = maxCaptureChunkPayloadCapacity / MaxDataLength
 
 	noCaptureRecord = ^uint32(0)
