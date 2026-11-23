@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/dbc"
@@ -211,10 +212,16 @@ func TestEditConstructedDatabase(t *testing.T) {
 		if !ok {
 			t.Fatal("callback lookup missed the renamed signal")
 		}
-		level.Comment = "Fill level"
+		level.Comment = "Fill level (Ω)"
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if constructed.Source() != nil {
+		t.Fatal("constructed database unexpectedly has Source bytes")
+	}
+	if src := edited.Source(); bytes.HasPrefix(src, []byte{0xef, 0xbb, 0xbf}) || !utf8.Valid(src) || !bytes.Contains(src, []byte("Fill level (Ω)")) {
+		t.Fatalf("constructed Edit source is not plain UTF-8: %q", src)
 	}
 	status, ok := edited.MessageByID(0x100, false)
 	if !ok {
@@ -224,10 +231,182 @@ func TestEditConstructedDatabase(t *testing.T) {
 	if err != nil || frame.Data[0] != 42 {
 		t.Fatalf("Encode edited Status = %v, %v", frame, err)
 	}
-	if level, ok := status.SignalByName("Level"); !ok || level.Comment != "Fill level" {
+	if level, ok := status.SignalByName("Level"); !ok || level.Comment != "Fill level (Ω)" {
 		t.Fatalf("edited Level = %#v", level)
 	}
 	if constructed.Messages[0].Signals[0].Name != "Value" {
 		t.Fatal("Edit changed the constructed database")
 	}
+}
+
+func TestEditPreservesSourceEncoding(t *testing.T) {
+	utf8BOM := []byte{0xef, 0xbb, 0xbf}
+	plainUTF8, err := os.ReadFile("testdata/device.dbc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	win1252, err := charmap.Windows1252.NewEncoder().Bytes(plainUTF8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withBOM := append(append([]byte(nil), utf8BOM...), plainUTF8...)
+
+	t.Run("Windows-1252", func(t *testing.T) {
+		base, err := dbc.Parse("device-1252.dbc", bytes.NewReader(win1252))
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited, err := base.Edit("device-A-1252.dbc", func(db *dbc.Database) {
+			db.Messages[0].ID |= 0xA << 8
+			db.Messages[0].Name = "DEV_A_STAT"
+			db.Comment = "Kosten: 5€"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := edited.Source()
+		if utf8.Valid(src) || bytes.HasPrefix(src, utf8BOM) {
+			t.Fatalf("Windows-1252 Edit produced UTF-8 or BOM source: %q", src)
+		}
+		for _, want := range [][]byte{[]byte("K\xfchlmittel inlet"), []byte("\xb0C"), []byte("Kosten: 5\x80")} {
+			if !bytes.Contains(src, want) {
+				t.Fatalf("Windows-1252 Edit source missing %x", want)
+			}
+		}
+		reparsed, err := dbc.Parse("reparsed-1252.dbc", bytes.NewReader(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, db := range []*dbc.Database{edited, reparsed} {
+			status, ok := db.MessageByName("DEV_A_STAT")
+			if !ok {
+				t.Fatal("DEV_A_STAT missing")
+			}
+			coolant, _ := status.SignalByName("Coolant")
+			if db.Comment != "Kosten: 5€" || coolant == nil || coolant.Comment != "Kühlmittel inlet" || coolant.Unit != "°C" {
+				t.Fatalf("unexpected decoded Windows-1252 values: comment=%q coolant=%#v", db.Comment, coolant)
+			}
+		}
+
+		// Write still produces UTF-8 regardless of the source encoding.
+		var written bytes.Buffer
+		if err := edited.Write(&written); err != nil {
+			t.Fatal(err)
+		}
+		if bytes.HasPrefix(written.Bytes(), utf8BOM) || !utf8.Valid(written.Bytes()) ||
+			!bytes.Contains(written.Bytes(), []byte("Kühlmittel inlet")) ||
+			!bytes.Contains(written.Bytes(), []byte("Kosten: 5€")) {
+			t.Fatalf("Write on Windows-1252 database did not write plain UTF-8: %q", written.Bytes())
+		}
+
+		// Chained edits keep Windows-1252 even across an ASCII-only intermediate edit.
+		asciiOnly, err := edited.Edit("ascii-step.dbc", func(db *dbc.Database) {
+			db.Comment = "ASCII only"
+			coolant, _ := db.Messages[0].SignalByName("Coolant")
+			coolant.Comment = "Coolant inlet"
+			coolant.Unit = "C"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := asciiOnly.Edit("restored-1252.dbc", func(db *dbc.Database) {
+			db.Comment = "Rücklauf °C"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if src := restored.Source(); utf8.Valid(src) || !bytes.Contains(src, []byte("R\xfccklauf \xb0C")) {
+			t.Fatalf("chained Windows-1252 Edit lost source encoding: %q", src)
+		}
+		if restored.Comment != "Rücklauf °C" {
+			t.Fatalf("restored comment = %q, want %q", restored.Comment, "Rücklauf °C")
+		}
+
+		// Windows-1252 bytes that also happen to be valid UTF-8 (e.g. "Ã©" -> C3 A9)
+		// must not be reinterpreted as UTF-8 in the returned model.
+		utf8Like, err := asciiOnly.Edit("utf8-like-1252.dbc", func(db *dbc.Database) {
+			db.Comment = "Ã©"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if utf8Like.Comment != "Ã©" || !bytes.Contains(utf8Like.Source(), []byte("CM_ \"\xc3\xa9\";")) {
+			t.Fatalf("Windows-1252 UTF-8-like bytes misread: comment=%q source=%q", utf8Like.Comment, utf8Like.Source())
+		}
+
+		// Characters outside Windows-1252 fail with ErrUnrepresentable without changing base.
+		bad, err := base.Edit("bad-1252.dbc", func(db *dbc.Database) {
+			db.Comment = "Resistance in Ω"
+		})
+		if bad != nil || !errors.Is(err, dbc.ErrUnrepresentable) {
+			t.Fatalf("Edit with non-Windows-1252 character = %v, %v; want nil, %v", bad, err, dbc.ErrUnrepresentable)
+		}
+		if !bytes.Equal(base.Source(), win1252) {
+			t.Fatal("failed Windows-1252 Edit modified original source")
+		}
+	})
+
+	t.Run("UTF-8 with BOM", func(t *testing.T) {
+		base, err := dbc.Parse("device-bom.dbc", bytes.NewReader(withBOM))
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited, err := base.Edit("device-A-bom.dbc", func(db *dbc.Database) {
+			db.Comment = "Resistance in Ω"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := edited.Source()
+		if !bytes.HasPrefix(src, utf8BOM) || !utf8.Valid(src) ||
+			!bytes.Contains(src, []byte("Resistance in Ω")) ||
+			!bytes.Contains(src, []byte("Kühlmittel inlet")) {
+			t.Fatalf("UTF-8 BOM Edit source did not preserve BOM and UTF-8 text: %q", src)
+		}
+		reparsed, err := dbc.Parse("reparsed-bom.dbc", bytes.NewReader(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if edited.Comment != "Resistance in Ω" || reparsed.Comment != "Resistance in Ω" {
+			t.Fatalf("unexpected comments: edited=%q reparsed=%q", edited.Comment, reparsed.Comment)
+		}
+
+		// Chained edit and whole-struct replacement both preserve the BOM;
+		// Write stays BOM-free UTF-8.
+		chained, err := edited.Edit("device-B-bom.dbc", func(db *dbc.Database) {
+			*db = dbc.Database{Version: "2.0", Comment: "Replaced"}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.HasPrefix(chained.Source(), utf8BOM) || chained.Comment != "Replaced" {
+			t.Fatalf("chained Edit dropped UTF-8 BOM or comment: comment=%q source=%q", chained.Comment, chained.Source())
+		}
+		var written bytes.Buffer
+		if err := edited.Write(&written); err != nil {
+			t.Fatal(err)
+		}
+		if bytes.HasPrefix(written.Bytes(), utf8BOM) || !utf8.Valid(written.Bytes()) {
+			t.Fatalf("Write on BOM database included BOM or invalid UTF-8: %q", written.Bytes())
+		}
+	})
+
+	t.Run("plain UTF-8", func(t *testing.T) {
+		base, err := dbc.Parse("device-utf8.dbc", bytes.NewReader(plainUTF8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited, err := base.Edit("device-A-utf8.dbc", func(db *dbc.Database) {
+			db.Comment = "Resistance in Ω"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := edited.Source()
+		if bytes.HasPrefix(src, utf8BOM) || !utf8.Valid(src) ||
+			!bytes.Contains(src, []byte("Resistance in Ω")) ||
+			!bytes.Contains(src, []byte("Kühlmittel inlet")) {
+			t.Fatalf("plain UTF-8 Edit source unexpected: %q", src)
+		}
+	})
 }

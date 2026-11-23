@@ -13,12 +13,16 @@ import (
 	"unicode/utf8"
 
 	"github.com/tomrford/gocan"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // Edit returns a new database made by applying edit to a deep copy of db.
-// The edited copy is written as DBC text and parsed as name, so the result is
+// The edited copy is written as DBC text in the encoding Parse detected for db
+// (preserving Windows-1252 or a UTF-8 byte-order mark; plain UTF-8 and
+// constructed databases write UTF-8) and parsed as name, so the result is
 // validated like any parsed database, its lookups and codecs follow the edits,
-// and Source returns the written bytes. db is not changed.
+// and Source returns the written text in the original's encoding. db is not
+// changed.
 //
 // edit may change DBC declarations, including adding or removing nodes,
 // messages and signals. Message.Format is derived from VFrameFormat and
@@ -27,19 +31,49 @@ import (
 // Diagnostics and Source describe db before edit ran, while
 // Message.SignalByName finds the copy's current signals. A database that Parse
 // did not produce is written and parsed first, so its lookups work. An edit
-// that Write cannot express returns an error wrapping ErrUnrepresentable; one
-// that Parse rejects returns its *Error.
+// whose resulting text Write or the original encoding cannot express (including
+// characters already in db that Windows-1252 cannot encode) returns an error
+// wrapping ErrUnrepresentable; one that Parse rejects returns its *Error.
 func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
 	edited, err := db.editable(name)
 	if err != nil {
 		return nil, err
 	}
+	encoding := edited.encoding
 	edit(edited)
-	var buf bytes.Buffer
-	if err := edited.Write(&buf); err != nil {
+	var text strings.Builder
+	if err := edited.Write(&text); err != nil {
 		return nil, err
 	}
-	return Parse(name, &buf)
+	utf8Text := text.String()
+	var source []byte
+	switch encoding {
+	case sourceEncodingUTF8BOM:
+		source = make([]byte, 0, len(utf8BOM)+len(utf8Text))
+		source = append(source, utf8BOM...)
+		source = append(source, utf8Text...)
+	case sourceEncodingWindows1252:
+		source, err = encodeWindows1252(utf8Text)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		source = []byte(utf8Text)
+	}
+	return parse(name, source, utf8Text, encoding)
+}
+
+func encodeWindows1252(text string) ([]byte, error) {
+	encoded, err := charmap.Windows1252.NewEncoder().Bytes([]byte(text))
+	if err == nil {
+		return encoded, nil
+	}
+	for _, r := range text {
+		if _, ok := charmap.Windows1252.EncodeRune(r); !ok {
+			return nil, fmt.Errorf("%w: character %q (%U) cannot be encoded as Windows-1252: %w", ErrUnrepresentable, r, r, err)
+		}
+	}
+	return nil, fmt.Errorf("%w: encode as Windows-1252: %w", ErrUnrepresentable, err)
 }
 
 // editable returns the copy an Edit callback changes: a clone, so no signal
