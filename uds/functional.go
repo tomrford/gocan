@@ -27,26 +27,19 @@ func NewFunctional(link *isotp.Functional) (*Functional, error) {
 // suppressPositiveResponse. It does not receive positive or negative responses;
 // callers that need replies must arrange reception on the physical addresses.
 func (functional *Functional) Send(ctx context.Context, request Request) error {
-	payload, err := request.payload()
-	if err != nil {
-		return err
-	}
-	return wrapRequestTransportError(functional.link.Send(ctx, payload))
+	return sendRequest(ctx, functional.link, request)
 }
 
 // SendTesterPresent broadcasts tester present with its positive response
 // suppressed.
 func (functional *Functional) SendTesterPresent(ctx context.Context) error {
-	return functional.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
+	return sendTesterPresent(ctx, functional)
 }
 
 // SendECUReset broadcasts resetType with its positive response suppressed.
 // Like Send, it does not wait for responses or for the ECUs to finish resetting.
 func (functional *Functional) SendECUReset(ctx context.Context, resetType ResetType) error {
-	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
-		return err
-	}
-	return functional.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}})
+	return sendECUReset(ctx, functional, resetType)
 }
 
 // SendCommunicationControl broadcasts controlType for the messages selected by
@@ -75,11 +68,10 @@ func (functional *Functional) SendCommunicationControlWithNode(ctx context.Conte
 // SendControlDTCSetting broadcasts settingType with an optional control option
 // record and its positive response suppressed.
 func (functional *Functional) SendControlDTCSetting(ctx context.Context, settingType DTCSettingType, optionRecord []byte) error {
-	if err := validateSubfunction(byte(settingType), "DTC setting type"); err != nil {
+	data, err := controlDTCSettingRequest(settingType, optionRecord)
+	if err != nil {
 		return err
 	}
-	data := make([]byte, 1+len(optionRecord))
-	data[0] = byte(settingType) | suppressPositiveResponse
-	copy(data[1:], optionRecord)
+	data[0] |= suppressPositiveResponse
 	return functional.Send(ctx, Request{Service: ServiceControlDTCSetting, Data: data})
 }

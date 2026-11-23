@@ -190,10 +190,7 @@ func (client *Client) ECUReset(ctx context.Context, resetType ResetType) ([]byte
 // SendECUReset sends resetType with its positive response suppressed, as Send.
 // It does not wait for the ECU to finish resetting.
 func (client *Client) SendECUReset(ctx context.Context, resetType ResetType) error {
-	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
-		return err
-	}
-	return client.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}})
+	return sendECUReset(ctx, client, resetType)
 }
 
 // ReadDataByIdentifier reads one data identifier and returns its data record.
@@ -275,11 +272,11 @@ func (client *Client) CommunicationControlWithNode(ctx context.Context, controlT
 // ControlDTCSetting requests settingType with an optional control option
 // record and validates the subfunction echo.
 func (client *Client) ControlDTCSetting(ctx context.Context, settingType DTCSettingType, optionRecord []byte) error {
-	if err := validateSubfunction(byte(settingType), "DTC setting type"); err != nil {
+	request, err := controlDTCSettingRequest(settingType, optionRecord)
+	if err != nil {
 		return err
 	}
-	request := append([]byte{byte(settingType)}, optionRecord...)
-	_, err := client.doEchoed(ctx, ServiceControlDTCSetting, request, request[:1], "DTC setting type", true)
+	_, err = client.doEchoed(ctx, ServiceControlDTCSetting, request, request[:1], "DTC setting type", true)
 	return err
 }
 
@@ -351,7 +348,7 @@ func (client *Client) TesterPresent(ctx context.Context) error {
 // SendTesterPresent sends a tester-present request with its positive response
 // suppressed, as Send.
 func (client *Client) SendTesterPresent(ctx context.Context) error {
-	return client.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
+	return sendTesterPresent(ctx, client)
 }
 
 func (client *Client) do(ctx context.Context, service ServiceID, data []byte) ([]byte, error) {
@@ -409,6 +406,16 @@ func validateSecurityLevel(level SecurityLevel) error {
 		return fmt.Errorf("%w: security level %#02x must be an odd request-seed subfunction", ErrInvalidRequest, level)
 	}
 	return nil
+}
+
+func controlDTCSettingRequest(settingType DTCSettingType, optionRecord []byte) ([]byte, error) {
+	if err := validateSubfunction(byte(settingType), "DTC setting type"); err != nil {
+		return nil, err
+	}
+	data := make([]byte, 1+len(optionRecord))
+	data[0] = byte(settingType)
+	copy(data[1:], optionRecord)
+	return data, nil
 }
 
 func communicationControlRequest(controlType CommunicationControlType, communicationType CommunicationType, nodeID *uint16) ([]byte, error) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 // RequestPGN carries the three-byte PGN being requested.
@@ -271,10 +272,7 @@ func (c *Client) run() {
 		case <-c.ctx.Done():
 			return
 		case <-c.bus.Done():
-			runErr = c.bus.Err()
-			if runErr == nil {
-				runErr = gocan.ErrBusClosed
-			}
+			runErr = transport.BusError(c.bus)
 			return
 		case r := <-c.requests:
 			request = r

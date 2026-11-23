@@ -3,7 +3,7 @@ package driverstate
 import (
 	"sync"
 
-	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 // Lifecycle coordinates a driver's receive goroutine with concurrent callers.
@@ -62,8 +62,5 @@ func (lifecycle *Lifecycle) Err() error {
 // OperationError returns the background failure, or ErrBusClosed after a
 // normal stop.
 func (lifecycle *Lifecycle) OperationError() error {
-	if err := lifecycle.Err(); err != nil {
-		return err
-	}
-	return gocan.ErrBusClosed
+	return transport.StopError(lifecycle.Err())
 }

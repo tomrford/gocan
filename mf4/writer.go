@@ -268,6 +268,23 @@ func (w *Writer) WriteFrame(event gocan.FrameEvent) error {
 	return nil
 }
 
+// controllerStateName spells state as marker comments record it. Event
+// validation admits only the defined states.
+func controllerStateName(state gocan.ControllerState) string {
+	switch state {
+	case gocan.ControllerActive:
+		return "active"
+	case gocan.ControllerWarning:
+		return "warning"
+	case gocan.ControllerPassive:
+		return "passive"
+	case gocan.ControllerBusOff:
+		return "bus_off"
+	default:
+		return state.String()
+	}
+}
+
 // WriteEvent exports a Capture observation as a file-level point marker.
 // Its name and comment identify the bus, including buses with no frames.
 // Markers may share timestamps; frame-only readers may not expose them.
@@ -281,9 +298,8 @@ func (w *Writer) WriteEvent(event gocan.Event) error {
 	var name, details string
 	switch event.Kind {
 	case gocan.EventControllerState:
-		states := [...]string{"", "active", "warning", "passive", "bus_off"}
 		name = "controller state"
-		details = fmt.Sprintf("ControllerState=%s; ErrorCountsKnown=%t", states[event.ControllerState], event.ErrorCountsKnown)
+		details = fmt.Sprintf("ControllerState=%s; ErrorCountsKnown=%t", controllerStateName(event.ControllerState), event.ErrorCountsKnown)
 		if event.ErrorCountsKnown {
 			details += fmt.Sprintf("; TXErrorCount=%d; RXErrorCount=%d", event.TXErrorCount, event.RXErrorCount)
 		}

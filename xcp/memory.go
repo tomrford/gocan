@@ -66,7 +66,7 @@ func (client *Client) read(ctx context.Context, address Address, length int, sho
 	if _, err := client.command(ctx, Request{Command: CommandSetMTA, Data: parameters}); err != nil {
 		return nil, err
 	}
-	var result []byte
+	result := make([]byte, 0, length)
 	for len(result) < length {
 		count := min(maximum, length-len(result))
 		response, err := client.command(ctx, Request{Command: CommandUpload, Data: []byte{byte(count)}})

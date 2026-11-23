@@ -122,7 +122,7 @@ func (client *Client) ReadDTCByStatusMask(ctx context.Context, mask DTCStatus) (
 // The server determines which groups it supports. Memory selection extensions
 // are outside this method's contract; callers can use Do for other forms.
 func (client *Client) ClearDiagnosticInformation(ctx context.Context, group uint32) error {
-	if group > 0xffffff {
+	if group > AllDTCs { // AllDTCs is also the largest 24-bit groupOfDTC.
 		return fmt.Errorf("%w: groupOfDTC %#x exceeds 24 bits", ErrInvalidRequest, group)
 	}
 	data, err := client.do(ctx, ServiceClearDiagnosticInformation, []byte{byte(group >> 16), byte(group >> 8), byte(group)})

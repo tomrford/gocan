@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 const receiveQueueCapacity = 1024
@@ -277,10 +278,7 @@ func (bus *Bus) operationErrorLocked() error {
 	if bus.terminal != nil {
 		return bus.terminal
 	}
-	if err := bus.Err(); err != nil {
-		return err
-	}
-	return gocan.ErrBusClosed
+	return transport.StopError(bus.Err())
 }
 
 func (network *Network) broadcast(source *Bus, received gocan.Frame) {
