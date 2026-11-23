@@ -111,15 +111,28 @@ func xmlError(err error) error {
 	}
 }
 
+// maxEmptyReads bounds consecutive reads that return neither data nor an
+// error, as bufio does.
+const maxEmptyReads = 100
+
 // recordingReader keeps the first reader failure, which the decoder may
-// report only as malformed input.
+// report only as malformed input. It fails a stalled reader itself, because a
+// charset decoder between it and the XML decoder can retry indefinitely.
 type recordingReader struct {
 	reader io.Reader
+	empty  int
 	err    error
 }
 
 func (r *recordingReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
+	if n == 0 && err == nil && len(p) > 0 {
+		if r.empty++; r.empty >= maxEmptyReads {
+			err = io.ErrNoProgress
+		}
+	} else {
+		r.empty = 0
+	}
 	if err != nil && err != io.EOF && r.err == nil {
 		r.err = err
 	}

@@ -99,6 +99,8 @@ func TestParseClassifiesFailures(t *testing.T) {
 		{"reader failure within a character", io.MultiReader(strings.NewReader("<CANDELA><ECUDOC><QUAL>\xc3"), iotest.ErrReader(failed)), failed},
 		{"reader failure with a second root", &dataErrReader{data: "<CANDELA/><CANDELA/>", err: failed}, failed},
 		{"reader without progress", stalledReader{}, io.ErrNoProgress},
+		{"reader without progress within a character", io.MultiReader(strings.NewReader("<CANDELA><QUAL>\xc3"), stalledReader{}), io.ErrNoProgress},
+		{"reader without progress behind a charset", io.MultiReader(strings.NewReader(`<?xml version="1.0" encoding="windows-1252"?><CANDELA>`), stalledReader{}), io.ErrNoProgress},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := cdd.Parse(test.name, test.reader)
