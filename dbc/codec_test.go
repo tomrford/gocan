@@ -100,18 +100,18 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	assertDecoded(t, command, frame, "SignedCounter", "SNA")
 
-	if _, err := command.Encode(Values{"Enable": true}); err == nil || !strings.Contains(err.Error(), "requires signal") {
+	if _, err := command.Encode(Values{"Enable": true}); !errors.Is(err, ErrMissingValue) {
 		t.Fatalf("incomplete Encode error = %v", err)
 	}
 	beforeInvalidPatch := frame
-	if err := command.Patch(&frame, Values{"Mode": "Unknown"}); err == nil || !strings.Contains(err.Error(), "unknown label") {
+	if err := command.Patch(&frame, Values{"Mode": "Unknown"}); !errors.Is(err, ErrInvalidValue) {
 		t.Fatalf("unknown value description error = %v", err)
 	}
-	if err := command.Patch(&frame, Values{"Temperature": 300.0}); err == nil || !strings.Contains(err.Error(), "outside") {
+	if err := command.Patch(&frame, Values{"Temperature": 300.0}); !errors.Is(err, ErrInvalidValue) {
 		t.Fatalf("out-of-range Patch error = %v", err)
 	}
 	for _, value := range []json.Number{"-1", "65536", "1.00000000000000000001", "NaN"} {
-		if err := command.Patch(&frame, Values{"BigEndian": value}); err == nil {
+		if err := command.Patch(&frame, Values{"BigEndian": value}); !errors.Is(err, ErrInvalidValue) {
 			t.Fatalf("Patch accepted invalid BigEndian number %q", value)
 		}
 	}
@@ -158,10 +158,10 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("WideData message was not resolved")
 	}
-	if _, err := wide.Encode(Values{"Payload": uint64(0)}); err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
+	if _, err := wide.Encode(Values{"Payload": uint64(0)}); !errors.Is(err, ErrUnsupportedMessage) {
 		t.Fatalf("wide signal Encode error = %v", err)
 	}
-	if payload, err := wide.EncodePayload(Values{"Payload": uint64(0)}); payload != nil || err == nil || !strings.Contains(err.Error(), "exceeds the 64-bit codec representation") {
+	if payload, err := wide.EncodePayload(Values{"Payload": uint64(0)}); payload != nil || !errors.Is(err, ErrUnsupportedMessage) {
 		t.Fatalf("wide signal EncodePayload = % x, %v", payload, err)
 	}
 }
@@ -189,40 +189,43 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	if err := multiplexed.Patch(&inactive, Values{"RootA": uint64(1)}); err != nil {
 		t.Fatalf("Patch to inactive branch: %v", err)
 	}
-	if value, err := multiplexed.Decode(inactive, "Leaf"); value != nil || !errors.Is(err, ErrInactiveSignal) || !strings.Contains(err.Error(), "Leaf") {
+	if value, err := multiplexed.Decode(inactive, "Leaf"); value != nil || !errors.Is(err, ErrInactiveSignal) {
 		t.Fatalf("inactive Decode error = %v", err)
 	}
 	for _, test := range []struct {
-		payload  []byte
-		signal   string
-		value    any
-		error    string
-		inactive bool
+		payload []byte
+		signal  string
+		value   any
+		err     error
 	}{
-		{[]byte{1}, "Leaf", nil, "Leaf", true},
-		{[]byte{1}, "ChildSelector", nil, "ChildSelector", true},
-		{inactive.Data[:multiplexed.Length], "Leaf", nil, "Leaf", true},
-		{[]byte{2, 2}, "Leaf", nil, "Leaf", true},
-		{[]byte{2, 3, 44}, "Leaf", uint64(44), "", false},
-		{nil, "Leaf", nil, "multiplexor \"RootA\" is not present", false},
-		{[]byte{2}, "Leaf", nil, "multiplexor \"ChildSelector\" is not present", false},
-		{[]byte{2, 3}, "Leaf", nil, "signal \"Leaf\" is not present", false},
-		{[]byte{2}, "ChildSelector", nil, "signal \"ChildSelector\" is not present", false},
-		{[]byte{1}, "Unknown", nil, "has no signal", false},
-		{make([]byte, 9), "Leaf", nil, "exceeds declared length", false},
+		{[]byte{1}, "Leaf", nil, ErrInactiveSignal},
+		{[]byte{1}, "ChildSelector", nil, ErrInactiveSignal},
+		{inactive.Data[:multiplexed.Length], "Leaf", nil, ErrInactiveSignal},
+		{[]byte{2, 2}, "Leaf", nil, ErrInactiveSignal},
+		{[]byte{2, 3, 44}, "Leaf", uint64(44), nil},
+		// Absent multiplexors and absent signal bits both mean the payload is
+		// too short, which is not an inactive signal.
+		{nil, "Leaf", nil, ErrFrameMismatch},
+		{[]byte{2}, "Leaf", nil, ErrFrameMismatch},
+		{[]byte{2, 3}, "Leaf", nil, ErrFrameMismatch},
+		{[]byte{2}, "ChildSelector", nil, ErrFrameMismatch},
+		{[]byte{1}, "Unknown", nil, ErrUnknownSignal},
+		{make([]byte, 9), "Leaf", nil, ErrFrameMismatch},
 	} {
 		value, err := multiplexed.DecodePayload(test.payload, test.signal)
-		if value != test.value || errors.Is(err, ErrInactiveSignal) != test.inactive ||
-			(test.error == "" && err != nil) || (test.error != "" && (err == nil || !strings.Contains(err.Error(), test.error))) {
-			t.Fatalf("DecodePayload(% x, %q) = %v, %v; want %v, %q, inactive %t", test.payload, test.signal, value, err, test.value, test.error, test.inactive)
+		if value != test.value || !errors.Is(err, test.err) || (test.err == nil && err != nil) {
+			t.Fatalf("DecodePayload(% x, %q) = %v, %v; want %v, %v", test.payload, test.signal, value, err, test.value, test.err)
+		}
+		if test.err != ErrInactiveSignal && errors.Is(err, ErrInactiveSignal) {
+			t.Fatalf("DecodePayload(% x, %q) error %v reports an inactive signal", test.payload, test.signal, err)
 		}
 	}
 	short := inactive
 	short.DLC = 1
-	if _, err := multiplexed.Decode(short, "Leaf"); err == nil || errors.Is(err, ErrInactiveSignal) || !strings.Contains(err.Error(), "payload length") {
+	if _, err := multiplexed.Decode(short, "Leaf"); !errors.Is(err, ErrFrameMismatch) || errors.Is(err, ErrInactiveSignal) {
 		t.Fatalf("short inactive frame Decode error = %v", err)
 	}
-	if err := multiplexed.Patch(&inactive, Values{"RootA": uint64(2)}); err == nil || !strings.Contains(err.Error(), "requires a value") {
+	if err := multiplexed.Patch(&inactive, Values{"RootA": uint64(2)}); !errors.Is(err, ErrMissingValue) {
 		t.Fatalf("incomplete path change error = %v", err)
 	}
 	if err := multiplexed.Patch(&inactive, Values{"Leaf": uint64(1)}); !errors.Is(err, ErrInactiveSignal) {
@@ -259,7 +262,7 @@ func TestMultiplexedPatchAndJ1939(t *testing.T) {
 	}
 	assertDecoded(t, j1939, j1939Frame, "Coolant", 70.0)
 	j1939Frame.ID = 0x0cfeef21
-	if _, err := j1939.Decode(j1939Frame, "Coolant"); err == nil {
+	if _, err := j1939.Decode(j1939Frame, "Coolant"); !errors.Is(err, ErrFrameMismatch) {
 		t.Fatal("decoded another PGN")
 	}
 }
@@ -395,20 +398,20 @@ func TestLongJ1939PayloadDecode(t *testing.T) {
 	if value, err := long.DecodePayload(payload, "HighSignal"); err != nil || value != uint64(0xfedcba9876543210) {
 		t.Fatalf("DecodePayload HighSignal = %#v, %v", value, err)
 	}
-	if _, err := long.DecodePayload(payload[:100], "HighSignal"); err == nil || !strings.Contains(err.Error(), "not present") {
+	if _, err := long.DecodePayload(payload[:100], "HighSignal"); !errors.Is(err, ErrFrameMismatch) {
 		t.Fatalf("short DecodePayload error = %v", err)
 	}
-	if _, err := long.DecodePayload(make([]byte, 1786), "DTC"); err == nil || !strings.Contains(err.Error(), "exceeds declared length") {
+	if _, err := long.DecodePayload(make([]byte, 1786), "DTC"); !errors.Is(err, ErrFrameMismatch) {
 		t.Fatalf("long DecodePayload error = %v", err)
 	}
-	if _, err := long.Encode(Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
+	if _, err := long.Encode(Values{"DTC": uint64(1)}); !errors.Is(err, ErrUnsupportedMessage) {
 		t.Fatalf("LongJ1939 Encode error = %v", err)
 	}
-	if _, err := long.Decode(gocan.Frame{}, "DTC"); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
+	if _, err := long.Decode(gocan.Frame{}, "DTC"); !errors.Is(err, ErrUnsupportedMessage) {
 		t.Fatalf("LongJ1939 Decode error = %v", err)
 	}
 	frame := gocan.Frame{}
-	if err := long.Patch(&frame, Values{"DTC": uint64(1)}); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
+	if err := long.Patch(&frame, Values{"DTC": uint64(1)}); !errors.Is(err, ErrUnsupportedMessage) {
 		t.Fatalf("LongJ1939 Patch error = %v", err)
 	}
 }
@@ -449,23 +452,21 @@ BA_ "VFrameFormat" BO_ 2566834942 3;
 		t.Fatalf("EncodePayload second branch = % x, %v; want % x", other, err, wantOther)
 	}
 	for _, test := range []struct {
-		values   Values
-		error    string
-		inactive bool
+		values Values
+		err    error
 	}{
-		{Values{"Selector": uint64(1), "Intel": uint64(1)}, "requires signal", false},
-		{Values{"Selector": uint64(2), "Tail": uint64(1), "Intel": uint64(1)}, "", true},
-		{Values{"Unknown": uint64(1)}, "has no signal", false},
-		{Values{"Selector": uint64(2), "Tail": uint64(256)}, "outside", false},
-		{Values{"Intel": uint64(1)}, "requires multiplexor", false},
+		{Values{"Selector": uint64(1), "Intel": uint64(1)}, ErrMissingValue},
+		{Values{"Selector": uint64(2), "Tail": uint64(1), "Intel": uint64(1)}, ErrInactiveSignal},
+		{Values{"Unknown": uint64(1)}, ErrUnknownSignal},
+		{Values{"Selector": uint64(2), "Tail": uint64(256)}, ErrInvalidValue},
+		{Values{"Intel": uint64(1)}, ErrMissingValue},
 	} {
 		got, err := message.EncodePayload(test.values)
-		if got != nil || err == nil || errors.Is(err, ErrInactiveSignal) != test.inactive ||
-			(test.error != "" && !strings.Contains(err.Error(), test.error)) {
-			t.Fatalf("EncodePayload(%v) = % x, %v; want nil, %q, inactive=%t", test.values, got, err, test.error, test.inactive)
+		if got != nil || !errors.Is(err, test.err) {
+			t.Fatalf("EncodePayload(%v) = % x, %v; want nil, %v", test.values, got, err, test.err)
 		}
 	}
-	if _, err := message.Encode(values); err == nil || !strings.Contains(err.Error(), "exceeds one classical CAN frame") {
+	if _, err := message.Encode(values); !errors.Is(err, ErrUnsupportedMessage) {
 		t.Fatalf("Encode transported message error = %v", err)
 	}
 }

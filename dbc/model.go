@@ -6,8 +6,8 @@ package dbc
 import (
 	"bytes"
 	"encoding/binary"
-
-	"github.com/tomrford/gocan/j1939"
+	"maps"
+	"slices"
 )
 
 // Database is one resolved DBC file.
@@ -29,7 +29,7 @@ type Database struct {
 
 	messagesByName map[string]int
 	messagesByID   map[messageID]int
-	messagesByPGN  map[j1939.PGN][]int
+	messagesByPGN  map[uint32][]int
 	source         []byte
 }
 
@@ -39,6 +39,55 @@ type Database struct {
 type messageID struct {
 	id       uint32
 	extended bool
+}
+
+// clone returns a deep copy of db's exported model. The copy shares only
+// state that is never modified after Parse: the lookups, codecs and source,
+// which keep describing db.
+func (db *Database) clone() *Database {
+	clone := *db
+	clone.Nodes = slices.Clone(db.Nodes)
+	for index := range clone.Nodes {
+		clone.Nodes[index].Attributes = maps.Clone(clone.Nodes[index].Attributes)
+	}
+	clone.Messages = slices.Clone(db.Messages)
+	for index := range clone.Messages {
+		message := &clone.Messages[index]
+		message.Transmitters = slices.Clone(message.Transmitters)
+		message.Signals = slices.Clone(message.Signals)
+		for index := range message.Signals {
+			signal := &message.Signals[index]
+			signal.Receivers = slices.Clone(signal.Receivers)
+			signal.Values = slices.Clone(signal.Values)
+			if signal.Multiplex != nil {
+				multiplex := *signal.Multiplex
+				multiplex.Ranges = slices.Clone(multiplex.Ranges)
+				signal.Multiplex = &multiplex
+			}
+			signal.Attributes = maps.Clone(signal.Attributes)
+		}
+		message.SignalGroups = slices.Clone(message.SignalGroups)
+		for index := range message.SignalGroups {
+			message.SignalGroups[index].Signals = slices.Clone(message.SignalGroups[index].Signals)
+		}
+		message.Attributes = maps.Clone(message.Attributes)
+	}
+	clone.ValueTables = slices.Clone(db.ValueTables)
+	for index := range clone.ValueTables {
+		clone.ValueTables[index].Values = slices.Clone(clone.ValueTables[index].Values)
+	}
+	clone.AttributeDefinitions = slices.Clone(db.AttributeDefinitions)
+	for index := range clone.AttributeDefinitions {
+		definition := &clone.AttributeDefinitions[index]
+		definition.Choices = slices.Clone(definition.Choices)
+		if definition.Default != nil {
+			value := *definition.Default
+			definition.Default = &value
+		}
+	}
+	clone.Attributes = maps.Clone(db.Attributes)
+	clone.Diagnostics = slices.Clone(db.Diagnostics)
+	return &clone
 }
 
 // Source returns a copy of the exact bytes read by Parse or ParseFile,

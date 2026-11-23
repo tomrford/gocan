@@ -15,33 +15,33 @@ import (
 func parseConversion(comp *element, signed bool) (*LinearConversion, error) {
 	parameters := [3]float64{0, 0, 1}
 	for index, name := range []string{"f", "o", "div"} {
-		value, present := comp.attrs[name]
+		value, present := comp.lookup(name)
 		if !present {
 			if name == "div" {
 				continue
 			}
-			return nil, fmt.Errorf("linear conversion without %s is unsupported", name)
+			return nil, unsupportedf("linear conversion without %s is unsupported", name)
 		}
 		number, err := strconv.ParseFloat(value, 64)
 		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-			return nil, fmt.Errorf("linear conversion has invalid %s %q", name, value)
+			return nil, invalidf("linear conversion has invalid %s %q", name, value)
 		}
 		parameters[index] = number
 	}
 	factor, offset, divisor := parameters[0], parameters[1], parameters[2]
 	if divisor == 0 {
-		return nil, fmt.Errorf("linear conversion has zero divisor")
+		return nil, invalidf("linear conversion has zero divisor")
 	}
 	scale := factor / divisor
 	if math.IsInf(scale, 0) || factor != 0 && scale == 0 {
-		return nil, fmt.Errorf("linear conversion scale is not representable")
+		return nil, unsupportedf("linear conversion scale is not representable")
 	}
 	conversion := &LinearConversion{Scale: scale, Offset: offset}
 	for _, bound := range []struct {
 		name        string
 		destination **uint64
 	}{{"s", &conversion.minimum}, {"e", &conversion.maximum}} {
-		if value, present := comp.attrs[bound.name]; present {
+		if value, present := comp.lookup(bound.name); present {
 			var key uint64
 			var err error
 			if signed {
@@ -52,13 +52,13 @@ func parseConversion(comp *element, signed bool) (*LinearConversion, error) {
 				key, err = strconv.ParseUint(value, 10, 64)
 			}
 			if err != nil {
-				return nil, fmt.Errorf("linear conversion has invalid raw limit %s %q", bound.name, value)
+				return nil, invalidf("linear conversion has invalid raw limit %s %q", bound.name, value)
 			}
 			*bound.destination = &key
 		}
 	}
 	if conversion.minimum != nil && conversion.maximum != nil && *conversion.minimum > *conversion.maximum {
-		return nil, fmt.Errorf("linear conversion raw limits are reversed")
+		return nil, invalidf("linear conversion raw limits are reversed")
 	}
 	return conversion, nil
 }
@@ -89,7 +89,7 @@ func validateConversionRange(field Field) error {
 	}
 	conversion := field.Conversion
 	if conversion.minimum != nil && *conversion.minimum > maximum || conversion.maximum != nil && *conversion.maximum < minimum {
-		return fmt.Errorf("linear conversion limits contain no representable raw values")
+		return invalidf("linear conversion limits contain no representable raw values")
 	}
 	return nil
 }

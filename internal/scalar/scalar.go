@@ -19,7 +19,10 @@ type Choice struct {
 // label or text the same way a plain string does, except json.Number, which
 // always denotes a number.
 func StringValue(value any) (string, bool) {
-	if _, ok := value.(json.Number); ok {
+	switch value := value.(type) {
+	case string:
+		return value, true
+	case json.Number:
 		return "", false
 	}
 	reflected := reflect.ValueOf(value)
@@ -134,21 +137,77 @@ func EncodeUnsigned(bits uint32, value uint64) (uint64, error) {
 	return value, nil
 }
 
+// DecodeSigned reads the low bits (1 through 64) of raw as a two's-complement
+// integer.
 func DecodeSigned(bits uint32, raw uint64) int64 {
-	if bits == 64 {
-		return int64(raw)
+	shift := 64 - bits
+	return int64(raw<<shift) >> shift
+}
+
+type numberKind uint8
+
+const (
+	notNumber numberKind = iota
+	signedNumber
+	unsignedNumber
+	floatNumber
+)
+
+// goNumber is a Go integer or floating-point value, widened to 64 bits.
+type goNumber struct {
+	kind     numberKind
+	signed   int64
+	unsigned uint64
+	float    float64
+}
+
+// numberOf classifies value by kind, so named numeric types convert like
+// their underlying type. Builtin types avoid reflection.
+func numberOf(value any) goNumber {
+	switch value := value.(type) {
+	case int:
+		return goNumber{kind: signedNumber, signed: int64(value)}
+	case int64:
+		return goNumber{kind: signedNumber, signed: value}
+	case int32:
+		return goNumber{kind: signedNumber, signed: int64(value)}
+	case int16:
+		return goNumber{kind: signedNumber, signed: int64(value)}
+	case int8:
+		return goNumber{kind: signedNumber, signed: int64(value)}
+	case uint:
+		return goNumber{kind: unsignedNumber, unsigned: uint64(value)}
+	case uint64:
+		return goNumber{kind: unsignedNumber, unsigned: value}
+	case uint32:
+		return goNumber{kind: unsignedNumber, unsigned: uint64(value)}
+	case uint16:
+		return goNumber{kind: unsignedNumber, unsigned: uint64(value)}
+	case uint8:
+		return goNumber{kind: unsignedNumber, unsigned: uint64(value)}
+	case float64:
+		return goNumber{kind: floatNumber, float: value}
+	case float32:
+		return goNumber{kind: floatNumber, float: float64(value)}
+	case nil, string, bool, json.Number:
+		return goNumber{}
 	}
-	mask := uint64(1)<<bits - 1
-	raw &= mask
-	if raw&(uint64(1)<<(bits-1)) != 0 {
-		raw |= ^mask
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return goNumber{kind: signedNumber, signed: reflected.Int()}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return goNumber{kind: unsignedNumber, unsigned: reflected.Uint()}
+	case reflect.Float32, reflect.Float64:
+		return goNumber{kind: floatNumber, float: reflected.Float()}
+	default:
+		return goNumber{}
 	}
-	return int64(raw)
 }
 
 func ExactSigned(value any) (int64, error) {
 	if number, ok := value.(json.Number); ok {
-		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+		if !strings.ContainsAny(string(number), ".eE") && validJSONNumber(string(number)) {
 			if integer, err := number.Int64(); err == nil {
 				return integer, nil
 			}
@@ -162,32 +221,28 @@ func ExactSigned(value any) (int64, error) {
 		}
 		return rational.Num().Int64(), nil
 	}
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return reflected.Int(), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if reflected.Uint() > math.MaxInt64 {
-			return 0, fmt.Errorf("unsigned value %d exceeds int64", reflected.Uint())
+	switch number := numberOf(value); number.kind {
+	case signedNumber:
+		return number.signed, nil
+	case unsignedNumber:
+		if number.unsigned > math.MaxInt64 {
+			return 0, fmt.Errorf("unsigned value %d exceeds int64", number.unsigned)
 		}
-		return int64(reflected.Uint()), nil
-	case reflect.Float32, reflect.Float64:
-		floating := reflected.Float()
+		return int64(number.unsigned), nil
+	case floatNumber:
+		floating := number.float
 		if math.IsNaN(floating) || math.IsInf(floating, 0) || floating != math.Trunc(floating) || floating < -math.Exp2(63) || floating >= math.Exp2(63) {
 			return 0, fmt.Errorf("value %v is not an exact int64", floating)
 		}
 		return int64(floating), nil
 	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
+		return 0, unsupportedType(value)
 	}
 }
 
 func ExactUnsigned(value any) (uint64, error) {
 	if number, ok := value.(json.Number); ok {
-		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+		if !strings.ContainsAny(string(number), ".eE") && validJSONNumber(string(number)) {
 			if integer, err := strconv.ParseUint(string(number), 10, 64); err == nil {
 				return integer, nil
 			}
@@ -201,27 +256,30 @@ func ExactUnsigned(value any) (uint64, error) {
 		}
 		return rational.Num().Uint64(), nil
 	}
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if reflected.Int() < 0 {
-			return 0, fmt.Errorf("negative value %d for unsigned encoding", reflected.Int())
+	switch number := numberOf(value); number.kind {
+	case signedNumber:
+		if number.signed < 0 {
+			return 0, fmt.Errorf("negative value %d for unsigned encoding", number.signed)
 		}
-		return uint64(reflected.Int()), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return reflected.Uint(), nil
-	case reflect.Float32, reflect.Float64:
-		floating := reflected.Float()
+		return uint64(number.signed), nil
+	case unsignedNumber:
+		return number.unsigned, nil
+	case floatNumber:
+		floating := number.float
 		if math.IsNaN(floating) || math.IsInf(floating, 0) || floating != math.Trunc(floating) || floating < 0 || floating >= math.Exp2(64) {
 			return 0, fmt.Errorf("value %v is not an exact uint64", floating)
 		}
 		return uint64(floating), nil
 	default:
-		return 0, fmt.Errorf("value has unsupported type %T", value)
+		return 0, unsupportedType(value)
 	}
+}
+
+func unsupportedType(value any) error {
+	if value == nil {
+		return fmt.Errorf("value is nil")
+	}
+	return fmt.Errorf("value has unsupported type %T", value)
 }
 
 // NumericFloat rounds a Go numeric value or json.Number directly to bits
@@ -229,32 +287,31 @@ func ExactUnsigned(value any) (uint64, error) {
 // JSON numbers may underflow to zero but must not overflow.
 func NumericFloat(value any, bits int) (float64, error) {
 	if number, ok := value.(json.Number); ok {
-		if !json.Valid([]byte(number)) {
+		if !validJSONNumber(string(number)) {
 			return 0, fmt.Errorf("invalid JSON number %q", number)
 		}
 		return strconv.ParseFloat(string(number), bits)
 	}
-	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() {
-		return 0, fmt.Errorf("value is nil")
-	}
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+	switch number := numberOf(value); number.kind {
+	case signedNumber:
 		if bits == 32 {
-			return float64(float32(reflected.Int())), nil
+			return float64(float32(number.signed)), nil
 		}
-		return float64(reflected.Int()), nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(number.signed), nil
+	case unsignedNumber:
 		if bits == 32 {
-			return float64(float32(reflected.Uint())), nil
+			return float64(float32(number.unsigned)), nil
 		}
-		return float64(reflected.Uint()), nil
-	case reflect.Float32, reflect.Float64:
+		return float64(number.unsigned), nil
+	case floatNumber:
 		if bits == 32 {
-			return float64(float32(reflected.Float())), nil
+			return float64(float32(number.float)), nil
 		}
-		return reflected.Float(), nil
+		return number.float, nil
 	default:
+		if value == nil {
+			return 0, fmt.Errorf("value is nil")
+		}
 		return 0, fmt.Errorf("value has type %T, want a number", value)
 	}
 }
@@ -264,17 +321,16 @@ func NumericFloat(value any, bits int) (float64, error) {
 // offset or scale is applied can change the raw integer. JSON numbers and
 // floating-point inputs retain their normal float64 rounding behaviour.
 func LinearFloat(value any) (float64, error) {
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		integer := reflected.Int()
+	switch number := numberOf(value); number.kind {
+	case signedNumber:
+		integer := number.signed
 		floating := float64(integer)
 		if floating >= math.Exp2(63) || int64(floating) != integer {
 			return 0, fmt.Errorf("integer value %d cannot be represented exactly as float64", integer)
 		}
 		return floating, nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		integer := reflected.Uint()
+	case unsignedNumber:
+		integer := number.unsigned
 		floating := float64(integer)
 		if floating >= math.Exp2(64) || uint64(floating) != integer {
 			return 0, fmt.Errorf("integer value %d cannot be represented exactly as float64", integer)
@@ -284,6 +340,49 @@ func LinearFloat(value any) (float64, error) {
 		return NumericFloat(value, 64)
 	}
 }
+
+// validJSONNumber reports whether s is exactly one JSON number. Unlike
+// json.Valid it needs no []byte and rejects surrounding whitespace and other
+// JSON values, which strconv would reject later anyway.
+func validJSONNumber(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	switch {
+	case s == "":
+		return false
+	case s[0] == '0':
+		s = s[1:]
+	case '1' <= s[0] && s[0] <= '9':
+		s = skipDigits(s[1:])
+	default:
+		return false
+	}
+	if s != "" && s[0] == '.' {
+		if len(s) < 2 || !isDigit(s[1]) {
+			return false
+		}
+		s = skipDigits(s[2:])
+	}
+	if s != "" && (s[0] == 'e' || s[0] == 'E') {
+		s = s[1:]
+		if s != "" && (s[0] == '+' || s[0] == '-') {
+			s = s[1:]
+		}
+		if s == "" || !isDigit(s[0]) {
+			return false
+		}
+		s = skipDigits(s[1:])
+	}
+	return s == ""
+}
+
+func skipDigits(s string) string {
+	for s != "" && isDigit(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
+
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
 // jsonRational is the fallback for exact integer conversion. A float magnitude
 // check rejects huge exponents before Rat.SetString can expand them. Rounded

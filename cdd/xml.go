@@ -2,7 +2,6 @@ package cdd
 
 import (
 	"encoding/xml"
-	"fmt"
 	"io"
 	"strings"
 
@@ -11,7 +10,7 @@ import (
 
 type element struct {
 	name     string
-	attrs    map[string]string
+	attrs    []xml.Attr
 	children []*element
 	text     strings.Builder
 	inText   bool
@@ -19,6 +18,9 @@ type element struct {
 
 func decodeXML(name string, r io.Reader) (*element, error) {
 	decoder := xml.NewDecoder(r)
+	// encoding/xml reports charset failures as plain text, so the
+	// unsupported encoding is kept to classify the decode error.
+	var charsetErr error
 	decoder.CharsetReader = func(label string, input io.Reader) (io.Reader, error) {
 		switch strings.ToLower(strings.TrimSpace(label)) {
 		case "iso-8859-1", "iso8859-1", "latin1":
@@ -26,7 +28,8 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		case "windows-1252", "cp1252":
 			return charmap.Windows1252.NewDecoder().Reader(input), nil
 		default:
-			return nil, fmt.Errorf("unsupported XML encoding %q", label)
+			charsetErr = unsupportedf("unsupported XML encoding %q", label)
+			return nil, charsetErr
 		}
 	}
 
@@ -37,19 +40,21 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		if err == io.EOF {
 			break
 		}
+		if charsetErr != nil {
+			return nil, sourceError(name, charsetErr)
+		}
 		if err != nil {
-			return nil, sourceError(name, "decode XML: %w", err)
+			return nil, sourceError(name, invalidf("decode XML: %w", err))
 		}
 		switch token := token.(type) {
 		case xml.StartElement:
-			node := &element{name: token.Name.Local, attrs: make(map[string]string, len(token.Attr))}
+			// The decoder allocates a fresh attribute slice for every start
+			// element, so the element can keep it.
+			node := &element{name: token.Name.Local, attrs: token.Attr}
 			node.inText = node.name == "TUV" || len(stack) > 0 && stack[len(stack)-1].inText
-			for _, attr := range token.Attr {
-				node.attrs[attr.Name.Local] = attr.Value
-			}
 			if len(stack) == 0 {
 				if root != nil {
-					return nil, sourceError(name, "XML contains more than one root element")
+					return nil, sourceError(name, invalidf("XML contains more than one root element"))
 				}
 				root = node
 			} else {
@@ -77,16 +82,28 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		}
 	}
 	if root == nil {
-		return nil, sourceError(name, "XML contains no root element")
+		return nil, sourceError(name, invalidf("XML contains no root element"))
 	}
 	return root, nil
 }
 
 func (node *element) attr(name string) string {
+	value, _ := node.lookup(name)
+	return value
+}
+
+// lookup returns the attribute with local name. Namespaces are ignored, and the
+// last attribute wins when several share a local name.
+func (node *element) lookup(name string) (string, bool) {
 	if node == nil {
-		return ""
+		return "", false
 	}
-	return node.attrs[name]
+	for index := len(node.attrs) - 1; index >= 0; index-- {
+		if node.attrs[index].Name.Local == name {
+			return node.attrs[index].Value, true
+		}
+	}
+	return "", false
 }
 
 func (node *element) child(name string) *element {

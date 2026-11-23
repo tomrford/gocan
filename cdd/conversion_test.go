@@ -2,10 +2,10 @@ package cdd_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/tomrford/gocan/cdd"
@@ -64,26 +64,29 @@ func TestLINCOMPReferenceValues(t *testing.T) {
 }
 
 func TestLINCOMPRejectsUnsupportedDefinitions(t *testing.T) {
-	for _, test := range []struct{ comp, error string }{
-		{`f="1" o="0" div=""`, "invalid div"},
-		{`f="1" o="0" div="bad"`, "invalid div"},
-		{`f="1" o="0" div="0"`, "zero divisor"},
-		{`f="1" o="0" div="-0"`, "zero divisor"},
-		{`f="1" o="0" div="NaN"`, "invalid div"},
-		{`f="1" o="0" div="Inf"`, "invalid div"},
-		{`f="1" o="0" div="-Inf"`, "invalid div"},
-		{`f="1" o="0" div="1e999"`, "invalid div"},
-		{`f="1e308" o="0" div="1e-308"`, "not representable"},
-		{`f="1e-308" o="0" div="1e308"`, "not representable"},
-		{`o="0"`, "without f is unsupported"},
-		{`f="1"`, "without o is unsupported"},
-		{`f="NaN" o="0"`, "invalid f"},
-		{`f="1" o="Inf"`, "invalid o"},
-		{`f="0" o="7"`, "explicit inverse value is unsupported"},
-		{`f="1" o="0" s="5" e="4"`, "limits are reversed"},
-		{`f="1" o="0" s="bad"`, "invalid raw limit"},
-		{`f="1" o="0" s="32768"`, "no representable raw values"},
-		{`f="1" o="0" e="-32769"`, "no representable raw values"},
+	for _, test := range []struct {
+		comp string
+		want error
+	}{
+		{`f="1" o="0" div=""`, cdd.ErrInvalid},
+		{`f="1" o="0" div="bad"`, cdd.ErrInvalid},
+		{`f="1" o="0" div="0"`, cdd.ErrInvalid},
+		{`f="1" o="0" div="-0"`, cdd.ErrInvalid},
+		{`f="1" o="0" div="NaN"`, cdd.ErrInvalid},
+		{`f="1" o="0" div="Inf"`, cdd.ErrInvalid},
+		{`f="1" o="0" div="-Inf"`, cdd.ErrInvalid},
+		{`f="1" o="0" div="1e999"`, cdd.ErrInvalid},
+		{`f="1e308" o="0" div="1e-308"`, cdd.ErrUnsupported},
+		{`f="1e-308" o="0" div="1e308"`, cdd.ErrUnsupported},
+		{`o="0"`, cdd.ErrUnsupported},
+		{`f="1"`, cdd.ErrUnsupported},
+		{`f="NaN" o="0"`, cdd.ErrInvalid},
+		{`f="1" o="Inf"`, cdd.ErrInvalid},
+		{`f="0" o="7"`, cdd.ErrUnsupported},
+		{`f="1" o="0" s="5" e="4"`, cdd.ErrInvalid},
+		{`f="1" o="0" s="bad"`, cdd.ErrInvalid},
+		{`f="1" o="0" s="32768"`, cdd.ErrInvalid},
+		{`f="1" o="0" e="-32769"`, cdd.ErrInvalid},
 	} {
 		t.Run(test.comp, func(t *testing.T) {
 			message := testCodecMessage(t, fmt.Sprintf(`<LINCOMP id="value"><CVALUETYPE bl="16" bo="21" enc="sgn"/><COMP %s/></LINCOMP>`, test.comp), `<DATAOBJ dtref="value"><QUAL>Value</QUAL></DATAOBJ>`, "")
@@ -91,9 +94,7 @@ func TestLINCOMPRejectsUnsupportedDefinitions(t *testing.T) {
 			if err == nil && message.Record != nil {
 				err = message.Record.CodecError()
 			}
-			if err == nil || !strings.Contains(err.Error(), test.error) {
-				t.Fatalf("error = %v, want %q", err, test.error)
-			}
+			assertDefinitionError(t, err, test.want)
 		})
 	}
 }
@@ -132,6 +133,19 @@ func TestLINCOMPRawLimitsAndRepresentability(t *testing.T) {
 		if _, err := record.Encode(cdd.Values{"Value": physical}); err == nil {
 			t.Fatalf("accepted imprecise physical integer %T(%v)", physical, physical)
 		}
+	}
+}
+
+// assertDefinitionError requires err to be classified as want and not also as
+// the other definition error kind.
+func assertDefinitionError(t *testing.T, err, want error) {
+	t.Helper()
+	other := cdd.ErrUnsupported
+	if want == cdd.ErrUnsupported {
+		other = cdd.ErrInvalid
+	}
+	if !errors.Is(err, want) || errors.Is(err, other) {
+		t.Fatalf("error = %v, want %v only", err, want)
 	}
 }
 

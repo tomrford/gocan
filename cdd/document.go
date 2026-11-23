@@ -7,6 +7,20 @@ import (
 	"os"
 )
 
+// Definition errors returned by Parse, and those recorded in the Err fields and
+// Record.CodecError of resolved catalog objects, match ErrInvalid or
+// ErrUnsupported with errors.Is. An Err that joins several problems may match
+// both. Selection, encode and decode errors match neither.
+var (
+	// ErrInvalid means the document is malformed or inconsistent: unparseable
+	// XML or values, unresolved or ambiguous references, or layouts whose
+	// parts do not fit together.
+	ErrInvalid = errors.New("cdd: invalid document")
+	// ErrUnsupported means the document uses a construct or layout that this
+	// package does not implement, although CANdela may permit it.
+	ErrUnsupported = errors.New("cdd: unsupported construct")
+)
+
 // Document is a decoded CDD document. Parse reads XML and indexes references
 // once; Select resolves an ECU/variant without re-reading the XML. Treat a
 // Document and all returned catalog objects as read-only.
@@ -57,11 +71,11 @@ func Parse(name string, r io.Reader) (*Document, error) {
 		return nil, err
 	}
 	if root.name != "CANDELA" {
-		return nil, sourceError(name, "root element is %s, want CANDELA", root.name)
+		return nil, sourceError(name, invalidf("root element is %s, want CANDELA", root.name))
 	}
 	ecuDoc := root.child("ECUDOC")
 	if ecuDoc == nil {
-		return nil, sourceError(name, "ECUDOC is missing")
+		return nil, sourceError(name, invalidf("ECUDOC is missing"))
 	}
 	document := &Document{
 		Metadata: metadata(ecuDoc), Version: root.attr("dtdvers"),
@@ -98,12 +112,12 @@ func (document *Document) Select(selection Selection) (*Database, error) {
 	}
 	ecuIndex, err := selectIndex("ECU", selection.ECU, len(document.ecus))
 	if err != nil {
-		return nil, sourceError(document.resolver.name, "%v", err)
+		return nil, sourceError(document.resolver.name, err)
 	}
 	variants := document.ecus[ecuIndex].childrenNamed("VAR")
 	variantIndex, err := selectIndex("variant", selection.Variant, len(variants))
 	if err != nil {
-		return nil, sourceError(document.resolver.name, "ECU %d: %v", ecuIndex+1, err)
+		return nil, sourceError(document.resolver.name, fmt.Errorf("ECU %d: %w", ecuIndex+1, err))
 	}
 	resolver := *document.resolver
 	return resolver.resolve(document.ecus[ecuIndex], variants[variantIndex], Selection{ECU: ecuIndex + 1, Variant: variantIndex + 1}), nil

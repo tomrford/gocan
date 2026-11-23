@@ -24,12 +24,12 @@ func (resolver *resolver) resolveRecord(name string, instance, classTemplate *el
 			continue
 		}
 		if selected != nil {
-			return nil, sourceError(resolver.name, "multiple component containers for data proxy %q", dataProxy.attr("id"))
+			return nil, sourceError(resolver.name, invalidf("multiple component containers for data proxy %q", dataProxy.attr("id")))
 		}
 		selected = container
 	}
 	if selected == nil {
-		return nil, sourceError(resolver.name, "instance has no component container for data proxy %q", dataProxy.attr("id"))
+		return nil, sourceError(resolver.name, invalidf("instance has no component container for data proxy %q", dataProxy.attr("id")))
 	}
 	fields, bitLength, maxBitLength, err := resolver.resolveFields(selected)
 	if err != nil {
@@ -59,14 +59,14 @@ func (resolver *resolver) dataProxy(classTemplate *element, componentID string) 
 				continue
 			}
 			if matched != nil {
-				return nil, sourceError(resolver.name, "DCLTMPL %q has more than one data proxy", classTemplate.attr("id"))
+				return nil, sourceError(resolver.name, invalidf("DCLTMPL %q has more than one data proxy", classTemplate.attr("id")))
 			}
 			matched = proxy
 			break
 		}
 	}
 	if matched == nil {
-		return nil, sourceError(resolver.name, "DCLTMPL %q has no data proxy", classTemplate.attr("id"))
+		return nil, sourceError(resolver.name, invalidf("DCLTMPL %q has no data proxy", classTemplate.attr("id")))
 	}
 	return matched, nil
 }
@@ -83,7 +83,7 @@ func (resolver *resolver) resolveFields(container *element) ([]Field, uint32, ui
 		maximum += uint64(last.MaxBitSize()) - uint64(last.BitSize())
 	}
 	if maximum > math.MaxUint32 {
-		return nil, 0, 0, sourceError(resolver.name, "data record exceeds the supported bit length")
+		return nil, 0, 0, sourceError(resolver.name, unsupportedf("data record exceeds the supported bit length"))
 	}
 	return fields, uint32(offset), uint32(maximum), nil
 }
@@ -96,14 +96,14 @@ func (resolver *resolver) appendFields(
 	depth int,
 ) error {
 	if depth > maxRecordNesting {
-		return sourceError(resolver.name, "data record exceeds the supported nesting depth of %d", maxRecordNesting)
+		return sourceError(resolver.name, unsupportedf("data record exceeds the supported nesting depth of %d", maxRecordNesting))
 	}
 	for _, item := range record.children {
 		if length := len(*fields); length > 0 && (*fields)[length-1].Variable != nil {
 			switch item.name {
 			case "NAME", "QUAL", "DESC":
 			default:
-				return sourceError(resolver.name, "variable-length field %q is followed by %s", (*fields)[length-1].Name, item.name)
+				return sourceError(resolver.name, unsupportedf("variable-length field %q is followed by %s", (*fields)[length-1].Name, item.name))
 			}
 		}
 		switch item.name {
@@ -118,10 +118,10 @@ func (resolver *resolver) appendFields(
 		case "GAPDATAOBJ":
 			gap, err := strconv.ParseUint(item.attr("bl"), 10, 32)
 			if err != nil {
-				return sourceError(resolver.name, "GAPDATAOBJ has invalid bit length %q", item.attr("bl"))
+				return sourceError(resolver.name, invalidf("GAPDATAOBJ has invalid bit length %q", item.attr("bl")))
 			}
 			if gap%8 != 0 || *offset%8 != 0 {
-				return sourceError(resolver.name, "top-level GAPDATAOBJ is not byte-aligned")
+				return sourceError(resolver.name, unsupportedf("top-level GAPDATAOBJ is not byte-aligned"))
 			}
 			*offset += gap
 		case "STRUCT":
@@ -132,14 +132,14 @@ func (resolver *resolver) appendFields(
 			reference := item.attr("didRef")
 			shared := resolver.byID[reference]
 			if shared == nil || shared.name != "DID" {
-				return sourceError(resolver.name, "DIDDATAREF %q does not resolve", reference)
+				return sourceError(resolver.name, invalidf("DIDDATAREF %q does not resolve", reference))
 			}
 			if _, active := activeReferences[reference]; active {
-				return sourceError(resolver.name, "DIDDATAREF %q forms a reference cycle", reference)
+				return sourceError(resolver.name, invalidf("DIDDATAREF %q forms a reference cycle", reference))
 			}
 			structure := shared.child("STRUCTURE")
 			if structure == nil {
-				return sourceError(resolver.name, "shared DID %q has no STRUCTURE", reference)
+				return sourceError(resolver.name, invalidf("shared DID %q has no STRUCTURE", reference))
 			}
 			start := len(*fields)
 			activeReferences[reference] = struct{}{}
@@ -151,10 +151,10 @@ func (resolver *resolver) appendFields(
 			prependGroup((*fields)[start:], metadata(shared))
 			prependGroup((*fields)[start:], metadata(item))
 		default:
-			return sourceError(resolver.name, "data record contains unsupported %s", item.name)
+			return sourceError(resolver.name, unsupportedf("data record contains unsupported %s", item.name))
 		}
 		if *offset > math.MaxUint32 {
-			return sourceError(resolver.name, "data record exceeds the supported bit length")
+			return sourceError(resolver.name, unsupportedf("data record exceeds the supported bit length"))
 		}
 	}
 	return nil
@@ -163,7 +163,7 @@ func (resolver *resolver) appendFields(
 func (resolver *resolver) resolveField(data *element, offset uint32) (Field, error) {
 	name := data.childText("QUAL")
 	if name == "" {
-		return Field{}, sourceError(resolver.name, "DATAOBJ has no QUAL")
+		return Field{}, sourceError(resolver.name, invalidf("DATAOBJ has no QUAL"))
 	}
 	return resolver.resolveFieldDatatype(data, name, offset)
 }
@@ -171,25 +171,25 @@ func (resolver *resolver) resolveField(data *element, offset uint32) (Field, err
 func (resolver *resolver) resolveFieldDatatype(data *element, name string, offset uint32) (Field, error) {
 	datatype := resolver.datatypes[data.attr("dtref")]
 	if datatype == nil {
-		return Field{}, sourceError(resolver.name, "field %q references unknown datatype %q", name, data.attr("dtref"))
+		return Field{}, sourceError(resolver.name, invalidf("field %q references unknown datatype %q", name, data.attr("dtref")))
 	}
 	if len(datatype.childrenNamed("CVALUETYPE")) > 1 || len(datatype.childrenNamed("COMP")) > 1 {
-		return Field{}, sourceError(resolver.name, "field %q has ambiguous coded type or conversion declarations", name)
+		return Field{}, sourceError(resolver.name, invalidf("field %q has ambiguous coded type or conversion declarations", name))
 	}
 	coded := datatype.child("CVALUETYPE")
 	if coded == nil {
-		return Field{}, sourceError(resolver.name, "datatype for field %q has no CVALUETYPE", name)
+		return Field{}, sourceError(resolver.name, invalidf("datatype for field %q has no CVALUETYPE", name))
 	}
 	bitLength64, err := strconv.ParseUint(coded.attr("bl"), 10, 32)
 	if err != nil || bitLength64 == 0 {
-		return Field{}, sourceError(resolver.name, "field %q has invalid bit length %q", name, coded.attr("bl"))
+		return Field{}, sourceError(resolver.name, invalidf("field %q has invalid bit length %q", name, coded.attr("bl")))
 	}
 	bitLength := uint32(bitLength64)
 	encoding := Encoding(coded.attr("enc"))
 	switch encoding {
 	case EncodingUnsigned, EncodingSigned, EncodingBCD, EncodingFloat, EncodingDouble, EncodingASCII, EncodingUTF:
 	default:
-		return Field{}, sourceError(resolver.name, "field %q uses unsupported encoding %q", name, encoding)
+		return Field{}, sourceError(resolver.name, unsupportedf("field %q uses unsupported encoding %q", name, encoding))
 	}
 
 	// A field quantity repeats the coded element: fixed-size text, serial
@@ -203,18 +203,18 @@ func (resolver *resolver) resolveFieldDatatype(data *element, name string, offse
 		maximum, maxErr := strconv.ParseUint(coded.attr("maxsz"), 10, 32)
 		switch {
 		case minErr != nil || maxErr != nil || minimum > maximum:
-			return Field{}, sourceError(resolver.name, "field %q has invalid size bounds %q to %q", name, coded.attr("minsz"), coded.attr("maxsz"))
+			return Field{}, sourceError(resolver.name, invalidf("field %q has invalid size bounds %q to %q", name, coded.attr("minsz"), coded.attr("maxsz")))
 		case maximum == 0:
-			return Field{}, sourceError(resolver.name, "field %q is empty", name)
+			return Field{}, sourceError(resolver.name, invalidf("field %q is empty", name))
 		case maximum > uint64(math.MaxUint32)/uint64(bitLength):
-			return Field{}, sourceError(resolver.name, "field %q bit length overflows", name)
+			return Field{}, sourceError(resolver.name, unsupportedf("field %q bit length overflows", name))
 		}
 		count = uint32(minimum)
 		if minimum != maximum {
 			extent = &Extent{MinCount: uint32(minimum), MaxCount: uint32(maximum)}
 		}
 	} else if quantity := coded.attr("qty"); quantity != "" && quantity != "atom" {
-		return Field{}, sourceError(resolver.name, "field %q uses unsupported quantity %q", name, quantity)
+		return Field{}, sourceError(resolver.name, unsupportedf("field %q uses unsupported quantity %q", name, quantity))
 	}
 
 	var byteOrder binary.ByteOrder
@@ -224,7 +224,7 @@ func (resolver *resolver) resolveFieldDatatype(data *element, name string, offse
 	case "12":
 		byteOrder = binary.LittleEndian
 	default:
-		return Field{}, sourceError(resolver.name, "field %q uses unknown byte order %q", name, coded.attr("bo"))
+		return Field{}, sourceError(resolver.name, invalidf("field %q uses unknown byte order %q", name, coded.attr("bo")))
 	}
 
 	field := Field{
@@ -244,16 +244,16 @@ func (resolver *resolver) resolveFieldDatatype(data *element, name string, offse
 	if comp := datatype.child("COMP"); comp != nil {
 		field.Conversion, err = parseConversion(comp, encoding == EncodingSigned)
 		if err != nil {
-			return Field{}, sourceError(resolver.name, "field %q: %v", name, err)
+			return Field{}, sourceError(resolver.name, fmt.Errorf("field %q: %w", name, err))
 		}
 	} else if datatype.name == "LINCOMP" {
-		return Field{}, sourceError(resolver.name, "field %q: LINCOMP has no COMP", name)
+		return Field{}, sourceError(resolver.name, invalidf("field %q: LINCOMP has no COMP", name))
 	}
 	for _, textMap := range datatype.childrenNamed("TEXTMAP") {
 		first, firstErr := parseBound(textMap.attr("s"))
 		last, lastErr := parseBound(textMap.attr("e"))
 		if firstErr != nil || lastErr != nil {
-			return Field{}, sourceError(resolver.name, "field %q has an invalid choice range %q to %q", name, textMap.attr("s"), textMap.attr("e"))
+			return Field{}, sourceError(resolver.name, invalidf("field %q has an invalid choice range %q to %q", name, textMap.attr("s"), textMap.attr("e")))
 		}
 		// Text maps also label whole bands, such as reserved or unused ranges.
 		// A band is presentation rather than a distinct value, and dropping it
@@ -263,7 +263,7 @@ func (resolver *resolver) resolveFieldDatatype(data *element, name string, offse
 		}
 		label := textMap.child("TEXT").childText("TUV")
 		if label == "" {
-			return Field{}, sourceError(resolver.name, "field %q contains a choice with no label", name)
+			return Field{}, sourceError(resolver.name, invalidf("field %q contains a choice with no label", name))
 		}
 		field.Choices = append(field.Choices, Choice{Value: first, Label: label})
 	}
@@ -277,11 +277,29 @@ func parseBound(value string) (int64, error) {
 	return strconv.ParseInt(value, 10, 64)
 }
 
-func sourceError(source, format string, args ...any) error {
+func sourceError(source string, err error) error {
 	if source == "" {
 		source = "input"
 	}
-	return fmt.Errorf("cdd: %s: %w", source, fmt.Errorf(format, args...))
+	return fmt.Errorf("cdd: %s: %w", source, err)
+}
+
+// definitionError classifies a definition problem as ErrInvalid or
+// ErrUnsupported without adding the sentinel's text to its message.
+type definitionError struct {
+	kind error
+	err  error
+}
+
+func (err *definitionError) Error() string   { return err.err.Error() }
+func (err *definitionError) Unwrap() []error { return []error{err.kind, err.err} }
+
+func invalidf(format string, args ...any) error {
+	return &definitionError{kind: ErrInvalid, err: fmt.Errorf(format, args...)}
+}
+
+func unsupportedf(format string, args ...any) error {
+	return &definitionError{kind: ErrUnsupported, err: fmt.Errorf(format, args...)}
 }
 
 func prependGroup(fields []Field, group Metadata) {

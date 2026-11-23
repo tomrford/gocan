@@ -2,6 +2,7 @@ package dbc_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -145,24 +146,33 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	}
 	assertDevice(t, fromFile, 0xA)
 
+	var parseError *dbc.Error
 	for name, test := range map[string]struct {
 		edit func(*dbc.Database)
-		want string
+		// keyword is the record Parse rejects; otherwise Write rejects the
+		// edited model as unrepresentable.
+		keyword string
 	}{
-		"colliding identifiers":      {func(db *dbc.Database) { db.Messages[1].ID = db.Messages[0].ID }, "duplicate message ID"},
-		"identifier beyond 29 bits":  {func(db *dbc.Database) { db.Messages[0].ID |= 0xF << 28 }, "29-bit"},
-		"extended identifier bit 31": {func(db *dbc.Database) { db.Messages[0].ID |= 1 << 31 }, "29-bit"},
+		"colliding identifiers":      {func(db *dbc.Database) { db.Messages[1].ID = db.Messages[0].ID }, "BO_"},
+		"identifier beyond 29 bits":  {func(db *dbc.Database) { db.Messages[0].ID |= 0xF << 28 }, ""},
+		"extended identifier bit 31": {func(db *dbc.Database) { db.Messages[0].ID |= 1 << 31 }, ""},
 		"standard identifier bit 31": {func(db *dbc.Database) {
 			db.Messages[0].Extended = false
 			db.Messages[0].ID = 0x80000001
-		}, "11-bit"},
-		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, `"DEV 0 STAT"`},
-		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, `C:\\logs\\`},
-		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, "unsupported byte order"},
+		}, ""},
+		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, ""},
+		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, ""},
+		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := base.Edit("invalid.dbc", test.edit); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Edit() error = %v, want it to mention %s", err, test.want)
+			edited, err := base.Edit("invalid.dbc", test.edit)
+			switch {
+			case edited != nil:
+				t.Fatalf("Edit() = %v, want an error", edited)
+			case test.keyword == "" && !errors.Is(err, dbc.ErrUnrepresentable):
+				t.Fatalf("Edit() error = %v, want %v", err, dbc.ErrUnrepresentable)
+			case test.keyword != "" && (!errors.As(err, &parseError) || parseError.Keyword != test.keyword):
+				t.Fatalf("Edit() error = %v, want a %s parse error", err, test.keyword)
 			}
 		})
 	}
