@@ -137,7 +137,8 @@ func TestExchangeRoundTrip(t *testing.T) {
 				}
 				var lastConsecutive gocan.Frame
 				flowControls := 0
-				for _, event := range capture.Series(gocan.FrameKey{Bus: tester.ID(), ID: test.transmitID, Direction: gocan.DirectionTransmit, Extended: test.flags.Has(gocan.FrameExtended)}) {
+				series, _, _ := capture.Series(gocan.FrameKey{Bus: tester.ID(), ID: test.transmitID, Direction: gocan.DirectionTransmit, Extended: test.flags.Has(gocan.FrameExtended)}, gocan.Range{})
+				for event := range series {
 					frame := event.Frame
 					switch frame.Data[0] >> 4 {
 					case 2:

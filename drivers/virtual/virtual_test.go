@@ -3,6 +3,7 @@ package virtual
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -65,11 +66,12 @@ func TestNetworkCapturesAcceptedTransmissionAndReception(t *testing.T) {
 		t.Fatalf("RX timestamp %s precedes TX timestamp %s", received.Timestamp, transmitted.Timestamp)
 	}
 
-	if series := capture.Series(gocan.FrameKey{
+	seq, _, _ := capture.Series(gocan.FrameKey{
 		Bus:       source.ID(),
 		ID:        frame.ID,
 		Direction: gocan.DirectionTransmit,
-	}); len(series) != 1 {
+	}, gocan.Range{})
+	if series := slices.Collect(seq); len(series) != 1 {
 		t.Fatalf("source series has %d events, want TX only", len(series))
 	}
 }
@@ -117,11 +119,12 @@ func TestTerminalFailureRejectsLaterSend(t *testing.T) {
 		if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
 			t.Fatalf("Err after terminal failure = %v, want ErrReceiveOverrun", bus.Err())
 		}
-		if got := capture.Series(gocan.FrameKey{
+		seq, _, _ := capture.Series(gocan.FrameKey{
 			Bus:       bus.ID(),
 			ID:        frame.ID,
 			Direction: gocan.DirectionTransmit,
-		}); len(got) != 0 {
+		}, gocan.Range{})
+		if got := slices.Collect(seq); len(got) != 0 {
 			t.Fatalf("captured %d transmissions after terminal failure, want none", len(got))
 		}
 	})

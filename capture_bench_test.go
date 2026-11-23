@@ -78,17 +78,19 @@ func BenchmarkAppendUnderLoad(b *testing.B) {
 	go func() {
 		defer func() { consumers <- struct{}{} }()
 		var cursor Cursor
-		var err error
 		for ctx.Err() == nil {
-			_, cursor, err = capture.SeriesSince(FrameKey{Bus: 1, ID: 0x100, Direction: DirectionReceive}, cursor)
+			seq, next, err := capture.Series(FrameKey{Bus: 1, ID: 0x100, Direction: DirectionReceive}, Since(cursor))
 			if errors.Is(err, ErrCursorOutOfRange) {
 				cursor = Cursor{}
 				continue
 			}
 			if err != nil {
-				b.Errorf("SeriesSince: %v", err)
+				b.Errorf("Series: %v", err)
 				return
 			}
+			for range seq {
+			}
+			cursor = next
 		}
 	}()
 	go func() {
@@ -189,9 +191,16 @@ func BenchmarkSeriesBetween(b *testing.B) {
 	b.Run("sparse", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			frames, err := capture.SeriesBetween(key, Cursor{}, end)
-			if err != nil || len(frames) != 5 {
-				b.Fatalf("SeriesBetween = (%d, %v)", len(frames), err)
+			seq, _, err := capture.Series(key, Between(Cursor{}, end))
+			if err != nil {
+				b.Fatalf("Series: %v", err)
+			}
+			count := 0
+			for range seq {
+				count++
+			}
+			if count != 5 {
+				b.Fatalf("Series = %d frames, want 5", count)
 			}
 		}
 	})
@@ -212,9 +221,33 @@ func BenchmarkSeriesBetween(b *testing.B) {
 	b.Run("narrowHistorical", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			frames, err := dense.SeriesBetween(denseKey, narrowStart, narrowEnd)
-			if err != nil || len(frames) != 1 {
-				b.Fatalf("SeriesBetween narrow = (%d, %v)", len(frames), err)
+			seq, _, err := dense.Series(denseKey, Between(narrowStart, narrowEnd))
+			if err != nil {
+				b.Fatalf("Series narrow: %v", err)
+			}
+			count := 0
+			for range seq {
+				count++
+			}
+			if count != 1 {
+				b.Fatalf("Series narrow = %d frames, want 1", count)
+			}
+		}
+	})
+	b.Run("denseEarlyBreak", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			seq, _, err := dense.Series(denseKey, Range{})
+			if err != nil {
+				b.Fatalf("Series dense: %v", err)
+			}
+			count := 0
+			for range seq {
+				count++
+				break
+			}
+			if count != 1 {
+				b.Fatalf("Series dense early break = %d frames, want 1", count)
 			}
 		}
 	})

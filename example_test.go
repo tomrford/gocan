@@ -48,3 +48,55 @@ func Example() {
 	// Output:
 	// 01020304
 }
+
+func ExampleCapture_Frames() {
+	capture := gocan.NewCapture()
+	at := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	for i, id := range []uint32{0x100, 0x200} {
+		frame, err := gocan.NewFrame(id, []byte{byte(i + 1)}, 0)
+		if err != nil {
+			panic(err)
+		}
+		if err := capture.Append(gocan.FrameEvent{
+			Bus:       1,
+			Timestamp: at.Add(time.Duration(i) * time.Millisecond),
+			Direction: gocan.DirectionReceive,
+			Frame:     frame,
+		}); err != nil {
+			panic(err)
+		}
+	}
+
+	frames, cursor, err := capture.Frames(gocan.Range{})
+	if err != nil {
+		panic(err)
+	}
+	for event := range frames {
+		fmt.Printf("%#x\n", event.Frame.ID)
+	}
+
+	// Read only records appended after cursor.
+	extra, err := gocan.NewFrame(0x300, []byte{3}, 0)
+	if err != nil {
+		panic(err)
+	}
+	if err := capture.Append(gocan.FrameEvent{
+		Bus:       1,
+		Timestamp: at.Add(2 * time.Millisecond),
+		Direction: gocan.DirectionReceive,
+		Frame:     extra,
+	}); err != nil {
+		panic(err)
+	}
+	later, _, err := capture.Frames(gocan.Since(cursor))
+	if err != nil {
+		panic(err)
+	}
+	for event := range later {
+		fmt.Printf("later %#x\n", event.Frame.ID)
+	}
+	// Output:
+	// 0x100
+	// 0x200
+	// later 0x300
+}

@@ -214,7 +214,7 @@ func writeJoinTrace(t *testing.T, capture *gocan.Capture) {
 		t.Fatalf("create join trace: %v", err)
 	}
 	writer := asc.NewWriter(file)
-	if _, err := capture.WriteRecordsSince(gocan.Cursor{}, writer); err != nil {
+	if _, err := capture.WriteRecords(gocan.Range{}, writer); err != nil {
 		_ = file.Close()
 		t.Fatalf("write join trace: %v", err)
 	}

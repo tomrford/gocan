@@ -109,9 +109,11 @@ func TestReadLifecycle(t *testing.T) {
 				}
 				for _, pid := range []byte{0, 0xfc, 0xfd} {
 					found := false
-					for _, event := range r.capture.Series(r.receiveKey()) {
+					series, _, _ := r.capture.Series(r.receiveKey(), gocan.Range{})
+					for event := range series {
 						if event.Frame.Data[0] == pid {
 							found = true
+							break
 						}
 					}
 					if !found {

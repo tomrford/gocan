@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -67,12 +68,12 @@ func TestDecoderReassemblesBAMForDBC(t *testing.T) {
 			t.Fatalf("Append first batch: %v", err)
 		}
 	}
-	first, cursor, err := capture.FramesSince(cursor)
+	first, cursor, err := capture.Frames(gocan.Since(cursor))
 	if err != nil {
-		t.Fatalf("FramesSince first batch: %v", err)
+		t.Fatalf("Frames first batch: %v", err)
 	}
 	var decoder j1939.Decoder
-	messages, diagnostics := decoder.PushBatch(first)
+	messages, diagnostics := decoder.PushBatch(slices.Collect(first))
 	if len(messages) != 0 || len(diagnostics) != 0 {
 		t.Fatalf("first PushBatch = %v, %v", messages, diagnostics)
 	}
@@ -82,11 +83,11 @@ func TestDecoderReassemblesBAMForDBC(t *testing.T) {
 			t.Fatalf("Append second batch: %v", err)
 		}
 	}
-	second, _, err := capture.FramesSince(cursor)
+	second, _, err := capture.Frames(gocan.Since(cursor))
 	if err != nil {
-		t.Fatalf("FramesSince second batch: %v", err)
+		t.Fatalf("Frames second batch: %v", err)
 	}
-	messages, diagnostics = decoder.PushBatch(second)
+	messages, diagnostics = decoder.PushBatch(slices.Collect(second))
 	if len(diagnostics) != 0 {
 		t.Fatalf("PushBatch diagnostics = %v", diagnostics)
 	}
@@ -196,17 +197,17 @@ func TestDecoderDiscardsInvalidatedPayloads(t *testing.T) {
 	}
 	capture := gocan.NewCapture()
 	capture.Append(start)
-	frames, cursor, _ := capture.FramesSince(gocan.Cursor{})
+	frames, cursor, _ := capture.Frames(gocan.Range{})
 	var decoder j1939.Decoder
-	decoder.PushBatch(frames)
+	decoder.PushBatch(slices.Collect(frames))
 	capture.Clear()
 	capture.Append(last)
-	if _, _, err := capture.FramesSince(cursor); !errors.Is(err, gocan.ErrCursorOutOfRange) {
+	if _, _, err := capture.Frames(gocan.Since(cursor)); !errors.Is(err, gocan.ErrCursorOutOfRange) {
 		t.Fatalf("lost cursor: %v", err)
 	}
 	decoder.Reset()
-	frames, _, _ = capture.FramesSince(gocan.Cursor{})
-	if messages, diagnostics := decoder.PushBatch(frames); len(messages) != 0 || len(diagnostics) != 1 {
+	frames, _, _ = capture.Frames(gocan.Range{})
+	if messages, diagnostics := decoder.PushBatch(slices.Collect(frames)); len(messages) != 0 || len(diagnostics) != 1 {
 		t.Fatalf("lost history=%v, %v", messages, diagnostics)
 	}
 }
@@ -389,16 +390,16 @@ BA_ "VFrameFormat" BO_ 2566844032 3;
 	var cursor gocan.Cursor
 	// Repeat this read as the capture grows. Retain decoder and cursor between
 	// reads. Feed all raw frames before PGN filtering so TP control is observed.
-	frames, next, err := capture.FramesSince(cursor)
+	frames, next, err := capture.Frames(gocan.Since(cursor))
 	if errors.Is(err, gocan.ErrCursorOutOfRange) {
 		decoder.Reset()
-		frames, next, err = capture.FramesSince(gocan.Cursor{})
+		frames, next, err = capture.Frames(gocan.Range{})
 	}
 	if err != nil {
 		panic(err)
 	}
 	cursor = next
-	messages, diagnostics := decoder.PushBatch(frames)
+	messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
 	for _, diagnostic := range diagnostics {
 		fmt.Println(diagnostic)
 	}

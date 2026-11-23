@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -73,7 +74,8 @@ func TestQueueContractsHardware(t *testing.T) {
 		err := a.Send(ctx, frame)
 		if errors.Is(err, gocan.ErrTransmitQueueFull) {
 			rejected++
-			if got := len(capture.Series(gocan.FrameKey{Bus: 1, ID: frame.ID, Direction: gocan.DirectionTransmit})); got != sent {
+			seq, _, _ := capture.Series(gocan.FrameKey{Bus: 1, ID: frame.ID, Direction: gocan.DirectionTransmit}, gocan.Range{})
+			if got := len(slices.Collect(seq)); got != sent {
 				t.Fatalf("rejected TX was recorded: got %d want %d", got, sent)
 			}
 			time.Sleep(time.Millisecond)
@@ -97,9 +99,11 @@ func TestQueueContractsHardware(t *testing.T) {
 	}
 	b.ioMu.Lock()
 	foundOverrun := false
-	for _, event := range capture.BusEvents(b.ID()) {
+	busEvents, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
+	for event := range busEvents {
 		if event.Kind == gocan.EventReceiveOverrun {
 			foundOverrun = true
+			break
 		}
 	}
 	if !foundOverrun {

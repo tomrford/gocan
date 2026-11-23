@@ -78,7 +78,8 @@ func TestVCanReplyDuringSend(t *testing.T) {
 		t.Fatalf("receive reply: %v", err)
 	}
 	var frames []gocan.FrameEvent
-	for _, event := range capture.Frames() {
+	allFrames, _, _ := capture.Frames(gocan.Range{})
+	for event := range allFrames {
 		if event.Bus == target.ID() {
 			frames = append(frames, event)
 		}

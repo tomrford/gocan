@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -177,7 +178,8 @@ func TestActiveBAMSpacingAndPassivePayload(t *testing.T) {
 		wire(t, b, 0x1cebff80, 3, 15, 16, 17, 18, 19, 20, 0xff)
 		resultIs(t, r, nil)
 		var decoder j1939.Decoder
-		messages, diagnostics := decoder.PushBatch(b.capture.Frames())
+		frames, _, _ := b.capture.Frames(gocan.Range{})
+		messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
 		if len(diagnostics) != 0 {
 			t.Fatal(diagnostics)
 		}
@@ -185,7 +187,7 @@ func TestActiveBAMSpacingAndPassivePayload(t *testing.T) {
 			t.Fatalf("decoded %v", messages)
 		}
 		var last time.Time
-		for _, e := range b.capture.Frames() {
+		for e := range frames {
 			if e.Frame.ID == 0x18ecff80 || e.Frame.ID == 0x1cebff80 {
 				if !last.IsZero() && (e.Timestamp.Sub(last) < 50*time.Millisecond || e.Timestamp.Sub(last) > 200*time.Millisecond) {
 					t.Fatal("BAM spacing", e.Timestamp.Sub(last))
@@ -223,7 +225,8 @@ func TestActiveDirectedSendWindowsPauseRetransmitAndAcknowledgement(t *testing.T
 		default:
 		}
 		var decoder j1939.Decoder
-		messages, diagnostics := decoder.PushBatch(b.capture.Frames())
+		frames, _, _ := b.capture.Frames(gocan.Range{})
+		messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
 		if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) || len(messages) != 2 || !bytes.Equal(messages[1].Payload, activePayload) {
 			t.Fatalf("passive = %v, %v", messages, diagnostics)
 		}
@@ -651,7 +654,8 @@ func TestActiveClientsOverVirtualBus(t *testing.T) {
 		}
 		for i, capture := range captures {
 			var decoder j1939.Decoder
-			messages, diagnostics := decoder.PushBatch(capture.Frames())
+			frames, _, _ := capture.Frames(gocan.Range{})
+			messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
 			if len(diagnostics) != 0 {
 				t.Fatal(diagnostics)
 			}

@@ -295,11 +295,11 @@ func (c *Client) run() {
 
 func (c *Client) poll() error {
 	cutoff := time.Now()
-	events, next, err := c.bus.Capture().FramesSince(c.RetentionCursor())
+	events, next, err := c.bus.Capture().Frames(gocan.Since(c.RetentionCursor()))
 	if err != nil {
 		return err
 	}
-	for _, event := range events {
+	for event := range events {
 		if event.Bus != c.bus.ID() || event.Frame.Flags != gocan.FrameExtended {
 			continue
 		}

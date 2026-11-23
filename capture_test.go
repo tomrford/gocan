@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"iter"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -136,7 +138,7 @@ func TestCaptureLiveClock(t *testing.T) {
 		writers.Wait()
 		end := time.Now()
 		writer := &captureWriterProbe{}
-		if _, err := capture.WriteRecordsSince(Cursor{}, writer); err != nil {
+		if _, err := capture.WriteRecords(Range{}, writer); err != nil {
 			t.Fatal(err)
 		}
 		if len(writer.timestamps) != 8192 {
@@ -155,12 +157,49 @@ func TestCaptureLiveClock(t *testing.T) {
 func newTestCapture(recordCapacity, payloadCapacity int) *Capture {
 	active := newCaptureChunk(recordCapacity, payloadCapacity)
 	return &Capture{
+		origin:       time.Now(),
 		generation:   captureEpochs.Add(1),
 		chunks:       []*captureChunk{active},
 		active:       active,
 		latest:       make(map[FrameKey]FrameEvent),
 		latestStates: make(map[BusID]Event),
 	}
+}
+
+func collectAllFrames(t *testing.T, capture *Capture) []FrameEvent {
+	t.Helper()
+	seq, _, err := capture.Frames(Range{})
+	if err != nil {
+		t.Fatalf("Frames(Range{}): %v", err)
+	}
+	return slices.Collect(seq)
+}
+
+func collectAllEvents(t *testing.T, capture *Capture) []Event {
+	t.Helper()
+	seq, _, err := capture.Events(Range{})
+	if err != nil {
+		t.Fatalf("Events(Range{}): %v", err)
+	}
+	return slices.Collect(seq)
+}
+
+func collectAllSeries(t *testing.T, capture *Capture, key FrameKey) []FrameEvent {
+	t.Helper()
+	seq, _, err := capture.Series(key, Range{})
+	if err != nil {
+		t.Fatalf("Series(%+v, Range{}): %v", key, err)
+	}
+	return slices.Collect(seq)
+}
+
+func collectAllBusEvents(t *testing.T, capture *Capture, bus BusID) []Event {
+	t.Helper()
+	seq, _, err := capture.BusEvents(bus, Range{})
+	if err != nil {
+		t.Fatalf("BusEvents(%d, Range{}): %v", bus, err)
+	}
+	return slices.Collect(seq)
 }
 
 func TestCaptureLifecycle(t *testing.T) {
@@ -192,19 +231,19 @@ func TestCaptureLifecycle(t *testing.T) {
 	if got := capture.Len(); got != len(events) {
 		t.Fatalf("Len() = %d, want %d", got, len(events))
 	}
-	requireEvents(t, "Frames", capture.Frames(), events)
+	requireEvents(t, "Frames", collectAllFrames(t, capture), events)
 
 	requireEvents(t, "Series bus0/0x100 RX",
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}),
+		collectAllSeries(t, capture, FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}),
 		[]FrameEvent{events[0]})
 	requireEvents(t, "Series bus0/0x100 TX",
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionTransmit}),
+		collectAllSeries(t, capture, FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionTransmit}),
 		[]FrameEvent{events[2]})
 	requireEvents(t, "Series bus1/0x100",
-		capture.Series(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive}),
+		collectAllSeries(t, capture, FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive}),
 		[]FrameEvent{events[1]})
 	requireEvents(t, "Series extended",
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x1abcde, Direction: DirectionReceive, Extended: true}),
+		collectAllSeries(t, capture, FrameKey{Bus: testBus0, ID: 0x1abcde, Direction: DirectionReceive, Extended: true}),
 		[]FrameEvent{events[3]})
 
 	latest, ok := capture.Latest(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive})
@@ -227,13 +266,13 @@ func TestCaptureLifecycle(t *testing.T) {
 	if got := capture.Len(); got != 0 {
 		t.Fatalf("Len() after Clear = %d, want 0", got)
 	}
-	if got := capture.Frames(); len(got) != 0 {
+	if got := collectAllFrames(t, capture); len(got) != 0 {
 		t.Fatalf("Frames after Clear returned %d events", len(got))
 	}
 	if _, ok := capture.Latest(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}); ok {
 		t.Fatal("Latest found a key after Clear")
 	}
-	if got := capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}); len(got) != 0 {
+	if got := collectAllSeries(t, capture, FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}); len(got) != 0 {
 		t.Fatalf("Series after Clear returned %d events", len(got))
 	}
 
@@ -242,7 +281,7 @@ func TestCaptureLifecycle(t *testing.T) {
 		t.Fatalf("Append after Clear: %v", err)
 	}
 	requireEvents(t, "Series after Clear",
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}),
+		collectAllSeries(t, capture, FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}),
 		[]FrameEvent{revived})
 	latest, ok = capture.Latest(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive})
 	if !ok || !eventsEqual(latest, revived) {
@@ -310,31 +349,31 @@ func TestCaptureMixedRecords(t *testing.T) {
 	if got := capture.Len(); got != 7 {
 		t.Fatalf("Len() = %d, want 7 records", got)
 	}
-	requireEvents(t, "all frames", capture.Frames(), []FrameEvent{frame0, frame1, frame2})
-	requireBusEvents(t, "all events", capture.Events(), []Event{state0, error1, overrun0, state1})
-	requireBusEvents(t, "bus 0 events", capture.BusEvents(testBus0), []Event{state0, overrun0})
-	requireBusEvents(t, "bus 1 events", capture.BusEvents(testBus1), []Event{error1, state1})
+	requireEvents(t, "all frames", collectAllFrames(t, capture), []FrameEvent{frame0, frame1, frame2})
+	requireBusEvents(t, "all events", collectAllEvents(t, capture), []Event{state0, error1, overrun0, state1})
+	requireBusEvents(t, "bus 0 events", collectAllBusEvents(t, capture, testBus0), []Event{state0, overrun0})
+	requireBusEvents(t, "bus 1 events", collectAllBusEvents(t, capture, testBus1), []Event{error1, state1})
 
-	frames, frameCursor, err := capture.FramesSince(cursor)
+	frameSeq, frameCursor, err := capture.Frames(Since(cursor))
 	if err != nil {
-		t.Fatalf("FramesSince: %v", err)
+		t.Fatalf("Frames(Since): %v", err)
 	}
-	requireEvents(t, "later frames", frames, []FrameEvent{frame2})
-	events, eventCursor, err := capture.EventsSince(cursor)
+	requireEvents(t, "later frames", slices.Collect(frameSeq), []FrameEvent{frame2})
+	eventSeq, eventCursor, err := capture.Events(Since(cursor))
 	if err != nil {
-		t.Fatalf("EventsSince: %v", err)
+		t.Fatalf("Events(Since): %v", err)
 	}
-	requireBusEvents(t, "later events", events, []Event{error1, overrun0, state1})
-	bus0, bus0Cursor, err := capture.BusEventsSince(testBus0, cursor)
+	requireBusEvents(t, "later events", slices.Collect(eventSeq), []Event{error1, overrun0, state1})
+	bus0Seq, bus0Cursor, err := capture.BusEvents(testBus0, Since(cursor))
 	if err != nil {
-		t.Fatalf("BusEventsSince bus 0: %v", err)
+		t.Fatalf("BusEvents(Since) bus 0: %v", err)
 	}
-	requireBusEvents(t, "later bus 0 events", bus0, []Event{overrun0})
-	bus1, bus1Cursor, err := capture.BusEventsSince(testBus1, cursor)
+	requireBusEvents(t, "later bus 0 events", slices.Collect(bus0Seq), []Event{overrun0})
+	bus1Seq, bus1Cursor, err := capture.BusEvents(testBus1, Since(cursor))
 	if err != nil {
-		t.Fatalf("BusEventsSince bus 1: %v", err)
+		t.Fatalf("BusEvents(Since) bus 1: %v", err)
 	}
-	requireBusEvents(t, "later bus 1 events", bus1, []Event{error1, state1})
+	requireBusEvents(t, "later bus 1 events", slices.Collect(bus1Seq), []Event{error1, state1})
 	if frameCursor != eventCursor || frameCursor != bus0Cursor || frameCursor != bus1Cursor || frameCursor != capture.End() {
 		t.Fatalf("Since cursors did not advance to the shared capture end")
 	}
@@ -417,7 +456,7 @@ func TestCaptureLatestControllerState(t *testing.T) {
 	if err := capture.Prune(capture.End()); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	for _, event := range capture.BusEvents(testBus0) {
+	for _, event := range collectAllBusEvents(t, capture, testBus0) {
 		if event.Kind == EventControllerState {
 			t.Fatalf("bus 0 events after Prune = %+v, want the bus-off record discarded", event)
 		}
@@ -452,30 +491,33 @@ func TestCaptureBetween(t *testing.T) {
 		t.Fatalf("append after range: %v", err)
 	}
 
-	between, err := capture.FramesBetween(start, end)
+	betweenSeq, betweenCursor, err := capture.Frames(Between(start, end))
 	if err != nil {
-		t.Fatalf("FramesBetween: %v", err)
+		t.Fatalf("Frames(Between): %v", err)
 	}
-	requireEvents(t, "FramesBetween", between, frames[1:2])
+	if betweenCursor != end {
+		t.Fatalf("Frames(Between) cursor = %+v, want %+v", betweenCursor, end)
+	}
+	requireEvents(t, "Frames(Between)", slices.Collect(betweenSeq), frames[1:2])
 
-	if got, err := capture.FramesBetween(end, end); err != nil || len(got) != 0 {
-		t.Fatalf("FramesBetween over an empty interval = %d frames, %v", len(got), err)
+	if seq, gotCur, err := capture.Frames(Between(end, end)); err != nil || gotCur != end || len(slices.Collect(seq)) != 0 {
+		t.Fatalf("Frames(Between) over an empty interval = %+v, %v", gotCur, err)
 	}
-	if got, err := capture.SeriesBetween(frames[0].Key(), Cursor{}, Cursor{}); err != nil || len(got) != 0 {
-		t.Fatalf("SeriesBetween over zero interval = %d frames, %v", len(got), err)
+	if seq, gotCur, err := capture.Series(frames[0].Key(), Between(Cursor{}, Cursor{})); err != nil || gotCur != (Cursor{}) || len(slices.Collect(seq)) != 0 {
+		t.Fatalf("Series(Between) over zero interval = %+v, %v", gotCur, err)
 	}
-	if got, err := capture.BusEventsBetween(testBus0, Cursor{}, Cursor{}); err != nil || len(got) != 0 {
-		t.Fatalf("BusEventsBetween over zero interval = %d events, %v", len(got), err)
+	if seq, gotCur, err := capture.BusEvents(testBus0, Between(Cursor{}, Cursor{})); err != nil || gotCur != (Cursor{}) || len(slices.Collect(seq)) != 0 {
+		t.Fatalf("BusEvents(Between) over zero interval = %+v, %v", gotCur, err)
 	}
 
 	// Single-chunk indexed between: matching records before start, inside (start, end], and after end.
-	singleSeries, err := capture.SeriesBetween(frames[0].Key(), start, end)
-	if err != nil {
-		t.Fatalf("SeriesBetween single chunk: %v", err)
+	singleSeriesSeq, gotCur, err := capture.Series(frames[0].Key(), Between(start, end))
+	if err != nil || gotCur != end {
+		t.Fatalf("Series(Between) single chunk: %+v, %v", gotCur, err)
 	}
-	requireEvents(t, "SeriesBetween single chunk", singleSeries, frames[1:2])
+	requireEvents(t, "Series(Between) single chunk", slices.Collect(singleSeriesSeq), frames[1:2])
 
-	// Multi-chunk indexed SeriesBetween and BusEventsBetween across sealed,
+	// Multi-chunk indexed Series(Between) and BusEvents(Between) across sealed,
 	// gap, and active chunks with matching records both before start and after end.
 	multi := newTestCapture(3, 24)
 	keyA := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
@@ -520,23 +562,23 @@ func TestCaptureBetween(t *testing.T) {
 	wantEv1 := appendErr(testBus0, 203)
 	rangeEnd := multi.End()
 	// Append many more matching records AFTER rangeEnd in the same active chunk
-	// so the bounded backward skip falls back to scanning the narrow tail range.
+	// so the narrow tail range triggers the dense forward-scan path.
 	for seq := 204; seq < 240; seq++ {
 		appendFrame(keyA.ID, seq)
 		appendErr(testBus0, seq)
 	}
 
-	gotSeries, err := multi.SeriesBetween(keyA, rangeStart, rangeEnd)
-	if err != nil {
-		t.Fatalf("SeriesBetween multi-chunk: %v", err)
+	gotSeriesSeq, gotSeriesCur, err := multi.Series(keyA, Between(rangeStart, rangeEnd))
+	if err != nil || gotSeriesCur != rangeEnd {
+		t.Fatalf("Series(Between) multi-chunk: %+v, %v", gotSeriesCur, err)
 	}
-	requireEvents(t, "SeriesBetween multi-chunk", gotSeries, []FrameEvent{wantA1, wantA2})
+	requireEvents(t, "Series(Between) multi-chunk", slices.Collect(gotSeriesSeq), []FrameEvent{wantA1, wantA2})
 
-	gotBusEvents, err := multi.BusEventsBetween(testBus0, rangeStart, rangeEnd)
-	if err != nil {
-		t.Fatalf("BusEventsBetween multi-chunk: %v", err)
+	gotBusSeq, gotBusCur, err := multi.BusEvents(testBus0, Between(rangeStart, rangeEnd))
+	if err != nil || gotBusCur != rangeEnd {
+		t.Fatalf("BusEvents(Between) multi-chunk: %+v, %v", gotBusCur, err)
 	}
-	requireBusEvents(t, "BusEventsBetween multi-chunk", gotBusEvents, []Event{wantEv0, wantEv1})
+	requireBusEvents(t, "BusEvents(Between) multi-chunk", slices.Collect(gotBusSeq), []Event{wantEv0, wantEv1})
 
 	// Prune chunk 0 and verify (Cursor{}, pruneSeam] and (pruneSeam, pruneSeam] are empty.
 	sealedEnd := Cursor{
@@ -548,14 +590,14 @@ func TestCaptureBetween(t *testing.T) {
 		t.Fatalf("Prune: %v", err)
 	}
 	for _, pair := range [][2]Cursor{{Cursor{}, sealedEnd}, {sealedEnd, sealedEnd}, {sealedEnd, Cursor{}}} {
-		if got, err := multi.FramesBetween(pair[0], pair[1]); err != nil || len(got) != 0 {
-			t.Fatalf("FramesBetween(%+v, %+v) = %d, %v", pair[0], pair[1], len(got), err)
+		if seq, gotCur, err := multi.Frames(Between(pair[0], pair[1])); err != nil || gotCur != pair[1] || len(slices.Collect(seq)) != 0 {
+			t.Fatalf("Frames(Between(%+v, %+v)) = %+v, %v", pair[0], pair[1], gotCur, err)
 		}
-		if got, err := multi.SeriesBetween(keyA, pair[0], pair[1]); err != nil || len(got) != 0 {
-			t.Fatalf("SeriesBetween(%+v, %+v) = %d, %v", pair[0], pair[1], len(got), err)
+		if seq, gotCur, err := multi.Series(keyA, Between(pair[0], pair[1])); err != nil || gotCur != pair[1] || len(slices.Collect(seq)) != 0 {
+			t.Fatalf("Series(Between(%+v, %+v)) = %+v, %v", pair[0], pair[1], gotCur, err)
 		}
-		if got, err := multi.BusEventsBetween(testBus0, pair[0], pair[1]); err != nil || len(got) != 0 {
-			t.Fatalf("BusEventsBetween(%+v, %+v) = %d, %v", pair[0], pair[1], len(got), err)
+		if seq, gotCur, err := multi.BusEvents(testBus0, Between(pair[0], pair[1])); err != nil || gotCur != pair[1] || len(slices.Collect(seq)) != 0 {
+			t.Fatalf("BusEvents(Between(%+v, %+v)) = %+v, %v", pair[0], pair[1], gotCur, err)
 		}
 	}
 }
@@ -584,29 +626,29 @@ func TestCaptureCursorErrors(t *testing.T) {
 		t.Fatalf("fixture stayed inside one chunk, want it to rotate")
 	}
 
-	spanning, err := capture.FramesBetween(early, end)
+	spanningSeq, _, err := capture.Frames(Between(early, end))
 	if err != nil {
-		t.Fatalf("FramesBetween across a seam: %v", err)
+		t.Fatalf("Frames(Between) across a seam: %v", err)
 	}
-	requireEvents(t, "FramesBetween across a seam", spanning, appended[1:])
-	series, err := capture.SeriesBetween(key, early, end)
+	requireEvents(t, "Frames(Between) across a seam", slices.Collect(spanningSeq), appended[1:])
+	seriesSeq, _, err := capture.Series(key, Between(early, end))
 	if err != nil {
-		t.Fatalf("SeriesBetween across a seam: %v", err)
+		t.Fatalf("Series(Between) across a seam: %v", err)
 	}
-	requireEvents(t, "SeriesBetween across a seam", series, appended[1:])
+	requireEvents(t, "Series(Between) across a seam", slices.Collect(seriesSeq), appended[1:])
 
 	beyondSealed := Cursor{
 		generation: early.generation,
 		chunk:      early.chunk,
 		record:     uint32(len(capture.chunks[0].records)),
 	}
-	if _, _, err := capture.FramesSince(beyondSealed); err == nil {
-		t.Fatal("FramesSince accepted cursor beyond sealed chunk length")
+	if _, _, err := capture.Frames(Since(beyondSealed)); err == nil {
+		t.Fatal("Frames(Since) accepted cursor beyond sealed chunk length")
 	} else {
 		requireRejectedCursor(t, err, beyondSealed)
 	}
-	if _, err := capture.SeriesBetween(key, beyondSealed, end); err == nil {
-		t.Fatal("SeriesBetween accepted start cursor beyond sealed chunk length")
+	if _, _, err := capture.Series(key, Between(beyondSealed, end)); err == nil {
+		t.Fatal("Series(Between) accepted start cursor beyond sealed chunk length")
 	} else {
 		requireRejectedCursor(t, err, beyondSealed)
 	}
@@ -616,8 +658,8 @@ func TestCaptureCursorErrors(t *testing.T) {
 		t.Fatalf("append to the other capture: %v", err)
 	}
 	foreign := other.End()
-	if records, err := capture.FramesBetween(end, early); !errors.Is(err, ErrCursorOutOfRange) || len(records) != 0 {
-		t.Fatalf("FramesBetween over reversed range = %d records, %v", len(records), err)
+	if seq, gotCur, err := capture.Frames(Between(end, early)); !errors.Is(err, ErrCursorOutOfRange) || seq != nil || gotCur != end {
+		t.Fatalf("Frames(Between) over reversed range = (%t, %+v, %v)", seq != nil, gotCur, err)
 	} else {
 		var rejected *CursorOutOfRangeError
 		if errors.As(err, &rejected) {
@@ -633,34 +675,34 @@ func TestCaptureCursorErrors(t *testing.T) {
 		writer := &captureWriterProbe{failAt: -1}
 		since := []struct {
 			name string
-			read func() (int, Cursor, error)
+			read func() (bool, Cursor, error)
 		}{
-			{"FramesSince", func() (int, Cursor, error) {
-				records, next, err := capture.FramesSince(cursor)
-				return len(records), next, err
+			{"Frames(Since)", func() (bool, Cursor, error) {
+				seq, next, err := capture.Frames(Since(cursor))
+				return seq != nil, next, err
 			}},
-			{"EventsSince", func() (int, Cursor, error) {
-				records, next, err := capture.EventsSince(cursor)
-				return len(records), next, err
+			{"Events(Since)", func() (bool, Cursor, error) {
+				seq, next, err := capture.Events(Since(cursor))
+				return seq != nil, next, err
 			}},
-			{"SeriesSince", func() (int, Cursor, error) {
-				records, next, err := capture.SeriesSince(key, cursor)
-				return len(records), next, err
+			{"Series(Since)", func() (bool, Cursor, error) {
+				seq, next, err := capture.Series(key, Since(cursor))
+				return seq != nil, next, err
 			}},
-			{"BusEventsSince", func() (int, Cursor, error) {
-				records, next, err := capture.BusEventsSince(testBus0, cursor)
-				return len(records), next, err
+			{"BusEvents(Since)", func() (bool, Cursor, error) {
+				seq, next, err := capture.BusEvents(testBus0, Since(cursor))
+				return seq != nil, next, err
 			}},
-			{"WriteRecordsSince", func() (int, Cursor, error) {
-				next, err := capture.WriteRecordsSince(cursor, writer)
-				return len(writer.frames) + len(writer.events), next, err
+			{"WriteRecords(Since)", func() (bool, Cursor, error) {
+				next, err := capture.WriteRecords(Since(cursor), writer)
+				return len(writer.frames)+len(writer.events) != 0, next, err
 			}},
 		}
 		for _, read := range since {
-			count, next, err := read.read()
+			hasData, next, err := read.read()
 			requireRejectedCursor(t, err, cursor)
-			if count != 0 || next != cursor {
-				t.Fatalf("%s with rejected cursor = %d records, %+v, want no records and %+v", read.name, count, next, cursor)
+			if hasData || next != cursor {
+				t.Fatalf("%s with rejected cursor = (hasData=%t, %+v), want no data and %+v", read.name, hasData, next, cursor)
 			}
 		}
 		if event, next, ok, err := capture.FirstSince(key, cursor); err == nil || ok || event != (FrameEvent{}) || next != cursor {
@@ -680,38 +722,35 @@ func TestCaptureCursorErrors(t *testing.T) {
 		}
 		between := []struct {
 			name string
-			read func(Cursor, Cursor) (int, error)
+			read func(Cursor, Cursor) (bool, Cursor, error)
 		}{
-			{"FramesBetween", func(start, end Cursor) (int, error) {
-				records, err := capture.FramesBetween(start, end)
-				return len(records), err
+			{"Frames(Between)", func(start, end Cursor) (bool, Cursor, error) {
+				seq, next, err := capture.Frames(Between(start, end))
+				return seq != nil, next, err
 			}},
-			{"EventsBetween", func(start, end Cursor) (int, error) {
-				records, err := capture.EventsBetween(start, end)
-				return len(records), err
+			{"Events(Between)", func(start, end Cursor) (bool, Cursor, error) {
+				seq, next, err := capture.Events(Between(start, end))
+				return seq != nil, next, err
 			}},
-			{"SeriesBetween", func(start, end Cursor) (int, error) {
-				records, err := capture.SeriesBetween(key, start, end)
-				return len(records), err
+			{"Series(Between)", func(start, end Cursor) (bool, Cursor, error) {
+				seq, next, err := capture.Series(key, Between(start, end))
+				return seq != nil, next, err
 			}},
-			{"BusEventsBetween", func(start, end Cursor) (int, error) {
-				records, err := capture.BusEventsBetween(testBus0, start, end)
-				return len(records), err
+			{"BusEvents(Between)", func(start, end Cursor) (bool, Cursor, error) {
+				seq, next, err := capture.BusEvents(testBus0, Between(start, end))
+				return seq != nil, next, err
 			}},
-			{"WriteRecordsBetween", func(start, end Cursor) (int, error) {
-				next, err := capture.WriteRecordsBetween(start, end, writer)
-				if next != start {
-					t.Fatalf("failed WriteRecordsBetween cursor = %+v, want %+v", next, start)
-				}
-				return len(writer.frames) + len(writer.events), err
+			{"WriteRecords(Between)", func(start, end Cursor) (bool, Cursor, error) {
+				next, err := capture.WriteRecords(Between(start, end), writer)
+				return len(writer.frames)+len(writer.events) != 0, next, err
 			}},
 		}
 		for _, read := range between {
 			for _, bounds := range [][2]Cursor{{cursor, capture.End()}, {Cursor{}, cursor}} {
-				count, err := read.read(bounds[0], bounds[1])
+				hasData, next, err := read.read(bounds[0], bounds[1])
 				requireRejectedCursor(t, err, cursor)
-				if count != 0 {
-					t.Fatalf("%s with rejected cursor returned %d records", read.name, count)
+				if hasData || next != bounds[0] {
+					t.Fatalf("%s with rejected cursor = (hasData=%t, %+v), want no data and %+v", read.name, hasData, next, bounds[0])
 				}
 			}
 		}
@@ -758,13 +797,13 @@ func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
 
 	writeFailure := errors.New("writer failed")
 	first := &captureWriterProbe{failAt: 2, failure: writeFailure}
-	written, err := capture.WriteRecordsSince(Cursor{}, first)
+	written, err := capture.WriteRecords(Range{}, first)
 	var recordError *RecordWriteError
 	if !errors.As(err, &recordError) {
-		t.Fatalf("WriteRecordsSince error = %v, want *RecordWriteError", err)
+		t.Fatalf("WriteRecords error = %v, want *RecordWriteError", err)
 	}
 	if !errors.Is(err, writeFailure) {
-		t.Fatalf("WriteRecordsSince error = %v, want wrapped writer failure", err)
+		t.Fatalf("WriteRecords error = %v, want wrapped writer failure", err)
 	}
 	if len(first.frames) != 1 || first.frames[0] != frame0.Frame.ID ||
 		len(first.events) != 1 || first.events[0] != state.Kind {
@@ -775,9 +814,9 @@ func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
 	}
 
 	retry := &captureWriterProbe{failAt: -1}
-	next, err := capture.WriteRecordsSince(written, retry)
+	next, err := capture.WriteRecords(Since(written), retry)
 	if err != nil {
-		t.Fatalf("retry WriteRecordsSince: %v", err)
+		t.Fatalf("retry WriteRecords: %v", err)
 	}
 	if len(retry.frames) != 1 || retry.frames[0] != frame1.Frame.ID ||
 		len(retry.events) != 1 || retry.events[0] != errorEvent.Kind {
@@ -788,7 +827,7 @@ func TestCaptureWriteRecordsFailureCursor(t *testing.T) {
 	}
 
 	skip := &captureWriterProbe{failAt: -1}
-	if _, err := capture.WriteRecordsSince(recordError.Cursor, skip); err != nil {
+	if _, err := capture.WriteRecords(Since(recordError.Cursor), skip); err != nil {
 		t.Fatalf("skip failed record: %v", err)
 	}
 	if len(skip.frames) != 0 || len(skip.events) != 1 || skip.events[0] != errorEvent.Kind {
@@ -828,35 +867,35 @@ func TestCaptureCursorIncremental(t *testing.T) {
 
 	readSeries := func(what string, cursor Cursor) ([]FrameEvent, Cursor) {
 		t.Helper()
-		series, next, err := capture.SeriesSince(keyA, cursor)
+		seq, next, err := capture.Series(keyA, Since(cursor))
 		if err != nil {
-			t.Fatalf("%s SeriesSince: %v", what, err)
+			t.Fatalf("%s Series: %v", what, err)
 		}
-		return series, next
+		return slices.Collect(seq), next
 	}
 	readFrames := func(what string, cursor Cursor) ([]FrameEvent, Cursor) {
 		t.Helper()
-		all, next, err := capture.FramesSince(cursor)
+		seq, next, err := capture.Frames(Since(cursor))
 		if err != nil {
-			t.Fatalf("%s FramesSince: %v", what, err)
+			t.Fatalf("%s Frames: %v", what, err)
 		}
-		return all, next
+		return slices.Collect(seq), next
 	}
 
 	seriesA, cursorA := readSeries("initial", Cursor{})
-	requireEvents(t, "initial SeriesSince", seriesA, initialA)
+	requireEvents(t, "initial Series(Since)", seriesA, initialA)
 	frames, cursorAll := readFrames("initial", Cursor{})
-	requireEvents(t, "initial FramesSince", frames, initialAll)
+	requireEvents(t, "initial Frames(Since)", frames, initialAll)
 
 	if cursorA != cursorAll {
-		t.Fatalf("SeriesSince cursor %+v differs from FramesSince cursor %+v at the same tail", cursorA, cursorAll)
+		t.Fatalf("Series(Since) cursor %+v differs from Frames(Since) cursor %+v at the same tail", cursorA, cursorAll)
 	}
 
 	if frames, cursor := readSeries("tail", cursorA); len(frames) != 0 || cursor != cursorA {
-		t.Fatalf("SeriesSince at tail returned %d frames (cursor changed: %t)", len(frames), cursor != cursorA)
+		t.Fatalf("Series(Since) at tail returned %d frames (cursor changed: %t)", len(frames), cursor != cursorA)
 	}
 	if frames, cursor := readFrames("tail", cursorAll); len(frames) != 0 || cursor != cursorAll {
-		t.Fatalf("FramesSince at tail returned %d frames (cursor changed: %t)", len(frames), cursor != cursorAll)
+		t.Fatalf("Frames(Since) at tail returned %d frames (cursor changed: %t)", len(frames), cursor != cursorAll)
 	}
 
 	freshAll, freshA := appendBatch(4, 12)
@@ -865,27 +904,27 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	}
 
 	seriesA, cursorA = readSeries("incremental", cursorA)
-	requireEvents(t, "incremental SeriesSince across seam", seriesA, freshA)
+	requireEvents(t, "incremental Series(Since) across seam", seriesA, freshA)
 	frames, _ = readFrames("incremental", cursorAll)
-	requireEvents(t, "incremental FramesSince across seam", frames, freshAll)
+	requireEvents(t, "incremental Frames(Since) across seam", frames, freshAll)
 
 	appendSeq(50, 0x200)
 	quiet, cursorA := readSeries("quiet", cursorA)
 	if len(quiet) != 0 {
-		t.Fatalf("SeriesSince returned %d frames for a series with no new traffic", len(quiet))
+		t.Fatalf("Series(Since) returned %d frames for a series with no new traffic", len(quiet))
 	}
 	if replayed, _ := readFrames("quiet", cursorA); len(replayed) != 0 {
-		t.Fatalf("cursor regressed: FramesSince replayed %d frames", len(replayed))
+		t.Fatalf("cursor regressed: Frames(Since) replayed %d frames", len(replayed))
 	}
 
 	capture.Clear()
 	revived := appendSeq(100, 0x100)
-	stale, returned, err := capture.SeriesSince(keyA, cursorA)
+	stale, returned, err := capture.Series(keyA, Since(cursorA))
 	if !errors.Is(err, ErrCursorOutOfRange) {
-		t.Fatalf("SeriesSince after Clear error = %v, want ErrCursorOutOfRange", err)
+		t.Fatalf("Series after Clear error = %v, want ErrCursorOutOfRange", err)
 	}
-	if len(stale) != 0 || returned != cursorA {
-		t.Fatalf("stale SeriesSince returned %d frames and cursor %+v", len(stale), returned)
+	if stale != nil || returned != cursorA {
+		t.Fatalf("stale Series returned (%t, %+v)", stale != nil, returned)
 	}
 	seriesA, _ = readSeries("resynchronised", Cursor{})
 	requireEvents(t, "resynchronised after Clear", seriesA, []FrameEvent{revived})
@@ -947,26 +986,26 @@ func TestCapturePrune(t *testing.T) {
 		{"the prune-point cursor", cursors[sealed-1], appended[sealed:]},
 		{"a retained cursor", cursors[sealed+1], appended[sealed+2:]},
 	} {
-		frames, _, err := capture.FramesSince(from.cursor)
+		seq, _, err := capture.Frames(Since(from.cursor))
 		if err != nil {
-			t.Fatalf("FramesSince %s after pruning: %v", from.label, err)
+			t.Fatalf("Frames(Since) %s after pruning: %v", from.label, err)
 		}
-		requireEvents(t, "FramesSince "+from.label+" after pruning", frames, from.want)
+		requireEvents(t, "Frames(Since) "+from.label+" after pruning", slices.Collect(seq), from.want)
 	}
 
 	event, _, err := capture.Next(context.Background(), key, cursors[sealed-1])
 	if err != nil || !eventsEqual(event, appended[sealed]) {
 		t.Fatalf("Next from the prune-point cursor = (%+v, %v), want %+v", event, err, appended[sealed])
 	}
-	between, err := capture.FramesBetween(cursors[sealed-1], capture.End())
+	betweenSeq, _, err := capture.Frames(Between(cursors[sealed-1], capture.End()))
 	if err != nil {
-		t.Fatalf("FramesBetween from the prune-point cursor: %v", err)
+		t.Fatalf("Frames(Between) from the prune-point cursor: %v", err)
 	}
-	requireEvents(t, "FramesBetween from the prune-point cursor", between, appended[sealed:])
+	requireEvents(t, "Frames(Between) from the prune-point cursor", slices.Collect(betweenSeq), appended[sealed:])
 
-	stale, returned, err := capture.FramesSince(cursors[0])
-	if !errors.Is(err, ErrCursorOutOfRange) || len(stale) != 0 || returned != cursors[0] {
-		t.Fatalf("FramesSince a discarded cursor = %d frames, cursor %+v, %v", len(stale), returned, err)
+	stale, returned, err := capture.Frames(Since(cursors[0]))
+	if !errors.Is(err, ErrCursorOutOfRange) || stale != nil || returned != cursors[0] {
+		t.Fatalf("Frames(Since) a discarded cursor = (%t, cursor %+v, %v)", stale != nil, returned, err)
 	}
 	if err := capture.Prune(cursors[0]); !errors.Is(err, ErrCursorOutOfRange) {
 		t.Fatalf("Prune with a discarded cursor = %v, want ErrCursorOutOfRange", err)
@@ -1354,23 +1393,37 @@ func TestCaptureConcurrentClear(t *testing.T) {
 				return
 			default:
 			}
-			capture.Frames()
-			capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive})
+			if seq, _, err := capture.Frames(Range{}); err == nil {
+				for range seq {
+				}
+			}
+			if seq, _, err := capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}, Range{}); err == nil {
+				for range seq {
+				}
+			}
 			capture.Latest(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive})
 
-			_, next, err := capture.EventsSince(eventsCursor)
+			seq, next, err := capture.Events(Since(eventsCursor))
 			if err != nil && !errors.Is(err, ErrCursorOutOfRange) {
-				t.Errorf("EventsSince: %v", err)
+				t.Errorf("Events(Since): %v", err)
 				return
+			}
+			if err == nil {
+				for range seq {
+				}
 			}
 			eventsCursor = next
 			if err != nil {
 				eventsCursor = Cursor{}
 			}
-			_, next, err = capture.BusEventsSince(testBus0, busEventsCursor)
+			seq, next, err = capture.BusEvents(testBus0, Since(busEventsCursor))
 			if err != nil && !errors.Is(err, ErrCursorOutOfRange) {
-				t.Errorf("BusEventsSince: %v", err)
+				t.Errorf("BusEvents(Since): %v", err)
 				return
+			}
+			if err == nil {
+				for range seq {
+				}
 			}
 			busEventsCursor = next
 			if err != nil {
@@ -1410,7 +1463,7 @@ func TestCaptureConcurrentClear(t *testing.T) {
 	total := 0
 	for w := range writers {
 		key := FrameKey{Bus: BusID(w + 1), ID: 0x100, Direction: DirectionReceive}
-		series := capture.Series(key)
+		series := collectAllSeries(t, capture, key)
 		total += len(series)
 		for i, event := range series {
 			got := binary.LittleEndian.Uint32(event.Frame.Data[:4])
@@ -1430,7 +1483,7 @@ func TestCaptureConcurrentClear(t *testing.T) {
 			t.Fatalf("Latest(%d) does not match the series tail", key.Bus)
 		}
 	}
-	events := capture.BusEvents(testBus0)
+	events := collectAllBusEvents(t, capture, testBus0)
 	total += len(events)
 	for i, event := range events {
 		got := int(event.Timestamp.Sub(captureTestBase) / time.Microsecond)
@@ -1518,20 +1571,40 @@ func TestCaptureConcurrent(t *testing.T) {
 					return
 				default:
 				}
-				capture.Frames()
-				capture.Series(key)
+				if seq, _, err := capture.Frames(Range{}); err == nil {
+					for range seq {
+					}
+				}
+				if seq, _, err := capture.Series(key, Range{}); err == nil {
+					for range seq {
+					}
+				}
 				capture.Latest(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive})
-				capture.Events()
-				capture.BusEvents(testBus0)
+				if seq, _, err := capture.Events(Range{}); err == nil {
+					for range seq {
+					}
+				}
+				if seq, _, err := capture.BusEvents(testBus0, Range{}); err == nil {
+					for range seq {
+					}
+				}
 				capture.Len()
 				end := capture.End()
-				_, framesErr := capture.FramesBetween(Cursor{}, end)
-				_, eventsErr := capture.EventsBetween(Cursor{}, end)
-				_, seriesErr := capture.SeriesBetween(key, Cursor{}, end)
-				_, busEventsErr := capture.BusEventsBetween(testBus0, Cursor{}, end)
+				framesSeq, _, framesErr := capture.Frames(Between(Cursor{}, end))
+				eventsSeq, _, eventsErr := capture.Events(Between(Cursor{}, end))
+				seriesSeq, _, seriesErr := capture.Series(key, Between(Cursor{}, end))
+				busEventsSeq, _, busEventsErr := capture.BusEvents(testBus0, Between(Cursor{}, end))
 				if err := errors.Join(framesErr, eventsErr, seriesErr, busEventsErr); err != nil {
 					t.Errorf("bounded read of a live capture: %v", err)
 					return
+				}
+				for range framesSeq {
+				}
+				for range eventsSeq {
+				}
+				for range seriesSeq {
+				}
+				for range busEventsSeq {
 				}
 			}
 		}()
@@ -1543,12 +1616,12 @@ func TestCaptureConcurrent(t *testing.T) {
 		defer close(tailerDone)
 		key := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
 		read := func(cursor Cursor) ([]FrameEvent, Cursor, bool) {
-			frames, next, err := capture.SeriesSince(key, cursor)
+			seq, next, err := capture.Series(key, Since(cursor))
 			if err != nil {
-				t.Errorf("tailing SeriesSince: %v", err)
+				t.Errorf("tailing Series(Since): %v", err)
 				return nil, cursor, false
 			}
-			return frames, next, true
+			return slices.Collect(seq), next, true
 		}
 		var cursor Cursor
 		for {
@@ -1595,12 +1668,12 @@ func TestCaptureConcurrent(t *testing.T) {
 	go func() {
 		defer close(eventsTailerDone)
 		read := func(cursor Cursor) ([]Event, Cursor, bool) {
-			events, next, err := capture.EventsSince(cursor)
+			seq, next, err := capture.Events(Since(cursor))
 			if err != nil {
-				t.Errorf("tailing EventsSince: %v", err)
+				t.Errorf("tailing Events(Since): %v", err)
 				return nil, cursor, false
 			}
-			return events, next, true
+			return slices.Collect(seq), next, true
 		}
 		var cursor Cursor
 		for {
@@ -1628,12 +1701,12 @@ func TestCaptureConcurrent(t *testing.T) {
 	go func() {
 		defer close(busEventsTailerDone)
 		read := func(cursor Cursor) ([]Event, Cursor, bool) {
-			events, next, err := capture.BusEventsSince(testBus0, cursor)
+			seq, next, err := capture.BusEvents(testBus0, Since(cursor))
 			if err != nil {
-				t.Errorf("tailing BusEventsSince: %v", err)
+				t.Errorf("tailing BusEvents(Since): %v", err)
 				return nil, cursor, false
 			}
-			return events, next, true
+			return slices.Collect(seq), next, true
 		}
 		var cursor Cursor
 		for {
@@ -1663,18 +1736,18 @@ func TestCaptureConcurrent(t *testing.T) {
 	<-eventsTailerDone
 	<-busEventsTailerDone
 	requireEvents(t, "tailed series", tailed,
-		capture.Series(FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}))
+		collectAllSeries(t, capture, FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}))
 	requireEvents(t, "Next-tailed series", nextTailed,
-		capture.Series(FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive}))
-	requireBusEvents(t, "tailed events", eventsTailed, capture.Events())
-	requireBusEvents(t, "tailed bus events", busEventsTailed, capture.BusEvents(testBus0))
+		collectAllSeries(t, capture, FrameKey{Bus: testBus1, ID: 0x100, Direction: DirectionReceive}))
+	requireBusEvents(t, "tailed events", eventsTailed, collectAllEvents(t, capture))
+	requireBusEvents(t, "tailed bus events", busEventsTailed, collectAllBusEvents(t, capture, testBus0))
 
 	if got := capture.Len(); got != (writers+1)*perWriter {
 		t.Fatalf("Len() = %d, want %d", got, (writers+1)*perWriter)
 	}
 	for w := range writers {
 		key := FrameKey{Bus: BusID(w + 1), ID: 0x100, Direction: DirectionReceive}
-		series := capture.Series(key)
+		series := collectAllSeries(t, capture, key)
 		if len(series) != perWriter {
 			t.Fatalf("Series(%+v) returned %d events, want %d", key, len(series), perWriter)
 		}
@@ -1785,7 +1858,7 @@ func TestCaptureChunkGrowthLifecycle(t *testing.T) {
 	if got := capture.Len(); got != count {
 		t.Fatalf("Len() = %d, want %d", got, count)
 	}
-	series := capture.Series(key)
+	series := collectAllSeries(t, capture, key)
 	if len(series) != count {
 		t.Fatalf("Series len = %d, want %d", len(series), count)
 	}
@@ -1799,5 +1872,317 @@ func TestCaptureChunkGrowthLifecycle(t *testing.T) {
 	}
 	if len(capture.chunks) != 1 {
 		t.Fatalf("chunks after Prune(End) = %d, want 1", len(capture.chunks))
+	}
+}
+
+func TestCaptureStreamingContracts(t *testing.T) {
+	// Bounded empty interval from an initially empty capture stays empty even
+	// after new records are appended, unlike the zero Range.
+	empty := NewCapture()
+	emptyEnd := empty.End()
+	if err := empty.Append(testDataEvent(t, testBus0, 0x100, 0, []byte{1}, 0, DirectionReceive)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if seq, cur, err := empty.Frames(Between(Cursor{}, emptyEnd)); err != nil || cur != emptyEnd || len(slices.Collect(seq)) != 0 {
+		t.Fatalf("Between(Cursor{}, emptyEnd) after append = (%+v, %v), want empty", cur, err)
+	}
+	if seq, cur, err := empty.Frames(Range{}); err != nil || cur != empty.End() || len(slices.Collect(seq)) != 1 {
+		t.Fatalf("Range{} after append = (%+v, %v), want 1 frame", cur, err)
+	}
+
+	// Build a multi-chunk capture containing:
+	// - sparse key (>64 matches in one chunk so the backward index buffer spills to heap)
+	// - dense key (triggers the forward-scan path)
+	// - sparse bus events across chunks
+	capture := newTestCapture(400, 400*8)
+	sparseKey := FrameKey{Bus: testBus0, ID: 0x100, Direction: DirectionReceive}
+	denseKey := FrameKey{Bus: testBus0, ID: 0x200, Direction: DirectionReceive}
+	var wantSparse []FrameEvent
+	var wantDense []FrameEvent
+	var wantBus0 []Event
+	var chunk0End Cursor
+	chunk0SparseCount := 0
+	for seq := range 700 {
+		data := make([]byte, 8)
+		binary.LittleEndian.PutUint32(data, uint32(seq))
+		if seq%5 == 0 {
+			ev := testDataEvent(t, testBus0, sparseKey.ID, 0, data, seq, DirectionReceive)
+			if err := capture.Append(ev); err != nil {
+				t.Fatalf("Append sparse %d: %v", seq, err)
+			}
+			wantSparse = append(wantSparse, ev)
+		} else if seq%10 == 1 {
+			ev, err := NewErrorFrameEvent(testBus0, captureTestBase.Add(time.Duration(seq)*time.Millisecond))
+			if err != nil {
+				t.Fatalf("NewErrorFrameEvent: %v", err)
+			}
+			if err := capture.AppendEvent(ev); err != nil {
+				t.Fatalf("AppendEvent %d: %v", seq, err)
+			}
+			wantBus0 = append(wantBus0, ev)
+		} else {
+			ev := testDataEvent(t, testBus0, denseKey.ID, 0, data, seq, DirectionReceive)
+			if err := capture.Append(ev); err != nil {
+				t.Fatalf("Append dense %d: %v", seq, err)
+			}
+			wantDense = append(wantDense, ev)
+		}
+		if len(capture.chunks) == 1 {
+			chunk0End = capture.End()
+			chunk0SparseCount = len(wantSparse)
+		}
+	}
+	if len(capture.chunks) < 2 {
+		t.Fatalf("chunks = %d, want at least 2", len(capture.chunks))
+	}
+
+	// Verify full streaming + deterministic repeated iteration of the same iter.Seq.
+	sparseSeq, _, err := capture.Series(sparseKey, Range{})
+	if err != nil {
+		t.Fatalf("Series sparse: %v", err)
+	}
+	requireEvents(t, "sparse first pass", slices.Collect(sparseSeq), wantSparse)
+	requireEvents(t, "sparse second pass", slices.Collect(sparseSeq), wantSparse)
+
+	denseSeq, _, err := capture.Series(denseKey, Range{})
+	if err != nil {
+		t.Fatalf("Series dense: %v", err)
+	}
+	requireEvents(t, "dense first pass", slices.Collect(denseSeq), wantDense)
+	requireEvents(t, "dense second pass", slices.Collect(denseSeq), wantDense)
+
+	busSeq, _, err := capture.BusEvents(testBus0, Range{})
+	if err != nil {
+		t.Fatalf("BusEvents: %v", err)
+	}
+	requireBusEvents(t, "bus0 first pass", slices.Collect(busSeq), wantBus0)
+	requireBusEvents(t, "bus0 second pass", slices.Collect(busSeq), wantBus0)
+
+	// Verify early break and iter.Pull with early stop across all 4 iterators.
+	allFramesIter, _, err := capture.Frames(Range{})
+	if err != nil {
+		t.Fatalf("Frames: %v", err)
+	}
+	var brokenFrames []FrameEvent
+	for ev := range allFramesIter {
+		brokenFrames = append(brokenFrames, ev)
+		if len(brokenFrames) == 3 {
+			break
+		}
+	}
+	if len(brokenFrames) != 3 {
+		t.Fatalf("Frames early break = %d, want 3", len(brokenFrames))
+	}
+
+	allEventsIter, _, err := capture.Events(Range{})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var brokenEvents []Event
+	for ev := range allEventsIter {
+		brokenEvents = append(brokenEvents, ev)
+		if len(brokenEvents) == 3 {
+			break
+		}
+	}
+	requireBusEvents(t, "Events early break", brokenEvents, wantBus0[:3])
+
+	brokenFrames = nil
+	for ev := range sparseSeq {
+		brokenFrames = append(brokenFrames, ev)
+		if len(brokenFrames) == 3 {
+			break
+		}
+	}
+	requireEvents(t, "sparse early break", brokenFrames, wantSparse[:3])
+
+	brokenFrames = nil
+	for ev := range denseSeq {
+		brokenFrames = append(brokenFrames, ev)
+		if len(brokenFrames) == 3 {
+			break
+		}
+	}
+	requireEvents(t, "dense early break", brokenFrames, wantDense[:3])
+
+	nextPull, stopPull := iter.Pull(busSeq)
+	pulled, ok := nextPull()
+	if !ok || pulled != wantBus0[0] {
+		t.Fatalf("iter.Pull first bus event = (%+v, %t), want %+v", pulled, ok, wantBus0[0])
+	}
+	stopPull()
+
+	// Exercise the sparse backward-skip path (state.count*4 < span, lastRecord > to)
+	// and the chunk-seam start optimization (startBoundary == len(chunk0.records)-1).
+	sparseSkip := newTestCapture(200, 200*8)
+	var sparseEnd Cursor
+	var wantSparseSkip []FrameEvent
+	for seq := range 100 {
+		id := denseKey.ID
+		if seq == 5 || seq == 95 {
+			id = sparseKey.ID
+		}
+		ev := testDataEvent(t, testBus0, id, 0, []byte{byte(seq), 0, 0, 0, 0, 0, 0, 0}, seq, DirectionReceive)
+		if err := sparseSkip.Append(ev); err != nil {
+			t.Fatalf("Append sparseSkip %d: %v", seq, err)
+		}
+		if seq == 5 {
+			wantSparseSkip = append(wantSparseSkip, ev)
+		}
+		if seq == 50 {
+			sparseEnd = sparseSkip.End()
+		}
+	}
+	skipSeq, _, err := sparseSkip.Series(sparseKey, Between(Cursor{}, sparseEnd))
+	if err != nil {
+		t.Fatalf("Series sparse skip: %v", err)
+	}
+	requireEvents(t, "sparse backward skip past end", slices.Collect(skipSeq), wantSparseSkip)
+
+	seamSeq, _, err := capture.Series(sparseKey, Between(chunk0End, capture.End()))
+	if err != nil {
+		t.Fatalf("Series from chunk0End seam: %v", err)
+	}
+	requireEvents(t, "Series from chunk0End seam", slices.Collect(seamSeq), wantSparse[chunk0SparseCount:])
+
+	// Bounded iterators must not pin unrelated pruned, active, or later-rotated
+	// chunks through capture.chunks's backing array or an unused activeView.
+	gcCap := newTestCapture(2, 16)
+	fdPayload := make([]byte, MaxDataLength)
+	appendGCFrame := func(seq int) Cursor {
+		t.Helper()
+		binary.LittleEndian.PutUint32(fdPayload[:4], uint32(seq))
+		ev := testDataEvent(t, testBus0, sparseKey.ID, FrameFD, fdPayload, seq, DirectionReceive)
+		if err := gcCap.Append(ev); err != nil {
+			t.Fatalf("gcCap Append %d: %v", seq, err)
+		}
+		return gcCap.End()
+	}
+	// Chunk 0 holds 1 small frame so we can take a 1-frame iterator before later
+	// rotations grow capture.chunks.
+	if err := gcCap.Append(testDataEvent(t, testBus0, sparseKey.ID, 0, []byte{1, 2, 3, 4}, 0, DirectionReceive)); err != nil {
+		t.Fatalf("gcCap Append 0: %v", err)
+	}
+	chunk0First := gcCap.End()
+	heldEarly, _, err := gcCap.Frames(Between(Cursor{}, chunk0First))
+	if err != nil {
+		t.Fatalf("gcCap early Frames: %v", err)
+	}
+	seq := 1
+	for len(gcCap.chunks) < 2 {
+		appendGCFrame(seq)
+		seq++
+	}
+	chunk0Last := Cursor{
+		generation: gcCap.generation,
+		chunk:      gcCap.chunks[0].sequence,
+		record:     uint32(len(gcCap.chunks[0].records) - 1),
+	}
+	for len(gcCap.chunks) < 4 {
+		appendGCFrame(seq)
+		seq++
+	}
+	chunk1Len := len(gcCap.chunks[1].records)
+	chunk2Len := len(gcCap.chunks[2].records)
+	chunk2Last := Cursor{
+		generation: gcCap.generation,
+		chunk:      gcCap.chunks[2].sequence,
+		record:     uint32(chunk2Len - 1),
+	}
+	heldMulti, _, err := gcCap.Frames(Between(chunk0Last, chunk2Last))
+	if err != nil {
+		t.Fatalf("gcCap multi-chunk Frames: %v", err)
+	}
+
+	// Watch both the chunk headers and their records/payload backing arrays so
+	// pinning through either capture.chunks or an unused activeView fails the test.
+	chunk0Released := make(chan struct{})
+	chunk0RecordsReleased := make(chan struct{})
+	chunk0PayloadReleased := make(chan struct{})
+	chunk3Released := make(chan struct{})
+	chunk3RecordsReleased := make(chan struct{})
+	chunk3PayloadReleased := make(chan struct{})
+	func() {
+		runtime.AddCleanup(gcCap.chunks[0], func(done chan struct{}) { close(done) }, chunk0Released)
+		runtime.AddCleanup(&gcCap.chunks[0].records[0], func(done chan struct{}) { close(done) }, chunk0RecordsReleased)
+		runtime.AddCleanup(&gcCap.chunks[0].payload[0], func(done chan struct{}) { close(done) }, chunk0PayloadReleased)
+		runtime.AddCleanup(gcCap.chunks[3], func(done chan struct{}) { close(done) }, chunk3Released)
+		runtime.AddCleanup(&gcCap.chunks[3].records[0], func(done chan struct{}) { close(done) }, chunk3RecordsReleased)
+		runtime.AddCleanup(&gcCap.chunks[3].payload[0], func(done chan struct{}) { close(done) }, chunk3PayloadReleased)
+	}()
+
+	waitCollected := func(label string, ch <-chan struct{}) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			runtime.GC()
+			select {
+			case <-ch:
+				return
+			default:
+				runtime.Gosched()
+			}
+		}
+		t.Fatalf("%s was not garbage collected while unrelated iterator remained live", label)
+	}
+
+	// Prune chunk 0 and clear gcCap while both heldEarly (chunk 0) and
+	// heldMulti (chunks 1..2) remain live: neither may pin unrelated chunk 3
+	// or its backing arrays.
+	if err := gcCap.Prune(chunk0Last); err != nil {
+		t.Fatalf("gcCap Prune: %v", err)
+	}
+	gcCap.Clear()
+	waitCollected("unrelated active chunk 3", chunk3Released)
+	waitCollected("unrelated active chunk 3 records", chunk3RecordsReleased)
+	waitCollected("unrelated active chunk 3 payload", chunk3PayloadReleased)
+	if len(slices.Collect(heldEarly)) != 1 {
+		t.Fatal("heldEarly lost its frame")
+	}
+	runtime.KeepAlive(heldEarly)
+	heldEarly = nil
+
+	// After dropping heldEarly, pruned chunk 0 and its backing arrays must be
+	// reclaimed even while heldMulti (chunks 1..2) and gcCap remain live.
+	waitCollected("pruned chunk 0", chunk0Released)
+	waitCollected("pruned chunk 0 records", chunk0RecordsReleased)
+	waitCollected("pruned chunk 0 payload", chunk0PayloadReleased)
+	if len(slices.Collect(heldMulti)) != chunk1Len+chunk2Len {
+		t.Fatal("heldMulti lost frames")
+	}
+	runtime.KeepAlive(heldMulti)
+	runtime.KeepAlive(gcCap)
+
+	// Re-entrancy: mutate Capture (Append, AppendEvent, Prune, Clear) and issue
+	// nested reads inside a yield callback. Must not deadlock or corrupt snapshot.
+	allFramesSeq, snapEnd, err := capture.Frames(Range{})
+	if err != nil {
+		t.Fatalf("Frames snapshot: %v", err)
+	}
+	expectedTotalFrames := len(wantSparse) + len(wantDense)
+	seen := 0
+	for range allFramesSeq {
+		if seen == 0 {
+			if err := capture.Append(testDataEvent(t, testBus1, 0x333, 0, []byte{0xaa}, 9000, DirectionReceive)); err != nil {
+				t.Fatalf("re-entrant Append: %v", err)
+			}
+			if err := capture.Prune(chunk0End); err != nil {
+				t.Fatalf("re-entrant Prune: %v", err)
+			}
+			_ = capture.Len()
+			_ = capture.End()
+			nestedSeq, _, err := capture.Series(FrameKey{Bus: testBus1, ID: 0x333, Direction: DirectionReceive}, Range{})
+			if err != nil || len(slices.Collect(nestedSeq)) != 1 {
+				t.Fatalf("re-entrant nested Series failed: %v", err)
+			}
+		} else if seen == 1 {
+			capture.Clear()
+		}
+		seen++
+	}
+	if seen != expectedTotalFrames {
+		t.Fatalf("re-entrant Frames yielded %d frames, want snapshot count %d", seen, expectedTotalFrames)
+	}
+	if _, _, err := capture.Frames(Since(snapEnd)); !errors.Is(err, ErrCursorOutOfRange) {
+		t.Fatalf("stale cursor after re-entrant Clear = %v, want ErrCursorOutOfRange", err)
 	}
 }
