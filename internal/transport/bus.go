@@ -30,6 +30,9 @@ func BusError(bus gocan.Bus) error {
 // that have no Close and would cancel contexts across testing/synctest bubbles.
 func BusContext(parent context.Context, bus gocan.Bus) (context.Context, context.CancelCauseFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
+	if ctx.Err() != nil {
+		return ctx, cancel
+	}
 	select {
 	case <-bus.Done():
 		cancel(BusError(bus))
@@ -52,6 +55,9 @@ func BusContext(parent context.Context, bus gocan.Bus) (context.Context, context
 // detaches other and cancels the child with cause.
 func Join(parent, other context.Context) (context.Context, context.CancelCauseFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
+	if ctx.Err() != nil {
+		return ctx, cancel
+	}
 	if other.Err() != nil {
 		cancel(context.Cause(other))
 		return ctx, cancel
