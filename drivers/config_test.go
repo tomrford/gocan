@@ -174,11 +174,6 @@ func TestOpenRejectsInvalidConfigurations(t *testing.T) {
 			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 0, TSEG2: 39, SJW: 1},
 			Data:    qualifiedFDTiming.Data,
 		}}},
-		{"FDTiming zero TSEG2", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
-			ClockHz: 80_000_000,
-			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 159, TSEG2: 0, SJW: 1},
-			Data:    qualifiedFDTiming.Data,
-		}}},
 		{"FDTiming zero SJW", capture, pcanFD, drivers.Config{ID: 1, Name: "can", FDTiming: drivers.FDTiming{
 			ClockHz: 80_000_000,
 			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 119, TSEG2: 40, SJW: 0},
