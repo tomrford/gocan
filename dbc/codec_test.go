@@ -100,6 +100,12 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	assertDecoded(t, command, frame, "SignedCounter", "SNA")
 
+	type modeLabel string
+	if err := command.Patch(&frame, Values{"Mode": modeLabel("Off")}); err != nil {
+		t.Fatalf("Patch named string Mode: %v", err)
+	}
+	assertDecoded(t, command, frame, "Mode", "Off")
+
 	if _, err := command.Encode(Values{"Enable": true}); !errors.Is(err, ErrMissingValue) {
 		t.Fatalf("incomplete Encode error = %v", err)
 	}
@@ -109,6 +115,9 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	if err := command.Patch(&frame, Values{"Temperature": 300.0}); !errors.Is(err, ErrInvalidValue) {
 		t.Fatalf("out-of-range Patch error = %v", err)
+	}
+	if err := command.Patch(&frame, Values{"SignedCounter": uint64(math.MaxUint64)}); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("unsigned overflow into SignedCounter error = %v", err)
 	}
 	for _, value := range []json.Number{"-1", "65536", "1.00000000000000000001", "NaN"} {
 		if err := command.Patch(&frame, Values{"BigEndian": value}); !errors.Is(err, ErrInvalidValue) {
@@ -129,6 +138,21 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	}
 	assertDecoded(t, floatStatus, floatFrame, "Ratio", 0.25)
 
+	signedStatus, ok := db.MessageByName("SignedStatus")
+	if !ok {
+		t.Fatal("SignedStatus message was not resolved")
+	}
+	const minSigned63 = -(int64(1) << 62)
+	signedFrame, err := signedStatus.Encode(Values{"Signed63": minSigned63})
+	if err != nil {
+		t.Fatalf("Encode SignedStatus: %v", err)
+	}
+	wantSignedData := [gocan.MaxDataLength]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40}
+	if signedFrame.Data != wantSignedData {
+		t.Fatalf("encoded SignedStatus data = % x, want % x", signedFrame.Data[:8], wantSignedData[:8])
+	}
+	assertDecoded(t, signedStatus, signedFrame, "Signed63", minSigned63)
+
 	fast, ok := db.MessageByName("FastStatus")
 	if !ok {
 		t.Fatal("FastStatus message was not resolved")
@@ -146,6 +170,13 @@ func TestMessageCodecLifecycle(t *testing.T) {
 	assertDecoded(t, fast, fd, "Payload", payload)
 	if payload, err := fast.EncodePayload(fastValues); err != nil || !bytes.Equal(payload, fd.Data[:fast.Length]) {
 		t.Fatalf("EncodePayload FastStatus = % x, %v; want % x", payload, err, fd.Data[:fast.Length])
+	}
+	beforeInvalidFD := fd
+	if err := fast.Patch(&fd, Values{"Payload": int64(-1)}); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("negative int64 into unsigned 64-bit Payload error = %v", err)
+	}
+	if fd != beforeInvalidFD {
+		t.Fatal("failed Patch modified CAN FD frame")
 	}
 	if err := fast.Patch(&fd, Values{"Payload": json.Number("1.8446744073709551615e19")}); err != nil {
 		t.Fatalf("Patch JSON uint64 maximum: %v", err)

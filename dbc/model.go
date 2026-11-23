@@ -32,7 +32,16 @@ type Database struct {
 	messagesByID   map[messageID]int
 	messagesByPGN  map[uint32][]int
 	source         []byte
+	encoding       sourceEncoding
 }
+
+type sourceEncoding uint8
+
+const (
+	sourceEncodingUTF8 sourceEncoding = iota
+	sourceEncodingUTF8BOM
+	sourceEncodingWindows1252
+)
 
 // messageID indexes one message by its resolved arbitration identifier. The
 // extended flag is part of the identity: a standard and an extended message may
@@ -97,9 +106,10 @@ func (db *Database) clone() (*Database, error) {
 	return &clone, nil
 }
 
-// Source returns a copy of the exact bytes read by Parse or ParseFile,
-// including its original encoding and byte-order mark. It does not reflect
-// model edits. A database constructed without parsing returns nil.
+// Source returns a copy of the exact bytes read by Parse or ParseFile, or
+// written by Edit, including its original encoding and byte-order mark. It
+// does not reflect in-place model edits. A database constructed without
+// parsing or editing returns nil.
 func (db *Database) Source() []byte { return bytes.Clone(db.source) }
 
 // Node is one CAN network participant declared by BU_.

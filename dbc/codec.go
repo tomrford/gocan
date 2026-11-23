@@ -36,8 +36,9 @@ var (
 	// frame, or an encode on a message whose definition cannot be written
 	// consistently.
 	ErrUnsupportedMessage = errors.New("dbc: unsupported message")
-	// ErrUnrepresentable means Write cannot express part of the model as DBC
-	// text, such as an out-of-range identifier or an invalid name or string.
+	// ErrUnrepresentable means Write or Edit cannot express part of the model as
+	// DBC text, such as an out-of-range identifier, an invalid name or string, or
+	// a character the original encoding cannot represent.
 	ErrUnrepresentable = errors.New("dbc: not representable as DBC")
 )
 

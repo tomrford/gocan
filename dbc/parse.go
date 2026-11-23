@@ -35,6 +35,8 @@ func (err *Error) Error() string {
 	return fmt.Sprintf("dbc: %s: %s", location, err.Message)
 }
 
+const utf8BOM = "\xef\xbb\xbf"
+
 // Parse reads and parses r into a resolved DBC model. It accepts UTF-8 text,
 // with an optional byte-order mark, and falls back to Windows-1252 for legacy
 // sources. In quoted strings, \" is the only escape.
@@ -50,11 +52,18 @@ func Parse(name string, r io.Reader) (*Database, error) {
 		}
 		return nil, fmt.Errorf("dbc: %s: %w", location, err)
 	}
-	textBytes := bytes.TrimPrefix(original, []byte{0xef, 0xbb, 0xbf})
+	textBytes, hasBOM := bytes.CutPrefix(original, []byte(utf8BOM))
 	var source string
+	encoding := sourceEncodingUTF8
 	if utf8.Valid(textBytes) {
+		if hasBOM {
+			encoding = sourceEncodingUTF8BOM
+		}
 		source = string(textBytes)
 	} else {
+		// A UTF-8 BOM before Windows-1252 bytes is malformed; Edit writes clean
+		// Windows-1252 without re-emitting a UTF-8 BOM.
+		encoding = sourceEncodingWindows1252
 		decoded, err := charmap.Windows1252.NewDecoder().Bytes(textBytes)
 		if err != nil {
 			return nil, &Error{
@@ -65,6 +74,10 @@ func Parse(name string, r io.Reader) (*Database, error) {
 		source = string(decoded)
 	}
 
+	return parse(name, original, source, encoding)
+}
+
+func parse(name string, original []byte, source string, encoding sourceEncoding) (*Database, error) {
 	tokens, err := lex(name, source)
 	if err != nil {
 		return nil, err
@@ -78,6 +91,7 @@ func Parse(name string, r io.Reader) (*Database, error) {
 		return nil, err
 	}
 	db.source = original
+	db.encoding = encoding
 	return db, nil
 }
 

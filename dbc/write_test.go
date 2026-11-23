@@ -51,6 +51,7 @@ func assertEquivalent(t *testing.T, want, got *Database) {
 	wantCopy, gotCopy := *want, *got
 	wantCopy.Diagnostics, gotCopy.Diagnostics = nil, nil
 	wantCopy.source, gotCopy.source = nil, nil
+	wantCopy.encoding, gotCopy.encoding = 0, 0
 	if reflect.DeepEqual(wantCopy, gotCopy) {
 		return
 	}

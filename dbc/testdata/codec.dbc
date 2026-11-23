@@ -20,6 +20,9 @@ BO_ 291 Command: 8 ECU
 BO_ 292 FloatStatus: 4 ECU
  SG_ Ratio : 0|32@1+ (1,0) [0|1] "" ECU
 
+BO_ 294 SignedStatus: 8 ECU
+ SG_ Signed63 : 0|63@1- (1,0) [0|0] "" ECU
+
 BO_ 2149235934 FastStatus: 9 ECU
  SG_ Payload : 0|64@1+ (1,0) [0|0] "" ECU
  SG_ Tail : 64|8@1+ (1,0) [0|255] "" ECU
