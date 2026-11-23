@@ -206,6 +206,12 @@ func TestEditConstructedDatabase(t *testing.T) {
 			t.Fatal("callback lookup missed Value")
 		}
 		value.Name = "Level"
+		// The renamed signal is found by its new name for further edits.
+		level, ok := status.SignalByName("Level")
+		if !ok {
+			t.Fatal("callback lookup missed the renamed signal")
+		}
+		level.Comment = "Fill level"
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +223,9 @@ func TestEditConstructedDatabase(t *testing.T) {
 	frame, err := status.Encode(dbc.Values{"Level": uint64(42)})
 	if err != nil || frame.Data[0] != 42 {
 		t.Fatalf("Encode edited Status = %v, %v", frame, err)
+	}
+	if level, ok := status.SignalByName("Level"); !ok || level.Comment != "Fill level" {
+		t.Fatalf("edited Level = %#v", level)
 	}
 	if constructed.Messages[0].Signals[0].Name != "Value" {
 		t.Fatal("Edit changed the constructed database")

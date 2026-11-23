@@ -23,12 +23,12 @@ import (
 // edit may change DBC declarations, including adding or removing nodes,
 // messages and signals. Message.Format is derived from VFrameFormat and
 // ProtocolType attributes; edit those attributes to change the frame format.
-// Diagnostics are also derived. Lookups, codecs, Diagnostics and Source on the
-// copy describe db before edit ran; for a database that Parse did not
-// produce, the copy is db written and parsed, so its lookups work. An edit that
-// Write cannot express returns
-// an error wrapping ErrUnrepresentable; one that Parse rejects returns its
-// *Error.
+// Diagnostics are also derived. On the copy, Database lookups, codecs,
+// Diagnostics and Source describe db before edit ran, while
+// Message.SignalByName finds the copy's current signals. A database that Parse
+// did not produce is written and parsed first, so its lookups work. An edit
+// that Write cannot express returns an error wrapping ErrUnrepresentable; one
+// that Parse rejects returns its *Error.
 func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
 	edited, err := db.editable(name)
 	if err != nil {
@@ -42,9 +42,9 @@ func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
 	return Parse(name, &buf)
 }
 
-// editable returns the copy an Edit callback changes. A database that Parse
-// did not resolve has no lookups, so it is resolved through a round trip
-// first; a parsed database is cloned.
+// editable returns the copy an Edit callback changes: a clone, so no signal
+// storage is shared with a codec index. A database that Parse did not resolve
+// has no lookups, so it is resolved through a round trip first.
 func (db *Database) editable(name string) (*Database, error) {
 	if db.messagesByName != nil {
 		return db.clone()
@@ -53,7 +53,11 @@ func (db *Database) editable(name string) (*Database, error) {
 	if err := db.Write(&buf); err != nil {
 		return nil, err
 	}
-	return Parse(name, &buf)
+	parsed, err := Parse(name, &buf)
+	if err != nil {
+		return nil, err
+	}
+	return parsed.clone()
 }
 
 // Write writes db as UTF-8 DBC text. For a parsed database, parsing the text

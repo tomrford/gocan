@@ -97,6 +97,8 @@ func TestParseClassifiesFailures(t *testing.T) {
 		{"XML 1.1", strings.NewReader(`<?xml version="1.1"?><CANDELA/>`), cdd.ErrUnsupported},
 		{"reader failure", io.MultiReader(strings.NewReader(`<CANDELA><ECUDOC>`), iotest.ErrReader(failed)), failed},
 		{"reader failure within a character", io.MultiReader(strings.NewReader("<CANDELA><ECUDOC><QUAL>\xc3"), iotest.ErrReader(failed)), failed},
+		{"reader failure with a second root", &dataErrReader{data: "<CANDELA/><CANDELA/>", err: failed}, failed},
+		{"reader without progress", stalledReader{}, io.ErrNoProgress},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := cdd.Parse(test.name, test.reader)
@@ -111,6 +113,26 @@ func TestParseClassifiesFailures(t *testing.T) {
 		})
 	}
 }
+
+// dataErrReader returns all its data together with err in a single read.
+type dataErrReader struct {
+	data string
+	err  error
+	done bool
+}
+
+func (r *dataErrReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+// stalledReader never returns data or an error.
+type stalledReader struct{}
+
+func (stalledReader) Read([]byte) (int, error) { return 0, nil }
 
 func parseCatalogFile(path string) (*cdd.Database, error) {
 	document, err := cdd.ParseFile(path)

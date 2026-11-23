@@ -40,6 +40,11 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 	var stack []*element
 	for {
 		token, err := decoder.Token()
+		// A read can return data with its failure, and the decoder may first
+		// report what that data contains.
+		if input.err != nil {
+			return nil, sourceError(name, fmt.Errorf("read XML: %w", input.err))
+		}
 		if err == io.EOF {
 			break
 		}
@@ -47,7 +52,7 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 			return nil, sourceError(name, charsetErr)
 		}
 		if err != nil {
-			return nil, sourceError(name, xmlError(err, input.err))
+			return nil, sourceError(name, xmlError(err))
 		}
 		switch token := token.(type) {
 		case xml.StartElement:
@@ -90,20 +95,20 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 	return root, nil
 }
 
-// xmlError classifies a decoder failure. A reader failure says nothing about
-// the document, even when the decoder reports it as a syntax error, such as
-// a character cut short. Otherwise malformed XML makes the document invalid,
-// and the decoder's remaining errors reject an XML version or encoding it
-// does not implement.
-func xmlError(err, readErr error) error {
-	if readErr != nil {
-		return fmt.Errorf("read XML: %w", readErr)
-	}
+// xmlError classifies a decoder failure that is not a reader failure.
+// Malformed XML makes the document invalid. A reader that makes no progress
+// says nothing about the document. encoding/xml's remaining errors reject an
+// XML version or encoding it does not implement.
+func xmlError(err error) error {
 	var syntaxErr *xml.SyntaxError
-	if errors.As(err, &syntaxErr) {
+	switch {
+	case errors.As(err, &syntaxErr):
 		return invalidf("decode XML: %w", err)
+	case errors.Is(err, io.ErrNoProgress):
+		return fmt.Errorf("read XML: %w", err)
+	default:
+		return unsupportedf("decode XML: %w", err)
 	}
-	return unsupportedf("decode XML: %w", err)
 }
 
 // recordingReader keeps the first reader failure, which the decoder may

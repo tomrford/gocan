@@ -106,16 +106,12 @@ func (message *Message) SignalByName(name string) (*Signal, bool) {
 	if message == nil {
 		return nil, false
 	}
-	// The index describes only the signal storage Parse resolved. Copies, such
-	// as those an Edit callback changes, scan.
+	// The index describes only the signal storage Parse resolved, so copies,
+	// such as those an Edit callback changes, scan. A miss also scans, which
+	// keeps a signal renamed in place findable.
 	if codec := message.codec; codec != nil && codec.indexes(message.Signals) {
-		index, ok := codec.signalsByName[name]
-		if ok && message.Signals[index].Name == name {
+		if index, ok := codec.signalsByName[name]; ok && message.Signals[index].Name == name {
 			return &message.Signals[index], true
-		}
-		// A compile error can leave the index short; otherwise it is complete.
-		if !ok && codec.err == nil {
-			return nil, false
 		}
 	}
 	for index := range message.Signals {
