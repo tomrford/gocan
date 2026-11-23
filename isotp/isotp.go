@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 const (
@@ -151,7 +152,14 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 	if capture == nil {
 		return nil, errors.New("isotp: bus requires a capture")
 	}
-	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.TransmitMinDataLength, config.PaddingByte, config.TransmitRetryTimeout)
+	transmitter, err := newTransmitter(FunctionalConfig{
+		TransmitID:            config.TransmitID,
+		FrameFlags:            config.FrameFlags,
+		TransmitDataLength:    config.TransmitDataLength,
+		TransmitMinDataLength: config.TransmitMinDataLength,
+		PaddingByte:           config.PaddingByte,
+		TransmitRetryTimeout:  config.TransmitRetryTimeout,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +283,7 @@ func (link *Link) resetError(ctx context.Context) error {
 	}
 	select {
 	case <-link.bus.Done():
-		return link.busError()
+		return transport.BusError(link.bus)
 	default:
 		return nil
 	}
@@ -357,14 +365,8 @@ func (exchange *Exchange) Close() error {
 }
 
 func (link *Link) newExchange() *Exchange {
-	ctx, cancel := context.WithCancelCause(context.Background())
-	go func() {
-		select {
-		case <-link.bus.Done():
-			cancel(link.busError())
-		case <-ctx.Done():
-		}
-	}()
+	// Exchange operations join this context, so they start no bus watchers.
+	ctx, cancel := transport.BusContext(context.Background(), link.bus)
 	return &Exchange{link: link, ctx: ctx, cancel: cancel}
 }
 
@@ -441,7 +443,7 @@ func (link *Link) acquire(ctx context.Context, token chan struct{}) error {
 	case <-token:
 		return nil
 	case <-link.bus.Done():
-		return link.busError()
+		return transport.BusError(link.bus)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -452,23 +454,13 @@ func (link *Link) release(token chan struct{}) {
 }
 
 func (link *Link) operationContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return watchedContext(parent, link.bus.Done(), link.busError)
+	ctx, cancel := transport.BusContext(parent, link.bus)
+	return ctx, func() { cancel(context.Canceled) }
 }
 
 func (exchange *Exchange) operationContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return watchedContext(parent, exchange.ctx.Done(), func() error { return context.Cause(exchange.ctx) })
-}
-
-func watchedContext(parent context.Context, done <-chan struct{}, cause func() error) (context.Context, context.CancelFunc) {
-	ctx, cancelCause := context.WithCancelCause(parent)
-	go func() {
-		select {
-		case <-done:
-			cancelCause(cause())
-		case <-ctx.Done():
-		}
-	}()
-	return ctx, func() { cancelCause(context.Canceled) }
+	ctx, cancel := transport.Join(parent, exchange.ctx)
+	return ctx, func() { cancel(context.Canceled) }
 }
 
 func withCause(operationContext context.Context, err error) error {
@@ -480,13 +472,6 @@ func withCause(operationContext context.Context, err error) error {
 		return cause
 	}
 	return err
-}
-
-func (link *Link) busError() error {
-	if err := link.bus.Err(); err != nil {
-		return err
-	}
-	return gocan.ErrBusClosed
 }
 
 func configuredTimeout(value, defaultValue time.Duration, name string) (time.Duration, error) {

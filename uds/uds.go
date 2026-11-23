@@ -172,11 +172,30 @@ func (client *Client) Do(ctx context.Context, request Request) (Response, error)
 // completion of the action. Callers must allow the server to finish before
 // starting another exchange on the same receive address.
 func (client *Client) Send(ctx context.Context, request Request) error {
+	return sendRequest(ctx, client.link, request)
+}
+
+// payloadSender is the ISO-TP send path of a physical or functional link.
+type payloadSender interface {
+	Send(context.Context, []byte) error
+}
+
+func sendRequest(ctx context.Context, link payloadSender, request Request) error {
 	payload, err := request.payload()
 	if err != nil {
 		return err
 	}
-	return wrapRequestTransportError(client.link.Send(ctx, payload))
+	return wrapRequestTransportError(link.Send(ctx, payload))
+}
+
+// ecuResetSuppressed encodes the ECU reset subfunction with its positive
+// response suppressed for Client and Functional. Each caller keeps the request
+// data local so sending through its concrete type does not allocate it.
+func ecuResetSuppressed(resetType ResetType) (byte, error) {
+	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
+		return 0, err
+	}
+	return byte(resetType) | suppressPositiveResponse, nil
 }
 
 func wrapRequestTransportError(err error) error {

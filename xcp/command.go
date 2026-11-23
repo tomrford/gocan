@@ -34,11 +34,8 @@ func (client *Client) command(ctx context.Context, request Request) (Response, e
 		if client.config.PadFrames {
 			length = int(client.config.TransmitDataLength)
 		}
-		for {
-			if _, err := gocan.LengthToDLC(length, client.config.FrameFlags.Has(gocan.FrameFD)); err == nil {
-				break
-			}
-			length++
+		if client.config.FrameFlags.Has(gocan.FrameFD) {
+			length = transport.CANFDLength(length)
 		}
 		for i := 1 + len(request.Data); i < length; i++ {
 			packet[i] = client.config.PaddingByte

@@ -5,7 +5,7 @@ package gocan
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"strconv"
 	"time"
 )
 
@@ -52,7 +52,24 @@ func (flags FrameFlags) Has(flag FrameFlags) bool {
 // empty string when none is set. An undefined bit renders as its hexadecimal
 // value. For example, "extended|fd|brs".
 func (flags FrameFlags) String() string {
-	names := make([]string, 0, 5)
+	// Single defined flags return their constant name without allocating.
+	switch flags {
+	case 0:
+		return ""
+	case FrameExtended:
+		return "extended"
+	case FrameRemote:
+		return "remote"
+	case FrameFD:
+		return "fd"
+	case FrameBitRateSwitch:
+		return "brs"
+	case FrameErrorStateIndicator:
+		return "esi"
+	}
+	// Longest: "extended|remote|fd|brs|esi|0xe0".
+	var buffer [32]byte
+	text := buffer[:0]
 	for _, named := range [...]struct {
 		flag FrameFlags
 		name string
@@ -64,13 +81,20 @@ func (flags FrameFlags) String() string {
 		{FrameErrorStateIndicator, "esi"},
 	} {
 		if flags.Has(named.flag) {
-			names = append(names, named.name)
+			if len(text) > 0 {
+				text = append(text, '|')
+			}
+			text = append(text, named.name...)
 		}
 	}
 	if unknown := flags &^ allFrameFlags; unknown != 0 {
-		names = append(names, fmt.Sprintf("%#x", uint8(unknown)))
+		if len(text) > 0 {
+			text = append(text, '|')
+		}
+		text = append(text, "0x"...)
+		text = strconv.AppendUint(text, uint64(unknown), 16)
 	}
-	return strings.Join(names, "|")
+	return string(text)
 }
 
 // Frame is an owned classical CAN or CAN FD frame.

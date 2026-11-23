@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 // ErrStopped indicates an update to a task that has already stopped.
@@ -225,10 +226,7 @@ func (task *Task) run(anchor time.Time) {
 			return
 
 		case <-task.bus.Done():
-			runErr = task.bus.Err()
-			if runErr == nil {
-				runErr = gocan.ErrBusClosed
-			}
+			runErr = transport.BusError(task.bus)
 			return
 
 		case <-timer.C:
@@ -284,10 +282,7 @@ func (task *Task) send(anchor time.Time) error {
 	} else if task.ctx.Err() == nil && (errors.Is(err, ErrOccurrenceMissed) || errors.Is(err, gocan.ErrTransmitQueueFull)) {
 		select {
 		case <-task.bus.Done():
-			cause := task.bus.Err()
-			if cause == nil {
-				cause = gocan.ErrBusClosed
-			}
+			cause := transport.BusError(task.bus)
 			if errors.Is(err, cause) {
 				return err
 			}

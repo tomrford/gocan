@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 type frameType uint8
@@ -53,36 +54,40 @@ type transmitter struct {
 	transmitRetryTimeout  time.Duration
 }
 
-func newTransmitter(transmitID uint32, flags gocan.FrameFlags, dataLength, minDataLength uint8, paddingByte byte, retryTimeout time.Duration) (transmitter, error) {
+// newTransmitter validates the transmit settings Config shares with
+// FunctionalConfig.
+func newTransmitter(config FunctionalConfig) (transmitter, error) {
+	flags := config.FrameFlags
 	if unsupported := flags &^ (gocan.FrameExtended | gocan.FrameFD | gocan.FrameBitRateSwitch); unsupported != 0 {
 		return transmitter{}, fmt.Errorf("isotp: frame flags %#x are not supported", uint8(unsupported))
 	}
 	if flags.Has(gocan.FrameBitRateSwitch) && !flags.Has(gocan.FrameFD) {
 		return transmitter{}, errors.New("isotp: bit-rate switching requires CAN FD")
 	}
-	if err := validateID(transmitID, flags); err != nil {
+	if err := validateID(config.TransmitID, flags); err != nil {
 		return transmitter{}, fmt.Errorf("isotp: transmit ID: %w", err)
 	}
-	transmitDataLength := int(dataLength)
+	transmitDataLength := int(config.TransmitDataLength)
 	if transmitDataLength == 0 {
 		transmitDataLength = defaultTransmitDataLength
 	}
 	if err := validateTransmitDataLength(transmitDataLength, flags.Has(gocan.FrameFD)); err != nil {
 		return transmitter{}, err
 	}
-	if int(minDataLength) > transmitDataLength || nearestCANFDLength(int(minDataLength)) != int(minDataLength) {
+	minDataLength := int(config.TransmitMinDataLength)
+	if minDataLength > transmitDataLength || transport.CANFDLength(minDataLength) != minDataLength {
 		return transmitter{}, fmt.Errorf("isotp: minimum transmit data length %d is invalid for maximum %d", minDataLength, transmitDataLength)
 	}
-	if retryTimeout < 0 {
+	if config.TransmitRetryTimeout < 0 {
 		return transmitter{}, errors.New("isotp: transmit retry timeout must not be negative")
 	}
 	return transmitter{
-		transmitID:            transmitID,
+		transmitID:            config.TransmitID,
 		frameFlags:            flags,
 		transmitDataLength:    transmitDataLength,
-		transmitMinDataLength: int(minDataLength),
-		paddingByte:           paddingByte,
-		transmitRetryTimeout:  retryTimeout,
+		transmitMinDataLength: minDataLength,
+		paddingByte:           config.PaddingByte,
+		transmitRetryTimeout:  config.TransmitRetryTimeout,
 	}, nil
 }
 
@@ -106,8 +111,9 @@ func (transmitter *transmitter) prepareTransmission(payload []byte) (transmissio
 	if escapeSingleFrame {
 		singleHeaderLength = 2
 	}
+	var buffer [gocan.MaxDataLength]byte
 	if len(payload) <= transmitter.transmitDataLength-singleHeaderLength {
-		data := make([]byte, singleHeaderLength+len(payload))
+		data := buffer[:singleHeaderLength+len(payload)]
 		if escapeSingleFrame {
 			data[1] = byte(len(payload))
 		} else {
@@ -122,7 +128,7 @@ func (transmitter *transmitter) prepareTransmission(payload []byte) (transmissio
 	if len(payload) > 0x0fff {
 		headerLength = 6
 	}
-	data := make([]byte, transmitter.transmitDataLength)
+	data := buffer[:transmitter.transmitDataLength]
 	if headerLength == 2 {
 		data[0] = 0x10 | byte(len(payload)>>8)
 		data[1] = byte(len(payload))
@@ -156,7 +162,7 @@ func (transmitter *transmitter) makeFrame(data []byte, fullLength bool) (gocan.F
 	if fullLength {
 		targetLength = transmitter.transmitDataLength
 	} else if transmitter.frameFlags.Has(gocan.FrameFD) {
-		targetLength = nearestCANFDLength(targetLength)
+		targetLength = transport.CANFDLength(targetLength)
 	}
 	if targetLength < len(data) || targetLength > transmitter.transmitDataLength {
 		return gocan.Frame{}, fmt.Errorf("%w: invalid transport frame length %d", ErrProtocol, targetLength)
@@ -245,27 +251,6 @@ func parseFrame(frame gocan.Frame) (pdu, error) {
 		return pdu{}, fmt.Errorf("%w: reserved frame type %#x", ErrProtocol, parsed.kind)
 	}
 	return parsed, nil
-}
-
-func nearestCANFDLength(length int) int {
-	switch {
-	case length <= 8:
-		return length
-	case length <= 12:
-		return 12
-	case length <= 16:
-		return 16
-	case length <= 20:
-		return 20
-	case length <= 24:
-		return 24
-	case length <= 32:
-		return 32
-	case length <= 48:
-		return 48
-	default:
-		return 64
-	}
 }
 
 // decodeSeparationTime converts a Flow Control STmin byte. A reserved encoding

@@ -9,27 +9,16 @@ import (
 )
 
 // FunctionalConfig defines one functional, normal-addressing ISO-TP send path.
+// Each field has the meaning documented on the Config field of the same name.
+// Functional paths send only Single Frames, so they have no receive or
+// flow-control settings, and acceptance does not confirm delivery.
 type FunctionalConfig struct {
-	TransmitID uint32
-	FrameFlags gocan.FrameFlags
-
-	// TransmitDataLength is the maximum CAN data length used for transmitted
-	// frames. Zero selects 8. CAN FD additionally permits 12, 16, 20, 24, 32,
-	// 48, or 64.
-	TransmitDataLength uint8
-	// TransmitMinDataLength pads shorter frames to this CAN data length.
-	// Zero disables optional padding. Valid values are 0 through 8 and, for
-	// CAN FD, 12, 16, 20, 24, 32, 48 or 64; the minimum must not exceed
-	// the resolved TransmitDataLength. CAN FD always rounds up to a legal data length.
-	// Use 8 to pad short frames while allowing longer FD frames to use the
-	// smallest fitting length.
+	TransmitID            uint32
+	FrameFlags            gocan.FrameFlags
+	TransmitDataLength    uint8
 	TransmitMinDataLength uint8
-	// PaddingByte fills both requested padding and the padding required to reach
-	// a legal CAN FD data length.
-	PaddingByte byte
-	// TransmitRetryTimeout bounds queue-full retries. Zero disables retries;
-	// caller deadlines may shorten it. Acceptance does not confirm delivery.
-	TransmitRetryTimeout time.Duration
+	PaddingByte           byte
+	TransmitRetryTimeout  time.Duration
 }
 
 // Functional transmits functionally addressed ISO-TP payloads. ISO 15765-2
@@ -47,7 +36,7 @@ func NewFunctional(bus gocan.Bus, config FunctionalConfig) (*Functional, error) 
 	if bus == nil {
 		return nil, errors.New("isotp: functional path requires a bus")
 	}
-	transmitter, err := newTransmitter(config.TransmitID, config.FrameFlags, config.TransmitDataLength, config.TransmitMinDataLength, config.PaddingByte, config.TransmitRetryTimeout)
+	transmitter, err := newTransmitter(config)
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/internal/transport"
 )
 
 var (
@@ -235,22 +236,8 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 	if err := context.Cause(client.ctx); err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := context.WithCancelCause(parent)
+	ctx, cancel := transport.BusContext(parent, client.bus)
 	stop := context.AfterFunc(client.ctx, func() { cancel(ErrClosed) })
-	cancelBus := func() {
-		err := client.bus.Err()
-		if err == nil {
-			err = gocan.ErrBusClosed
-		}
-		cancel(err)
-	}
-	go func() {
-		select {
-		case <-client.bus.Done():
-			cancelBus()
-		case <-ctx.Done():
-		}
-	}()
 	cleanup := func() { stop(); cancel(context.Canceled) }
 	select {
 	case <-ctx.Done():
@@ -271,7 +258,7 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 	}
 	select {
 	case <-client.bus.Done():
-		cancelBus()
+		cancel(transport.BusError(client.bus))
 	default:
 	}
 	if err := context.Cause(ctx); err != nil {
