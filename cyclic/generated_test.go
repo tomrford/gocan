@@ -288,14 +288,19 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			{"fault during occurrence expiry", cyclic.ErrOccurrenceMissed, gocan.ErrHardwareDisconnected},
 		} {
 			ctx, cancel := context.WithCancelCause(context.Background())
-			bus.done = make(chan struct{})
+			busCtx, cancelBus := context.WithCancelCause(context.Background())
+			bus.ctx = busCtx
 			bus.err = test.busErr
 			bus.send = func(ctx context.Context, _ gocan.Frame) error {
 				if test.sendErr != nil {
 					if test.sendErr == cyclic.ErrOccurrenceMissed {
 						<-ctx.Done()
 					}
-					close(bus.done)
+					if test.busErr != nil {
+						cancelBus(test.busErr)
+					} else {
+						cancelBus(gocan.ErrBusClosed)
+					}
 					if ctx.Err() != nil {
 						return ctx.Err()
 					}
@@ -319,7 +324,7 @@ func TestRetryScheduleAndStop(t *testing.T) {
 				cancel(cause)
 				want = cause
 			case "close":
-				close(bus.done)
+				cancelBus(gocan.ErrBusClosed)
 				want = gocan.ErrBusClosed
 			default:
 				want = test.busErr
@@ -328,6 +333,7 @@ func TestRetryScheduleAndStop(t *testing.T) {
 				}
 			}
 			<-task.Done()
+			cancelBus(gocan.ErrBusClosed)
 			cancel(nil)
 			if !errors.Is(task.Err(), want) || task.Missed() != 0 || (test.sendErr != nil && !errors.Is(task.Err(), test.sendErr)) {
 				t.Fatalf("%s with miss allowance: %v, missed %d; want %v, %v, 0", test.shutdown, task.Err(), task.Missed(), want, test.sendErr)
@@ -338,7 +344,7 @@ func TestRetryScheduleAndStop(t *testing.T) {
 
 type callbackBus struct {
 	send func(context.Context, gocan.Frame) error
-	done chan struct{}
+	ctx  context.Context
 	err  error
 }
 
@@ -348,6 +354,11 @@ func (bus *callbackBus) Capture() *gocan.Capture { return nil }
 func (bus *callbackBus) Send(ctx context.Context, frame gocan.Frame) error {
 	return bus.send(ctx, frame)
 }
-func (bus *callbackBus) Done() <-chan struct{} { return bus.done }
-func (bus *callbackBus) Err() error            { return bus.err }
-func (bus *callbackBus) Close() error          { return nil }
+func (bus *callbackBus) Context() context.Context {
+	if bus.ctx != nil {
+		return bus.ctx
+	}
+	return context.Background()
+}
+func (bus *callbackBus) Err() error   { return bus.err }
+func (bus *callbackBus) Close() error { return nil }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -20,7 +19,8 @@ import (
 type activeBus struct {
 	capture   *gocan.Capture
 	sent      chan gocan.Frame
-	done      chan struct{}
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
 	mu        sync.Mutex
 	failure   error
 	delayID   uint32
@@ -31,14 +31,15 @@ type activeBus struct {
 }
 
 func newActiveBus() *activeBus {
-	return &activeBus{capture: gocan.NewCapture(), sent: make(chan gocan.Frame, 1024), done: make(chan struct{})}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	return &activeBus{capture: gocan.NewCapture(), sent: make(chan gocan.Frame, 1024), ctx: ctx, cancel: cancel}
 }
-func (b *activeBus) ID() gocan.BusID         { return 1 }
-func (b *activeBus) Name() string            { return "J1939 fixture" }
-func (b *activeBus) Capture() *gocan.Capture { return b.capture }
-func (b *activeBus) Done() <-chan struct{}   { return b.done }
-func (b *activeBus) Err() error              { return nil }
-func (b *activeBus) Close() error            { close(b.done); return nil }
+func (b *activeBus) ID() gocan.BusID          { return 1 }
+func (b *activeBus) Name() string             { return "J1939 fixture" }
+func (b *activeBus) Capture() *gocan.Capture  { return b.capture }
+func (b *activeBus) Context() context.Context { return b.ctx }
+func (b *activeBus) Err() error               { return nil }
+func (b *activeBus) Close() error             { b.cancel(gocan.ErrBusClosed); return nil }
 func (b *activeBus) Send(ctx context.Context, f gocan.Frame) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -179,7 +180,7 @@ func TestActiveBAMSpacingAndPassivePayload(t *testing.T) {
 		resultIs(t, r, nil)
 		var decoder j1939.Decoder
 		frames, _, _ := b.capture.Frames(gocan.Range{})
-		messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
+		messages, diagnostics := decoder.PushBatch(frames)
 		if len(diagnostics) != 0 {
 			t.Fatal(diagnostics)
 		}
@@ -226,7 +227,7 @@ func TestActiveDirectedSendWindowsPauseRetransmitAndAcknowledgement(t *testing.T
 		}
 		var decoder j1939.Decoder
 		frames, _, _ := b.capture.Frames(gocan.Range{})
-		messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
+		messages, diagnostics := decoder.PushBatch(frames)
 		if len(diagnostics) != 1 || !errors.Is(diagnostics[0], j1939.ErrProtocol) || len(messages) != 2 || !bytes.Equal(messages[1].Payload, activePayload) {
 			t.Fatalf("passive = %v, %v", messages, diagnostics)
 		}
@@ -655,7 +656,7 @@ func TestActiveClientsOverVirtualBus(t *testing.T) {
 		for i, capture := range captures {
 			var decoder j1939.Decoder
 			frames, _, _ := capture.Frames(gocan.Range{})
-			messages, diagnostics := decoder.PushBatch(slices.Collect(frames))
+			messages, diagnostics := decoder.PushBatch(frames)
 			if len(diagnostics) != 0 {
 				t.Fatal(diagnostics)
 			}

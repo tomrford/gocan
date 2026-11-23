@@ -439,11 +439,11 @@ type Bus struct {
 
 var _ gocan.Bus = (*Bus)(nil)
 
-func (bus *Bus) ID() gocan.BusID         { return bus.config.ID }
-func (bus *Bus) Name() string            { return bus.config.Name }
-func (bus *Bus) Capture() *gocan.Capture { return bus.capture }
-func (bus *Bus) Done() <-chan struct{}   { return bus.lifecycle.Done() }
-func (bus *Bus) Err() error              { return bus.lifecycle.Err() }
+func (bus *Bus) ID() gocan.BusID          { return bus.config.ID }
+func (bus *Bus) Name() string             { return bus.config.Name }
+func (bus *Bus) Capture() *gocan.Capture  { return bus.capture }
+func (bus *Bus) Context() context.Context { return bus.lifecycle.Context() }
+func (bus *Bus) Err() error               { return bus.lifecycle.Err() }
 
 // Close transmits frames already accepted by Send, stopping early if a
 // transmission fails, then releases the channel.

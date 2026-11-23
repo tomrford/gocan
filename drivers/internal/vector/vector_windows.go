@@ -660,7 +660,7 @@ func (bus *Bus) transmitFrame(frame gocan.Frame) error {
 	return nil
 }
 
-func (bus *Bus) Done() <-chan struct{} { return bus.lifecycle.Done() }
+func (bus *Bus) Context() context.Context { return bus.lifecycle.Context() }
 
 func (bus *Bus) Err() error {
 	return bus.lifecycle.Err()

@@ -92,7 +92,7 @@ func TestQueueContractsHardware(t *testing.T) {
 	}
 	b.ioMu.Unlock()
 	select {
-	case <-b.Done():
+	case <-b.Context().Done():
 	case <-ctx.Done():
 		b.ioMu.Lock()
 		t.Fatal("RX overflow did not stop the bus")

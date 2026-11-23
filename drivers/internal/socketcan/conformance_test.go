@@ -88,7 +88,7 @@ func induceVCanOverrun(t *testing.T, healthy, target *Bus, iface string) {
 
 	for range 100_000 {
 		select {
-		case <-target.Done():
+		case <-target.Context().Done():
 			return
 		default:
 		}

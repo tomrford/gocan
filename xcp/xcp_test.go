@@ -392,7 +392,7 @@ func TestCloseAndBusLoss(t *testing.T) {
 						t.Fatalf("Status after Close: %v, want ErrClosed", err)
 					}
 					select {
-					case <-r.tester.Done():
+					case <-r.tester.Context().Done():
 						t.Fatal("client closed bus")
 					default:
 					}

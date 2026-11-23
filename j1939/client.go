@@ -235,9 +235,7 @@ func (c *Client) run() {
 	defer func() {
 		if ctxErr := context.Cause(c.ctx); ctxErr != nil &&
 			(runErr == nil || errors.Is(runErr, c.ctx.Err()) || errors.Is(runErr, ctxErr)) {
-			select {
-			case <-c.bus.Done():
-			default:
+			if c.bus.Context().Err() == nil {
 				c.shutdown()
 			}
 			if errors.Is(ctxErr, errCloseRequested) {
@@ -271,7 +269,7 @@ func (c *Client) run() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-c.bus.Done():
+		case <-c.bus.Context().Done():
 			runErr = transport.BusError(c.bus)
 			return
 		case r := <-c.requests:

@@ -15,7 +15,9 @@ func TestSendRetryLifecycle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		frame := gocan.Frame{ID: 0x123}
 		calls := 0
-		bus := &sendBus{done: make(chan struct{})}
+		busCtx, cancelBus := context.WithCancelCause(context.Background())
+		defer cancelBus(gocan.ErrBusClosed)
+		bus := &sendBus{ctx: busCtx}
 		bus.send = func(context.Context, gocan.Frame) error {
 			calls++
 			return fmt.Errorf("adapter: %w", gocan.ErrTransmitQueueFull)
@@ -83,7 +85,7 @@ func TestSendRetryLifecycle(t *testing.T) {
 			}
 		}
 		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-		time.AfterFunc(2*time.Millisecond, func() { close(bus.done) })
+		time.AfterFunc(2*time.Millisecond, func() { cancelBus(gocan.ErrBusClosed) })
 		start = time.Now()
 		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusClosed) || time.Since(start) != 2*time.Millisecond {
 			t.Fatalf("closed bus: %v after %v", err, time.Since(start))
@@ -94,11 +96,11 @@ func TestSendRetryLifecycle(t *testing.T) {
 type sendBus struct {
 	gocan.Bus
 	send func(context.Context, gocan.Frame) error
-	done chan struct{}
+	ctx  context.Context
 }
 
 func (bus *sendBus) Send(ctx context.Context, frame gocan.Frame) error {
 	return bus.send(ctx, frame)
 }
-func (bus *sendBus) Done() <-chan struct{} { return bus.done }
-func (bus *sendBus) Err() error            { return nil }
+func (bus *sendBus) Context() context.Context { return bus.ctx }
+func (bus *sendBus) Err() error               { return nil }

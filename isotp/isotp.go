@@ -281,12 +281,10 @@ func (link *Link) resetError(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	select {
-	case <-link.bus.Done():
+	if link.bus.Context().Err() != nil {
 		return transport.BusError(link.bus)
-	default:
-		return nil
 	}
+	return nil
 }
 
 // Begin transmits one complete ISO-TP payload and returns an Exchange scoped to
@@ -365,7 +363,6 @@ func (exchange *Exchange) Close() error {
 }
 
 func (link *Link) newExchange() *Exchange {
-	// Exchange operations join this context, so they start no bus watchers.
 	ctx, cancel := transport.BusContext(context.Background(), link.bus)
 	return &Exchange{link: link, ctx: ctx, cancel: cancel}
 }
@@ -442,7 +439,7 @@ func (link *Link) acquire(ctx context.Context, token chan struct{}) error {
 	select {
 	case <-token:
 		return nil
-	case <-link.bus.Done():
+	case <-link.bus.Context().Done():
 		return transport.BusError(link.bus)
 	case <-ctx.Done():
 		return ctx.Err()

@@ -79,9 +79,9 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 	var sendErr error
 	for sendErr == nil {
 		select {
-		case <-first.Done():
+		case <-first.Context().Done():
 			sendErr = first.Err()
-		case <-second.Done():
+		case <-second.Context().Done():
 			sendErr = second.Err()
 		case <-ticker.C:
 			sendErr = first.Send(context.Background(), frame)
@@ -92,7 +92,7 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 	t.Logf("first disconnect observation: %v", sendErr)
 
 	select {
-	case <-first.Done():
+	case <-first.Context().Done():
 		if !errors.Is(first.Err(), gocan.ErrHardwareDisconnected) {
 			t.Fatalf("Vector bus %q Err() = %v, want ErrHardwareDisconnected", first.Name(), first.Err())
 		}
@@ -100,7 +100,7 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 		t.Fatalf("Vector bus %q remained open after disconnect; first observation: %v", first.Name(), sendErr)
 	}
 	select {
-	case <-second.Done():
+	case <-second.Context().Done():
 		t.Fatalf("Vector bus %q on a different adapter stopped after disconnect: %v", second.Name(), second.Err())
 	case <-time.After(2 * chipStateHealthInterval):
 	}

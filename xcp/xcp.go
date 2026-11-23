@@ -256,10 +256,8 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 		finish()
 		return nil, nil, err
 	}
-	select {
-	case <-client.bus.Done():
+	if client.bus.Context().Err() != nil {
 		cancel(transport.BusError(client.bus))
-	default:
 	}
 	if err := context.Cause(ctx); err != nil {
 		finish()

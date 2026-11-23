@@ -226,7 +226,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		return bus, nil
 	case <-ctx.Done():
 		return nil, errors.Join(ctx.Err(), bus.Close())
-	case <-bus.Done():
+	case <-bus.lifecycle.Done():
 		return nil, errors.Join(bus.operationError(), bus.cleanupErr)
 	}
 }
@@ -459,8 +459,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	return nil
 }
 
-func (bus *Bus) Done() <-chan struct{} {
-	return bus.lifecycle.Done()
+func (bus *Bus) Context() context.Context {
+	return bus.lifecycle.Context()
 }
 
 func (bus *Bus) Err() error {

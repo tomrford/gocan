@@ -112,12 +112,15 @@ func TestTerminalFailureRejectsLaterSend(t *testing.T) {
 
 		synctest.Wait()
 		select {
-		case <-bus.Done():
+		case <-bus.Context().Done():
 		default:
 			t.Fatal("bus did not stop after terminal failure")
 		}
 		if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
 			t.Fatalf("Err after terminal failure = %v, want ErrReceiveOverrun", bus.Err())
+		}
+		if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
+			t.Fatalf("Context cause after terminal failure = %v, want ErrReceiveOverrun", cause)
 		}
 		seq, _, _ := capture.Series(gocan.FrameKey{
 			Bus:       bus.ID(),
@@ -140,12 +143,15 @@ func TestBroadcastDetectsOverrun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = source.Close() })
 
+	victimCtx, cancelVictim := context.WithCancelCause(context.Background())
+	defer cancelVictim(nil)
 	victim := &Bus{
 		id:       2,
 		name:     "victim",
 		incoming: make(chan gocan.Frame),
 		failures: make(chan error, 1),
-		done:     make(chan struct{}),
+		ctx:      victimCtx,
+		cancel:   cancelVictim,
 	}
 	network.mu.Lock()
 	network.buses[victim.id] = victim
