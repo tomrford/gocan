@@ -11,32 +11,53 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tomrford/gocan"
 )
 
-// Edit returns a new database made by applying edit to a copy of db. The copy
-// is written as DBC text and parsed as name, so the result is validated like
-// any parsed database, its lookups and codecs follow the edits, and Source
-// returns the written bytes. db is not changed.
+// Edit returns a new database made by applying edit to a deep copy of db.
+// The edited copy is written as DBC text and parsed as name, so the result is
+// validated like any parsed database, its lookups and codecs follow the edits,
+// and Source returns the written bytes. db is not changed.
 //
 // edit may change DBC declarations, including adding or removing nodes,
 // messages and signals. Message.Format is derived from VFrameFormat and
 // ProtocolType attributes; edit those attributes to change the frame format.
-// Diagnostics are also derived. Lookups on the copy describe it before edit ran.
+// Diagnostics are also derived. On the copy, Database lookups, codecs,
+// Diagnostics and Source describe db before edit ran, while
+// Message.SignalByName finds the copy's current signals. A database that Parse
+// did not produce is written and parsed first, so its lookups work. An edit
+// that Write cannot express returns an error wrapping ErrUnrepresentable; one
+// that Parse rejects returns its *Error.
 func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
-	var buf bytes.Buffer
-	if err := db.Write(&buf); err != nil {
-		return nil, err
-	}
-	edited, err := Parse(name, &buf)
+	edited, err := db.editable(name)
 	if err != nil {
 		return nil, err
 	}
 	edit(edited)
-	buf.Reset()
+	var buf bytes.Buffer
 	if err := edited.Write(&buf); err != nil {
 		return nil, err
 	}
 	return Parse(name, &buf)
+}
+
+// editable returns the copy an Edit callback changes: a clone, so no signal
+// storage is shared with a codec index. A database that Parse did not resolve
+// has no lookups, so it is resolved through a round trip first.
+func (db *Database) editable(name string) (*Database, error) {
+	if db.messagesByName != nil {
+		return db.clone()
+	}
+	var buf bytes.Buffer
+	if err := db.Write(&buf); err != nil {
+		return nil, err
+	}
+	parsed, err := Parse(name, &buf)
+	if err != nil {
+		return nil, err
+	}
+	return parsed.clone()
 }
 
 // Write writes db as UTF-8 DBC text. For a parsed database, parsing the text
@@ -46,9 +67,9 @@ func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
 //
 // Write reads the exported DBC declarations, so it also accepts an edited
 // copy, as Edit does. Message.Format is derived from attributes and is not
-// written. It writes nothing and returns an error for an out-of-range CAN
-// identifier or an unrepresentable name, string or number. Other
-// inconsistencies are reported when the text is parsed.
+// written. It writes nothing and returns an error wrapping ErrUnrepresentable
+// for an out-of-range CAN identifier or an unrepresentable name, string or
+// number. Other inconsistencies are reported when the text is parsed.
 //
 // To write Windows-1252, wrap w with charmap.Windows1252.NewEncoder().Writer
 // from golang.org/x/text/encoding/charmap.
@@ -56,7 +77,7 @@ func (db *Database) Write(w io.Writer) error {
 	var err error
 	fail := func(format string, args ...any) {
 		if err == nil {
-			err = fmt.Errorf("dbc: "+format, args...)
+			err = fmt.Errorf("%w: %s", ErrUnrepresentable, fmt.Sprintf(format, args...))
 		}
 	}
 	name := func(s string) string {
@@ -112,12 +133,12 @@ func (db *Database) Write(w io.Writer) error {
 	}
 	rawID := func(message *Message) uint32 {
 		if message.Extended {
-			if message.ID > 0x1fffffff {
+			if message.ID > gocan.MaxExtendedID {
 				fail("message %q extended identifier %#x exceeds the 29-bit CAN ID", message.Name, message.ID)
 			}
 			return message.ID | 0x80000000
 		}
-		if message.ID > 0x7ff {
+		if message.ID > gocan.MaxStandardID {
 			fail("message %q standard identifier %#x exceeds the 11-bit CAN ID", message.Name, message.ID)
 		}
 		return message.ID

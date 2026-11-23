@@ -2,6 +2,7 @@ package cdd
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,14 +12,18 @@ import (
 
 type element struct {
 	name     string
-	attrs    map[string]string
+	attrs    []xml.Attr
 	children []*element
 	text     strings.Builder
 	inText   bool
 }
 
 func decodeXML(name string, r io.Reader) (*element, error) {
-	decoder := xml.NewDecoder(r)
+	input := &recordingReader{reader: r}
+	decoder := xml.NewDecoder(input)
+	// encoding/xml reports charset failures as plain text, so the
+	// unsupported encoding is kept to classify the decode error.
+	var charsetErr error
 	decoder.CharsetReader = func(label string, input io.Reader) (io.Reader, error) {
 		switch strings.ToLower(strings.TrimSpace(label)) {
 		case "iso-8859-1", "iso8859-1", "latin1":
@@ -26,7 +31,8 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		case "windows-1252", "cp1252":
 			return charmap.Windows1252.NewDecoder().Reader(input), nil
 		default:
-			return nil, fmt.Errorf("unsupported XML encoding %q", label)
+			charsetErr = unsupportedf("unsupported XML encoding %q", label)
+			return nil, charsetErr
 		}
 	}
 
@@ -34,22 +40,29 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 	var stack []*element
 	for {
 		token, err := decoder.Token()
+		// A read can return data with its failure, and the decoder may first
+		// report what that data contains.
+		if input.err != nil {
+			return nil, sourceError(name, fmt.Errorf("read XML: %w", input.err))
+		}
 		if err == io.EOF {
 			break
 		}
+		if charsetErr != nil {
+			return nil, sourceError(name, charsetErr)
+		}
 		if err != nil {
-			return nil, sourceError(name, "decode XML: %w", err)
+			return nil, sourceError(name, xmlError(err))
 		}
 		switch token := token.(type) {
 		case xml.StartElement:
-			node := &element{name: token.Name.Local, attrs: make(map[string]string, len(token.Attr))}
+			// The decoder allocates a fresh attribute slice for every start
+			// element, so the element can keep it.
+			node := &element{name: token.Name.Local, attrs: token.Attr}
 			node.inText = node.name == "TUV" || len(stack) > 0 && stack[len(stack)-1].inText
-			for _, attr := range token.Attr {
-				node.attrs[attr.Name.Local] = attr.Value
-			}
 			if len(stack) == 0 {
 				if root != nil {
-					return nil, sourceError(name, "XML contains more than one root element")
+					return nil, sourceError(name, invalidf("XML contains more than one root element"))
 				}
 				root = node
 			} else {
@@ -77,16 +90,69 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		}
 	}
 	if root == nil {
-		return nil, sourceError(name, "XML contains no root element")
+		return nil, sourceError(name, invalidf("XML contains no root element"))
 	}
 	return root, nil
 }
 
-func (node *element) attr(name string) string {
-	if node == nil {
-		return ""
+// xmlError classifies a decoder failure that is not a reader failure.
+// Malformed XML makes the document invalid. encoding/xml's remaining errors
+// reject an XML version or encoding it does not implement.
+func xmlError(err error) error {
+	var syntaxErr *xml.SyntaxError
+	switch {
+	case errors.As(err, &syntaxErr):
+		return invalidf("decode XML: %w", err)
+	default:
+		return unsupportedf("decode XML: %w", err)
 	}
-	return node.attrs[name]
+}
+
+// maxEmptyReads bounds consecutive reads that return neither data nor an
+// error, as bufio does.
+const maxEmptyReads = 100
+
+// recordingReader keeps the first reader failure, which the decoder may
+// report only as malformed input. It fails a stalled reader itself, because a
+// charset decoder between it and the XML decoder can retry indefinitely.
+type recordingReader struct {
+	reader io.Reader
+	empty  int
+	err    error
+}
+
+func (r *recordingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n == 0 && err == nil && len(p) > 0 {
+		if r.empty++; r.empty >= maxEmptyReads {
+			err = io.ErrNoProgress
+		}
+	} else {
+		r.empty = 0
+	}
+	if err != nil && err != io.EOF && r.err == nil {
+		r.err = err
+	}
+	return n, err
+}
+
+func (node *element) attr(name string) string {
+	value, _ := node.lookup(name)
+	return value
+}
+
+// lookup returns the attribute with local name. Namespaces are ignored, and the
+// last attribute wins when several share a local name.
+func (node *element) lookup(name string) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	for index := len(node.attrs) - 1; index >= 0; index-- {
+		if node.attrs[index].Name.Local == name {
+			return node.attrs[index].Value, true
+		}
+	}
+	return "", false
 }
 
 func (node *element) child(name string) *element {

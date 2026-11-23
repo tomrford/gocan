@@ -1,6 +1,7 @@
 package dbc
 
 import (
+	"bytes"
 	"reflect"
 	"slices"
 	"strings"
@@ -71,4 +72,76 @@ func diagnosticMessages(db *Database) []string {
 	}
 	slices.Sort(messages)
 	return messages
+}
+
+// Edit hands its callback a database that shares nothing mutable with the
+// original: rewriting every reachable value in place leaves the original as
+// parsed, and an edit that changes nothing derives an equivalent database.
+func TestEditIsolatesOriginal(t *testing.T) {
+	const path = "testdata/roundtrip.dbc"
+	original, pristine := parseFixture(t, path), parseFixture(t, path)
+
+	unchanged, err := original.Edit("unchanged.dbc", func(*Database) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEquivalent(t, original, unchanged)
+
+	// The scribbled copy need not be a valid database; only the
+	// original matters here.
+	scribbled := false
+	_, _ = original.Edit("scribbled.dbc", func(db *Database) {
+		scribble(reflect.ValueOf(db).Elem())
+		scribbled = true
+	})
+	if !scribbled {
+		t.Fatal("Edit did not run the callback")
+	}
+	assertEquivalent(t, pristine, original)
+	if !reflect.DeepEqual(pristine.Diagnostics, original.Diagnostics) || !bytes.Equal(pristine.Source(), original.Source()) {
+		t.Fatal("Edit changed the original diagnostics or source")
+	}
+}
+
+// scribble changes every exported value reachable from v in place, through
+// pointers, slices and maps, so any storage shared with another value shows.
+func scribble(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if !v.IsNil() {
+			scribble(v.Elem())
+		}
+	case reflect.Struct:
+		for index := range v.NumField() {
+			if v.Type().Field(index).IsExported() {
+				scribble(v.Field(index))
+			}
+		}
+	case reflect.Slice:
+		for index := range v.Len() {
+			scribble(v.Index(index))
+		}
+	case reflect.Map:
+		for _, key := range v.MapKeys() {
+			value := reflect.New(v.Type().Elem()).Elem()
+			value.Set(v.MapIndex(key))
+			scribble(value)
+			v.SetMapIndex(key, value)
+		}
+		if !v.IsNil() && v.Type().Key().Kind() == reflect.String {
+			v.SetMapIndex(reflect.ValueOf("scribbled").Convert(v.Type().Key()), reflect.Zero(v.Type().Elem()))
+		}
+	case reflect.Interface:
+		v.SetZero()
+	case reflect.String:
+		v.SetString(v.String() + "~")
+	case reflect.Bool:
+		v.SetBool(!v.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(v.Int() + 1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(v.Uint() + 1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(v.Float() + 1)
+	}
 }

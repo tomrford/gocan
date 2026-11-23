@@ -123,16 +123,16 @@ func compileRecordCodec(record *Record) *recordCodec {
 	}
 	for index, field := range record.Fields {
 		if _, exists := codec.fieldsByName[field.Name]; exists {
-			codec.err = fmt.Errorf("field name %q is repeated", field.Name)
+			codec.err = unsupportedf("field name %q is repeated", field.Name)
 			return codec
 		}
 		codec.fieldsByName[field.Name] = struct{}{}
 		if field.Bitfield == nil && (field.BitOffset%8 != 0 || field.BitLength%8 != 0) {
-			codec.err = fmt.Errorf("field %q is not byte-aligned", field.Name)
+			codec.err = unsupportedf("field %q is not byte-aligned", field.Name)
 			return codec
 		}
 		if field.BitLength > 64 {
-			codec.err = fmt.Errorf("field %q element width %d is outside 1 through 64 bits", field.Name, field.BitLength)
+			codec.err = unsupportedf("field %q element width %d is outside 1 through 64 bits", field.Name, field.BitLength)
 			return codec
 		}
 		if err := validateFieldEncoding(field); err != nil {
@@ -152,47 +152,47 @@ func compileRecordCodec(record *Record) *recordCodec {
 
 func validateFieldEncoding(field Field) error {
 	if field.ByteOrder != binary.BigEndian && field.ByteOrder != binary.LittleEndian {
-		return fmt.Errorf("unsupported byte order %v", field.ByteOrder)
+		return unsupportedf("unsupported byte order %v", field.ByteOrder)
 	}
 	if field.Bitfield != nil && field.Bitfield.ByteOrder != binary.BigEndian && field.Bitfield.ByteOrder != binary.LittleEndian {
-		return fmt.Errorf("bitfield has unsupported byte order %v", field.Bitfield.ByteOrder)
+		return unsupportedf("bitfield has unsupported byte order %v", field.Bitfield.ByteOrder)
 	}
 	switch field.Encoding {
 	case EncodingUnsigned, EncodingSigned:
 	case EncodingFloat:
 		if field.BitLength != 32 {
-			return fmt.Errorf("float requires 32 bits, got %d", field.BitLength)
+			return invalidf("float requires 32 bits, got %d", field.BitLength)
 		}
 	case EncodingDouble:
 		if field.BitLength != 64 {
-			return fmt.Errorf("double requires 64 bits, got %d", field.BitLength)
+			return invalidf("double requires 64 bits, got %d", field.BitLength)
 		}
 	case EncodingASCII:
 		if field.BitLength != 8 {
-			return fmt.Errorf("ASCII requires 8-bit elements, got %d", field.BitLength)
+			return invalidf("ASCII requires 8-bit elements, got %d", field.BitLength)
 		}
 	case EncodingBCD, EncodingUTF:
-		return fmt.Errorf("encoding %q is not supported by the codec", field.Encoding)
+		return unsupportedf("encoding %q is not supported by the codec", field.Encoding)
 	default:
-		return fmt.Errorf("encoding %q is unknown", field.Encoding)
+		return invalidf("encoding %q is unknown", field.Encoding)
 	}
 	if field.Conversion != nil {
 		if field.Encoding != EncodingUnsigned && field.Encoding != EncodingSigned {
-			return fmt.Errorf("linear conversion requires an integer encoding")
+			return unsupportedf("linear conversion requires an integer encoding")
 		}
 		if field.Conversion.Scale == 0 {
-			return fmt.Errorf("zero-factor linear conversion with an explicit inverse value is unsupported")
+			return unsupportedf("zero-factor linear conversion with an explicit inverse value is unsupported")
 		}
 		if math.IsNaN(field.Conversion.Scale) || math.IsInf(field.Conversion.Scale, 0) ||
 			math.IsNaN(field.Conversion.Offset) || math.IsInf(field.Conversion.Offset, 0) {
-			return fmt.Errorf("linear conversion must have a finite nonzero scale and finite offset")
+			return invalidf("linear conversion must have a finite nonzero scale and finite offset")
 		}
 		if err := validateConversionRange(field); err != nil {
 			return err
 		}
 	}
 	if len(field.Choices) > 0 && field.Encoding != EncodingUnsigned && field.Encoding != EncodingSigned {
-		return fmt.Errorf("choices require an integer encoding")
+		return unsupportedf("choices require an integer encoding")
 	}
 	return nil
 }

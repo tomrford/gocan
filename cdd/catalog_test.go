@@ -2,6 +2,7 @@ package cdd_test
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,7 +140,7 @@ func TestServiceCatalogCoverage(t *testing.T) {
 	if services[3].PositiveResponse.Err != nil || services[3].PositiveResponse.Record == nil || services[3].PositiveResponse.Record.CodecError() == nil {
 		t.Fatal("bit-field metadata/codec coverage lost")
 	}
-	if services[4].PositiveResponse == nil || services[4].PositiveResponse.Err == nil || services[4].PositiveResponse.Record != nil || !strings.Contains(services[4].PositiveResponse.Err.Error(), "EOSITERCOMP") {
+	if services[4].PositiveResponse == nil || services[4].PositiveResponse.Err == nil || services[4].PositiveResponse.Record != nil || !errors.Is(services[4].PositiveResponse.Err, cdd.ErrUnsupported) {
 		t.Fatal("unsupported fault record became absent or supported")
 	}
 	if services[7].TemplateRef != "missing" || services[7].Err == nil || services[7].Requirements.Err == nil || services[7].ServiceID != nil {

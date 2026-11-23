@@ -134,21 +134,16 @@ func EncodeUnsigned(bits uint32, value uint64) (uint64, error) {
 	return value, nil
 }
 
+// DecodeSigned reads the low bits (1 through 64) of raw as a two's-complement
+// integer.
 func DecodeSigned(bits uint32, raw uint64) int64 {
-	if bits == 64 {
-		return int64(raw)
-	}
-	mask := uint64(1)<<bits - 1
-	raw &= mask
-	if raw&(uint64(1)<<(bits-1)) != 0 {
-		raw |= ^mask
-	}
-	return int64(raw)
+	shift := 64 - bits
+	return int64(raw<<shift) >> shift
 }
 
 func ExactSigned(value any) (int64, error) {
 	if number, ok := value.(json.Number); ok {
-		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+		if !strings.ContainsAny(string(number), ".eE") && validJSONNumber(string(number)) {
 			if integer, err := number.Int64(); err == nil {
 				return integer, nil
 			}
@@ -187,7 +182,7 @@ func ExactSigned(value any) (int64, error) {
 
 func ExactUnsigned(value any) (uint64, error) {
 	if number, ok := value.(json.Number); ok {
-		if !strings.ContainsAny(string(number), ".eE") && json.Valid([]byte(number)) {
+		if !strings.ContainsAny(string(number), ".eE") && validJSONNumber(string(number)) {
 			if integer, err := strconv.ParseUint(string(number), 10, 64); err == nil {
 				return integer, nil
 			}
@@ -229,7 +224,7 @@ func ExactUnsigned(value any) (uint64, error) {
 // JSON numbers may underflow to zero but must not overflow.
 func NumericFloat(value any, bits int) (float64, error) {
 	if number, ok := value.(json.Number); ok {
-		if !json.Valid([]byte(number)) {
+		if !validJSONNumber(string(number)) {
 			return 0, fmt.Errorf("invalid JSON number %q", number)
 		}
 		return strconv.ParseFloat(string(number), bits)
@@ -284,6 +279,49 @@ func LinearFloat(value any) (float64, error) {
 		return NumericFloat(value, 64)
 	}
 }
+
+// validJSONNumber reports whether s is exactly one JSON number. Unlike
+// json.Valid it needs no []byte and rejects surrounding whitespace and other
+// JSON values, which strconv would reject later anyway.
+func validJSONNumber(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	switch {
+	case s == "":
+		return false
+	case s[0] == '0':
+		s = s[1:]
+	case '1' <= s[0] && s[0] <= '9':
+		s = skipDigits(s[1:])
+	default:
+		return false
+	}
+	if s != "" && s[0] == '.' {
+		if len(s) < 2 || !isDigit(s[1]) {
+			return false
+		}
+		s = skipDigits(s[2:])
+	}
+	if s != "" && (s[0] == 'e' || s[0] == 'E') {
+		s = s[1:]
+		if s != "" && (s[0] == '+' || s[0] == '-') {
+			s = s[1:]
+		}
+		if s == "" || !isDigit(s[0]) {
+			return false
+		}
+		s = skipDigits(s[1:])
+	}
+	return s == ""
+}
+
+func skipDigits(s string) string {
+	for s != "" && isDigit(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
+
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
 // jsonRational is the fallback for exact integer conversion. A float magnitude
 // check rejects huge exponents before Rat.SetString can expand them. Rounded

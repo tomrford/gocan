@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tomrford/gocan/j1939"
+	"github.com/tomrford/gocan"
 )
 
 // vectorIndependentSignalsID is the reserved identifier of the
@@ -443,7 +443,7 @@ func (r *resolver) resolveFrameFormats() error {
 func (r *resolver) compileCodecs() error {
 	r.db.messagesByName = make(map[string]int, len(r.messagesByName))
 	r.db.messagesByID = make(map[messageID]int, len(r.db.Messages))
-	r.db.messagesByPGN = make(map[j1939.PGN][]int)
+	r.db.messagesByPGN = make(map[uint32][]int)
 	for name, index := range r.messagesByName {
 		r.db.messagesByName[name] = index
 	}
@@ -452,11 +452,8 @@ func (r *resolver) compileCodecs() error {
 		r.db.messagesByID[messageID{id: message.ID, extended: message.Extended}] = index
 		message.codec = compileMessageCodec(message)
 		if message.Format == FrameFormatJ1939 {
-			header, err := j1939.ParseID(message.ID)
-			if err != nil {
-				return semanticError(r.messagePositions[index], "BO_", "message %q: %v", message.Name, err)
-			}
-			r.db.messagesByPGN[header.PGN] = append(r.db.messagesByPGN[header.PGN], index)
+			pgn := pgnOf(message.ID)
+			r.db.messagesByPGN[pgn] = append(r.db.messagesByPGN[pgn], index)
 		}
 	}
 	return nil
@@ -533,9 +530,9 @@ func normalizeID(raw uint32) (uint32, bool, error) {
 		if raw&0x60000000 != 0 {
 			return 0, false, fmt.Errorf("extended identifier %d has bits outside the 29-bit CAN ID", raw)
 		}
-		return raw & 0x1fffffff, true, nil
+		return raw & gocan.MaxExtendedID, true, nil
 	}
-	if raw > 0x7ff {
+	if raw > gocan.MaxStandardID {
 		return 0, false, fmt.Errorf("standard identifier %#x exceeds 11 bits; extended DBC IDs must set bit 31", raw)
 	}
 	return raw, false, nil

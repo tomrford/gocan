@@ -3,8 +3,12 @@ package cdd_test
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/tomrford/gocan/cdd"
 )
@@ -77,6 +81,58 @@ func TestParseRecordLayouts(t *testing.T) {
 	}
 
 }
+
+// Parse separates documents it cannot read from documents it cannot use, and
+// both from failures of the reader itself.
+func TestParseClassifiesFailures(t *testing.T) {
+	failed := errors.New("disk failed")
+	for _, test := range []struct {
+		name   string
+		reader io.Reader
+		want   error
+	}{
+		{"truncated XML", strings.NewReader(`<CANDELA><ECUDOC>`), cdd.ErrInvalid},
+		{"foreign root", strings.NewReader(`<ODX><ECUDOC/></ODX>`), cdd.ErrInvalid},
+		{"unsupported charset", strings.NewReader(`<?xml version="1.0" encoding="EBCDIC"?><CANDELA/>`), cdd.ErrUnsupported},
+		{"XML 1.1", strings.NewReader(`<?xml version="1.1"?><CANDELA/>`), cdd.ErrUnsupported},
+		{"reader failure within a character", io.MultiReader(strings.NewReader("<CANDELA><ECUDOC><QUAL>\xc3"), iotest.ErrReader(failed)), failed},
+		{"reader failure with a second root", &dataErrReader{data: "<CANDELA/><CANDELA/>", err: failed}, failed},
+		{"reader without progress within a character", io.MultiReader(strings.NewReader("<CANDELA><QUAL>\xc3"), stalledReader{}), io.ErrNoProgress},
+		{"reader without progress behind a charset", io.MultiReader(strings.NewReader(`<?xml version="1.0" encoding="windows-1252"?><CANDELA>`), stalledReader{}), io.ErrNoProgress},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := cdd.Parse(test.name, test.reader)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Parse error = %v, want %v", err, test.want)
+			}
+			for _, kind := range []error{cdd.ErrInvalid, cdd.ErrUnsupported} {
+				if kind != test.want && errors.Is(err, kind) {
+					t.Fatalf("Parse error = %v, which also matches %v", err, kind)
+				}
+			}
+		})
+	}
+}
+
+// dataErrReader returns all its data together with err in a single read.
+type dataErrReader struct {
+	data string
+	err  error
+	done bool
+}
+
+func (r *dataErrReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+// stalledReader never returns data or an error.
+type stalledReader struct{}
+
+func (stalledReader) Read([]byte) (int, error) { return 0, nil }
 
 func parseCatalogFile(path string) (*cdd.Database, error) {
 	document, err := cdd.ParseFile(path)

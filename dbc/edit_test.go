@@ -2,6 +2,8 @@ package dbc_test
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -147,22 +149,31 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 
 	for name, test := range map[string]struct {
 		edit func(*dbc.Database)
-		want string
+		// keyword is the record Parse rejects; otherwise Write rejects the
+		// edited model as unrepresentable.
+		keyword string
 	}{
-		"colliding identifiers":      {func(db *dbc.Database) { db.Messages[1].ID = db.Messages[0].ID }, "duplicate message ID"},
-		"identifier beyond 29 bits":  {func(db *dbc.Database) { db.Messages[0].ID |= 0xF << 28 }, "29-bit"},
-		"extended identifier bit 31": {func(db *dbc.Database) { db.Messages[0].ID |= 1 << 31 }, "29-bit"},
+		"colliding identifiers":      {func(db *dbc.Database) { db.Messages[1].ID = db.Messages[0].ID }, "BO_"},
+		"identifier beyond 29 bits":  {func(db *dbc.Database) { db.Messages[0].ID |= 0xF << 28 }, ""},
+		"extended identifier bit 31": {func(db *dbc.Database) { db.Messages[0].ID |= 1 << 31 }, ""},
 		"standard identifier bit 31": {func(db *dbc.Database) {
 			db.Messages[0].Extended = false
 			db.Messages[0].ID = 0x80000001
-		}, "11-bit"},
-		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, `"DEV 0 STAT"`},
-		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, `C:\\logs\\`},
-		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, "unsupported byte order"},
+		}, ""},
+		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, ""},
+		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, ""},
+		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := base.Edit("invalid.dbc", test.edit); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Edit() error = %v, want it to mention %s", err, test.want)
+			edited, err := base.Edit("invalid.dbc", test.edit)
+			var parseError *dbc.Error
+			switch {
+			case edited != nil:
+				t.Fatalf("Edit() = %v, want an error", edited)
+			case test.keyword == "" && !errors.Is(err, dbc.ErrUnrepresentable):
+				t.Fatalf("Edit() error = %v, want %v", err, dbc.ErrUnrepresentable)
+			case test.keyword != "" && (!errors.As(err, &parseError) || parseError.Keyword != test.keyword):
+				t.Fatalf("Edit() error = %v, want a %s parse error", err, test.keyword)
 			}
 		})
 	}
@@ -172,5 +183,51 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	if !ok || status.Name != "DEV_0_STAT" || len(base.Messages) != 3 || base.Messages[1].ID != 0x10063001 ||
 		base.Comment == `C:\logs\` {
 		t.Fatalf("base database changed: %#v", base.Messages)
+	}
+}
+
+// A database built in code rather than parsed is edited like a parsed one: the
+// callback's lookups find what db declares.
+func TestEditConstructedDatabase(t *testing.T) {
+	constructed := &dbc.Database{
+		Nodes: []dbc.Node{{Name: "ECU"}},
+		Messages: []dbc.Message{{
+			ID: 0x100, Name: "Status", Length: 1, Transmitters: []string{"ECU"},
+			Signals: []dbc.Signal{{Name: "Value", BitLength: 8, ByteOrder: binary.LittleEndian, Factor: 1, Maximum: 255}},
+		}},
+	}
+	edited, err := constructed.Edit("constructed.dbc", func(db *dbc.Database) {
+		status, ok := db.MessageByName("Status")
+		if !ok {
+			t.Fatal("callback lookup missed Status")
+		}
+		value, ok := status.SignalByName("Value")
+		if !ok {
+			t.Fatal("callback lookup missed Value")
+		}
+		value.Name = "Level"
+		// The renamed signal is found by its new name for further edits.
+		level, ok := status.SignalByName("Level")
+		if !ok {
+			t.Fatal("callback lookup missed the renamed signal")
+		}
+		level.Comment = "Fill level"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := edited.MessageByID(0x100, false)
+	if !ok {
+		t.Fatal("edited database lost Status")
+	}
+	frame, err := status.Encode(dbc.Values{"Level": uint64(42)})
+	if err != nil || frame.Data[0] != 42 {
+		t.Fatalf("Encode edited Status = %v, %v", frame, err)
+	}
+	if level, ok := status.SignalByName("Level"); !ok || level.Comment != "Fill level" {
+		t.Fatalf("edited Level = %#v", level)
+	}
+	if constructed.Messages[0].Signals[0].Name != "Value" {
+		t.Fatal("Edit changed the constructed database")
 	}
 }

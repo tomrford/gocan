@@ -14,7 +14,7 @@ func (resolver *resolver) transitions(node, template *element, bindingErr error)
 	case bindingErr != nil:
 		rule.Err = bindingErr
 	case rule.RawTemplateExpression != nil:
-		rule.Err = sourceError(resolver.name, "template trans inheritance is not supported")
+		rule.Err = sourceError(resolver.name, unsupportedf("template trans inheritance is not supported"))
 	case rule.RawExpression != nil:
 		rule.Pairs, rule.Err = resolver.transitionPairs(*rule.RawExpression)
 	}
@@ -27,17 +27,17 @@ func (resolver *resolver) transitionPairs(value string) ([]StateTransition, erro
 	// serialises those rows as a flat list of global source/destination indexes.
 	list := strings.TrimSpace(value)
 	if len(list) < 3 || list[0] != '(' || list[len(list)-1] != ')' {
-		return nil, sourceError(resolver.name, "invalid trans list %q", value)
+		return nil, sourceError(resolver.name, invalidf("invalid trans list %q", value))
 	}
 	tokens := strings.Split(list[1:len(list)-1], ",")
 	if len(tokens)%2 != 0 {
-		return nil, sourceError(resolver.name, "trans %q must contain source/destination pairs", value)
+		return nil, sourceError(resolver.name, invalidf("trans %q must contain source/destination pairs", value))
 	}
 	states := make([]State, len(tokens))
 	for index, token := range tokens {
 		position, err := strconv.Atoi(strings.TrimSpace(token))
 		if err != nil || position < 1 || position > len(resolver.states) {
-			return nil, sourceError(resolver.name, "trans %q names a state outside the %d declared states", value, len(resolver.states))
+			return nil, sourceError(resolver.name, invalidf("trans %q names a state outside the %d declared states", value, len(resolver.states)))
 		}
 		states[index] = resolver.states[position-1]
 	}
@@ -46,10 +46,10 @@ func (resolver *resolver) transitionPairs(value string) ([]StateTransition, erro
 	for index := 0; index < len(states); index += 2 {
 		from, to := states[index], states[index+1]
 		if from.GroupIndex != to.GroupIndex {
-			return nil, sourceError(resolver.name, "trans %q crosses state groups from %d to %d", value, from.Index, to.Index)
+			return nil, sourceError(resolver.name, invalidf("trans %q crosses state groups from %d to %d", value, from.Index, to.Index))
 		}
 		if previous, exists := destinations[from.Index]; exists && previous != to.Index {
-			return nil, sourceError(resolver.name, "trans %q assigns conflicting destinations to state %d", value, from.Index)
+			return nil, sourceError(resolver.name, invalidf("trans %q assigns conflicting destinations to state %d", value, from.Index))
 		}
 		destinations[from.Index] = to.Index
 		pairs = append(pairs, StateTransition{From: from, To: to})

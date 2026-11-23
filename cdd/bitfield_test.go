@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/tomrford/gocan/cdd"
@@ -179,26 +178,24 @@ func TestPackedWideArrayInteger(t *testing.T) {
 func TestPackedRejectsUnresolvedReversal(t *testing.T) {
 	const declaration = `<ENUMDEF id="reverse" v="0"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`
 	const documentedDeclaration = `<ENUMDEF id="documented" v="0"><QUAL>ReverseBitfieldBytes</QUAL></ENUMDEF>`
-	for _, test := range []struct{ name, definitions, attributes, error string }{
-		{"unknown reference", declaration, `<ENUM attrref="missing" v="1"/>`, "does not resolve"},
-		{"missing reference", declaration, `<ENUM v="1"/>`, "does not resolve"},
-		{"duplicate values", declaration, `<ENUM attrref="reverse" v="0"/><ENUM attrref="reverse" v="1"/>`, "repeated"},
-		{"duplicate IDs", declaration + declaration, "", "ambiguous"},
-		{"duplicate qualifiers", declaration + `<ENUMDEF id="another" v="1"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`, "", "ambiguous"},
-		{"duplicate aliases", declaration + documentedDeclaration, "", "ambiguous"},
-		{"duplicate aliases reversed", documentedDeclaration + declaration, "", "ambiguous"},
-		{"wrong definition", `<UNSDEF id="reverse" v="1"><QUAL>ReverseBitFieldBytes</QUAL></UNSDEF>`, "", "not an enumeration"},
-		{"wrong value type", declaration, `<UNS attrref="reverse" v="1"/>`, "requires an ENUM"},
-		{"missing default", `<ENUMDEF id="reverse"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`, "", "invalid ReverseBitFieldBytes"},
-		{"missing value", declaration, `<ENUM attrref="reverse"/>`, "invalid ReverseBitFieldBytes"},
-		{"malformed value", declaration, `<ENUM attrref="reverse" v="NaN"/>`, "invalid ReverseBitFieldBytes"},
+	for _, test := range []struct{ name, definitions, attributes string }{
+		{"unknown reference", declaration, `<ENUM attrref="missing" v="1"/>`},
+		{"missing reference", declaration, `<ENUM v="1"/>`},
+		{"duplicate values", declaration, `<ENUM attrref="reverse" v="0"/><ENUM attrref="reverse" v="1"/>`},
+		{"duplicate IDs", declaration + declaration, ""},
+		{"duplicate qualifiers", declaration + `<ENUMDEF id="another" v="1"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`, ""},
+		{"duplicate aliases", declaration + documentedDeclaration, ""},
+		{"duplicate aliases reversed", documentedDeclaration + declaration, ""},
+		{"wrong definition", `<UNSDEF id="reverse" v="1"><QUAL>ReverseBitFieldBytes</QUAL></UNSDEF>`, ""},
+		{"wrong value type", declaration, `<UNS attrref="reverse" v="1"/>`},
+		{"missing default", `<ENUMDEF id="reverse"><QUAL>ReverseBitFieldBytes</QUAL></ENUMDEF>`, ""},
+		{"missing value", declaration, `<ENUM attrref="reverse"/>`},
+		{"malformed value", declaration, `<ENUM attrref="reverse" v="NaN"/>`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			datatype := `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="2" maxsz="2"/>` + test.attributes + `</IDENT>`
 			message := testCodecMessage(t, packedTypes+datatype, `<STRUCT dtref="container">`+packedChild("seven", "A")+`</STRUCT>`, `<DEFATTS><DATATYPEATTS>`+test.definitions+`</DATATYPEATTS></DEFATTS>`)
-			if message.Err == nil || !strings.Contains(message.Err.Error(), test.error) {
-				t.Fatalf("error = %v, want %q", message.Err, test.error)
-			}
+			assertDefinitionError(t, message.Err, cdd.ErrInvalid)
 		})
 	}
 }
@@ -206,26 +203,29 @@ func TestPackedRejectsUnresolvedReversal(t *testing.T) {
 func TestPackedUnsupportedLayouts(t *testing.T) {
 	const box = `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="uns"/></IDENT>`
 	const child = `<DATAOBJ dtref="seven"><QUAL>A</QUAL></DATAOBJ>`
-	for _, test := range []struct{ name, datatype, layout, declarations, error string }{
-		{"missing container", box, `<STRUCT>` + child + `</STRUCT>`, "", "unknown datatype"},
-		{"unknown container", box, `<STRUCT dtref="missing">` + child + `</STRUCT>`, "", "unknown datatype"},
-		{"overfull", box, `<STRUCT dtref="container">` + packedChild("nine", "A") + packedChild("nine", "B") + `</STRUCT>`, "", "exceed"},
-		{"oversized gap", box, `<STRUCT dtref="container"><GAPDATAOBJ bl="17"/></STRUCT>`, "", "exceed"},
-		{"bad gap", box, `<STRUCT dtref="container"><GAPDATAOBJ bl="bad"/></STRUCT>`, "", "invalid bit length"},
-		{"nested", box, `<STRUCT dtref="container"><STRUCT dtref="container">` + child + `</STRUCT></STRUCT>`, "", "nested"},
-		{"unaligned top-level", box, child, "", "not byte-aligned"},
-		{"unaligned gap", box, `<GAPDATAOBJ bl="1"/>`, "", "not byte-aligned"},
-		{"unaligned container", `<IDENT id="container"><CVALUETYPE bl="14" bo="21" enc="uns"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "byte-aligned"},
-		{"unicode array", `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="utf" qty="field" minsz="2" maxsz="2"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "arrays other than"},
-		{"variable container", `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="1" maxsz="4"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "fixed"},
-		{"text table array", `<TEXTTBL id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="1" maxsz="1"/></TEXTTBL>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "array containers require IDENT"},
-		{"text table overfull", `<TEXTTBL id="container"><CVALUETYPE bl="8" bo="21" enc="uns"/></TEXTTBL>`, `<STRUCT dtref="container">` + packedChild("nine", "A") + `</STRUCT>`, "", "exceed"},
-		{"float child", box + `<IDENT id="float"><CVALUETYPE bl="32" bo="21" enc="flt"/></IDENT>`, `<STRUCT dtref="container">` + packedChild("float", "A") + `</STRUCT>`, "", "atomic integer"},
-		{"array child", box + `<IDENT id="array"><CVALUETYPE bl="1" bo="21" enc="uns" qty="field" minsz="1" maxsz="1"/></IDENT>`, `<STRUCT dtref="container">` + packedChild("array", "A") + `</STRUCT>`, "", "atomic integer"},
-		{"ambiguous byte order", `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="uns"/><CVALUETYPE bl="16" bo="12" enc="uns"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", "ambiguous coded type"},
-		{"ambiguous conversion", box + `<LINCOMP id="bad"><CVALUETYPE bl="7" bo="21" enc="uns"/><COMP f="1" o="0"/><COMP f="2" o="0"/></LINCOMP>`, `<STRUCT dtref="container">` + packedChild("bad", "A") + `</STRUCT>`, "", "ambiguous coded type"},
-		{"missing conversion", box + `<LINCOMP id="bad"><CVALUETYPE bl="7" bo="21" enc="uns"/></LINCOMP>`, `<STRUCT dtref="container">` + packedChild("bad", "A") + `</STRUCT>`, "", "has no COMP"},
-		{"empty raw interval", box + `<LINCOMP id="bad"><CVALUETYPE bl="7" bo="21" enc="uns"/><COMP f="1" o="0" s="128"/></LINCOMP>`, `<STRUCT dtref="container">` + packedChild("bad", "A") + `</STRUCT>`, "", "no representable raw values"},
+	for _, test := range []struct {
+		name, datatype, layout, declarations string
+		want                                 error
+	}{
+		{"missing container", box, `<STRUCT>` + child + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"unknown container", box, `<STRUCT dtref="missing">` + child + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"overfull", box, `<STRUCT dtref="container">` + packedChild("nine", "A") + packedChild("nine", "B") + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"oversized gap", box, `<STRUCT dtref="container"><GAPDATAOBJ bl="17"/></STRUCT>`, "", cdd.ErrInvalid},
+		{"bad gap", box, `<STRUCT dtref="container"><GAPDATAOBJ bl="bad"/></STRUCT>`, "", cdd.ErrInvalid},
+		{"nested", box, `<STRUCT dtref="container"><STRUCT dtref="container">` + child + `</STRUCT></STRUCT>`, "", cdd.ErrInvalid},
+		{"unaligned top-level", box, child, "", cdd.ErrUnsupported},
+		{"unaligned gap", box, `<GAPDATAOBJ bl="1"/>`, "", cdd.ErrUnsupported},
+		{"unaligned container", `<IDENT id="container"><CVALUETYPE bl="14" bo="21" enc="uns"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", cdd.ErrUnsupported},
+		{"unicode array", `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="utf" qty="field" minsz="2" maxsz="2"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", cdd.ErrUnsupported},
+		{"variable container", `<IDENT id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="1" maxsz="4"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", cdd.ErrUnsupported},
+		{"text table array", `<TEXTTBL id="container"><CVALUETYPE bl="8" bo="21" enc="uns" qty="field" minsz="1" maxsz="1"/></TEXTTBL>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", cdd.ErrUnsupported},
+		{"text table overfull", `<TEXTTBL id="container"><CVALUETYPE bl="8" bo="21" enc="uns"/></TEXTTBL>`, `<STRUCT dtref="container">` + packedChild("nine", "A") + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"float child", box + `<IDENT id="float"><CVALUETYPE bl="32" bo="21" enc="flt"/></IDENT>`, `<STRUCT dtref="container">` + packedChild("float", "A") + `</STRUCT>`, "", cdd.ErrUnsupported},
+		{"array child", box + `<IDENT id="array"><CVALUETYPE bl="1" bo="21" enc="uns" qty="field" minsz="1" maxsz="1"/></IDENT>`, `<STRUCT dtref="container">` + packedChild("array", "A") + `</STRUCT>`, "", cdd.ErrUnsupported},
+		{"ambiguous byte order", `<IDENT id="container"><CVALUETYPE bl="16" bo="21" enc="uns"/><CVALUETYPE bl="16" bo="12" enc="uns"/></IDENT>`, `<STRUCT dtref="container">` + child + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"ambiguous conversion", box + `<LINCOMP id="bad"><CVALUETYPE bl="7" bo="21" enc="uns"/><COMP f="1" o="0"/><COMP f="2" o="0"/></LINCOMP>`, `<STRUCT dtref="container">` + packedChild("bad", "A") + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"missing conversion", box + `<LINCOMP id="bad"><CVALUETYPE bl="7" bo="21" enc="uns"/></LINCOMP>`, `<STRUCT dtref="container">` + packedChild("bad", "A") + `</STRUCT>`, "", cdd.ErrInvalid},
+		{"empty raw interval", box + `<LINCOMP id="bad"><CVALUETYPE bl="7" bo="21" enc="uns"/><COMP f="1" o="0" s="128"/></LINCOMP>`, `<STRUCT dtref="container">` + packedChild("bad", "A") + `</STRUCT>`, "", cdd.ErrInvalid},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			message := testCodecMessage(t, packedTypes+test.datatype, test.layout, test.declarations)
@@ -233,9 +233,7 @@ func TestPackedUnsupportedLayouts(t *testing.T) {
 			if err == nil && message.Record != nil {
 				err = message.Record.CodecError()
 			}
-			if err == nil || !strings.Contains(err.Error(), test.error) {
-				t.Fatalf("error = %v, want %q", err, test.error)
-			}
+			assertDefinitionError(t, err, test.want)
 		})
 	}
 }

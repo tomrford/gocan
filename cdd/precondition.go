@@ -22,10 +22,10 @@ func (resolver *resolver) precondition(node, template *element, bindingErr error
 
 func (resolver *resolver) resolveStateList(condition *Precondition) error {
 	if condition.NotExecInStateGroups != nil || condition.TemplateNotExecInStateGroups != nil {
-		return sourceError(resolver.name, "notExecInStateGroups is not supported")
+		return sourceError(resolver.name, unsupportedf("notExecInStateGroups is not supported"))
 	}
 	if condition.TemplateMayBeExec != nil {
-		return sourceError(resolver.name, "template mayBeExec inheritance is not supported")
+		return sourceError(resolver.name, unsupportedf("template mayBeExec inheritance is not supported"))
 	}
 	if condition.MayBeExec == nil {
 		return nil
@@ -33,13 +33,13 @@ func (resolver *resolver) resolveStateList(condition *Precondition) error {
 	value := *condition.MayBeExec
 	list := strings.TrimSpace(value)
 	if len(list) < 3 || list[0] != '(' || list[len(list)-1] != ')' {
-		return sourceError(resolver.name, "invalid mayBeExec list %q", value)
+		return sourceError(resolver.name, invalidf("invalid mayBeExec list %q", value))
 	}
 	selected := make([]bool, len(resolver.states))
 	for _, token := range strings.Split(list[1:len(list)-1], ",") {
 		position, err := strconv.Atoi(strings.TrimSpace(token))
 		if err != nil || position < 1 || position > len(resolver.states) {
-			return sourceError(resolver.name, "mayBeExec %q names a state outside the %d declared states", value, len(resolver.states))
+			return sourceError(resolver.name, invalidf("mayBeExec %q names a state outside the %d declared states", value, len(resolver.states)))
 		}
 		selected[position-1] = true
 	}
@@ -59,10 +59,7 @@ func (resolver *resolver) resolveStateList(condition *Precondition) error {
 }
 
 func attributeValue(node *element, name string) *string {
-	if node == nil {
-		return nil
-	}
-	value, present := node.attrs[name]
+	value, present := node.lookup(name)
 	if !present {
 		return nil
 	}

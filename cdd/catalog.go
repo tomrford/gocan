@@ -43,13 +43,13 @@ func (resolver *resolver) index(node *element) {
 func (resolver *resolver) reference(id, kind string) (*element, error) {
 	node, exists := resolver.byID[id]
 	if !exists {
-		return nil, sourceError(resolver.name, "%s reference %q does not resolve", kind, id)
+		return nil, sourceError(resolver.name, invalidf("%s reference %q does not resolve", kind, id))
 	}
 	if node == nil {
-		return nil, sourceError(resolver.name, "%s reference %q is ambiguous (duplicate XML id)", kind, id)
+		return nil, sourceError(resolver.name, invalidf("%s reference %q is ambiguous (duplicate XML id)", kind, id))
 	}
 	if node.name != kind {
-		return nil, sourceError(resolver.name, "reference %q points to %s, want %s", id, node.name, kind)
+		return nil, sourceError(resolver.name, invalidf("reference %q points to %s, want %s", id, node.name, kind))
 	}
 	return node, nil
 }
@@ -152,7 +152,7 @@ func (resolver *resolver) resolveService(instance, classTemplate, node *element,
 	template, err := resolver.reference(service.TemplateRef, "DCLSRVTMPL")
 	service.Template = metadataPointer(template)
 	if err == nil && (classTemplate == nil || !directChild(classTemplate, template)) {
-		err = sourceError(resolver.name, "service template %q is not a child of the instance's DCLTMPL %q", service.TemplateRef, instance.attr("tmplref"))
+		err = sourceError(resolver.name, invalidf("service template %q is not a child of the instance's DCLTMPL %q", service.TemplateRef, instance.attr("tmplref")))
 	}
 	service.Requirements = resolver.precondition(node, template, err)
 	service.Transitions = resolver.transitions(node, template, err)
@@ -174,7 +174,7 @@ func (resolver *resolver) resolveService(instance, classTemplate, node *element,
 
 func serviceID(request *Message) (*uint8, error) {
 	if request == nil {
-		return nil, fmt.Errorf("protocol service has no REQ")
+		return nil, invalidf("protocol service has no REQ")
 	}
 	var sid *uint8
 	var count int
@@ -189,7 +189,7 @@ func serviceID(request *Message) (*uint8, error) {
 		}
 	}
 	if count != 1 || sid == nil {
-		return nil, fmt.Errorf("request does not declare exactly one resolved 8-bit service ID")
+		return nil, invalidf("request does not declare exactly one resolved 8-bit service ID")
 	}
 	return sid, nil
 }
@@ -214,14 +214,14 @@ func (resolver *resolver) resolveMessage(instance, classTemplate, node *element)
 			if component.attr("dest") == "data" {
 				dataComponents = append(dataComponents, component)
 			} else {
-				problems = append(problems, sourceError(resolver.name, "unsupported SIMPLEPROXYCOMP destination %q", component.attr("dest")))
+				problems = append(problems, sourceError(resolver.name, unsupportedf("unsupported SIMPLEPROXYCOMP destination %q", component.attr("dest"))))
 			}
 		default:
-			problems = append(problems, sourceError(resolver.name, "message contains unsupported %s", component.name))
+			problems = append(problems, sourceError(resolver.name, unsupportedf("message contains unsupported %s", component.name)))
 		}
 	}
 	if len(dataComponents) > 1 {
-		problems = append(problems, sourceError(resolver.name, "message contains multiple data components"))
+		problems = append(problems, sourceError(resolver.name, unsupportedf("message contains multiple data components")))
 	} else if len(dataComponents) == 1 {
 		component := dataComponents[0]
 		if _, err := resolver.reference(component.attr("id"), "SIMPLEPROXYCOMP"); err != nil {
@@ -247,7 +247,7 @@ func (resolver *resolver) resolveParameter(instance, classTemplate, component *e
 	if reference := component.attr("dtref"); reference != "" {
 		datatype := resolver.datatypes[reference]
 		if datatype == nil {
-			parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, "parameter %q references unknown or ambiguous datatype %q", component.attr("id"), reference))
+			parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("parameter %q references unknown or ambiguous datatype %q", component.attr("id"), reference)))
 		} else {
 			parameter.Datatype = metadataPointer(datatype)
 			width = datatype.child("CVALUETYPE").attr("bl")
@@ -266,7 +266,7 @@ func (resolver *resolver) resolveParameter(instance, classTemplate, component *e
 			}
 		}
 		if len(statics) != 1 {
-			parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, "STATICCOMP %q has %d SHSTATIC bindings, want one", component.attr("id"), len(statics)))
+			parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("STATICCOMP %q has %d SHSTATIC bindings, want one", component.attr("id"), len(statics))))
 		} else {
 			static := statics[0]
 			parameter.Static = metadataPointer(static)
@@ -281,20 +281,24 @@ func (resolver *resolver) resolveParameter(instance, classTemplate, component *e
 			if len(values) == 1 {
 				parameter.Value = attributeValue(values[0], "v")
 			} else {
-				parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, "SHSTATIC %q has %d instance values, want one", static.attr("id"), len(values)))
+				parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("SHSTATIC %q has %d instance values, want one", static.attr("id"), len(values))))
 			}
 		}
 	}
 	bits, err := strconv.ParseUint(width, 10, 32)
-	if err != nil || bits == 0 || bits > 64 {
-		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, "parameter %q has unsupported width %q", component.attr("id"), width))
+	if err != nil || bits == 0 {
+		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("parameter %q has invalid width %q", component.attr("id"), width)))
+		return parameter
+	}
+	if bits > 64 {
+		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, unsupportedf("parameter %q has unsupported width %q", component.attr("id"), width)))
 		return parameter
 	}
 	parameter.BitLength = uint32(bits)
 	if parameter.Value == nil {
-		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, "parameter %q has no value", component.attr("id")))
+		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("parameter %q has no value", component.attr("id"))))
 	} else if value, err := strconv.ParseUint(*parameter.Value, 10, int(bits)); err != nil {
-		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, "parameter %q has invalid %d-bit unsigned value %q", component.attr("id"), bits, *parameter.Value))
+		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("parameter %q has invalid %d-bit unsigned value %q", component.attr("id"), bits, *parameter.Value)))
 	} else if parameter.Err == nil {
 		parameter.NumericValue = &value
 	}

@@ -19,29 +19,29 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 	}
 	datatype := resolver.datatypes[node.attr("dtref")]
 	if (datatype.name != "IDENT" && datatype.name != "TEXTTBL") || container.Conversion != nil || container.Variable != nil || container.BitSize()%8 != 0 || *offset%8 != 0 {
-		return sourceError(resolver.name, "STRUCT requires a fixed, byte-aligned IDENT or TEXTTBL container")
+		return sourceError(resolver.name, unsupportedf("STRUCT requires a fixed, byte-aligned IDENT or TEXTTBL container"))
 	}
 	if *offset+uint64(container.BitSize()) > math.MaxUint32 {
-		return sourceError(resolver.name, "STRUCT exceeds the supported record bit length")
+		return sourceError(resolver.name, unsupportedf("STRUCT exceeds the supported record bit length"))
 	}
 	order := container.ByteOrder
 	if datatype.child("CVALUETYPE").attr("qty") == "field" {
 		if datatype.name != "IDENT" {
-			return sourceError(resolver.name, "STRUCT array containers require IDENT")
+			return sourceError(resolver.name, unsupportedf("STRUCT array containers require IDENT"))
 		}
 		if container.BitLength != 8 || (container.Encoding != EncodingUnsigned && container.Encoding != EncodingSigned && container.Encoding != EncodingASCII) {
-			return sourceError(resolver.name, "STRUCT arrays other than one-byte integer/ASCII elements are unsupported")
+			return sourceError(resolver.name, unsupportedf("STRUCT arrays other than one-byte integer/ASCII elements are unsupported"))
 		}
 		reverse, err := resolver.reverseBitfieldBytes(datatype)
 		if err != nil {
-			return sourceError(resolver.name, "STRUCT: %v", err)
+			return sourceError(resolver.name, fmt.Errorf("STRUCT: %w", err))
 		}
 		order = binary.BigEndian
 		if reverse {
 			order = binary.LittleEndian
 		}
 	} else if container.BitLength > 64 || (container.Encoding != EncodingUnsigned && container.Encoding != EncodingSigned) {
-		return sourceError(resolver.name, "STRUCT atomic containers require integers up to 64 bits")
+		return sourceError(resolver.name, unsupportedf("STRUCT atomic containers require integers up to 64 bits"))
 	}
 	bitfield := &Bitfield{Datatype: container.Datatype, BitOffset: uint32(*offset), BitLength: container.BitSize(), ByteOrder: order}
 	var position uint64
@@ -56,7 +56,7 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 			}
 			if field.Variable != nil || field.Count != 1 || resolver.datatypes[child.attr("dtref")].child("CVALUETYPE").attr("qty") == "field" ||
 				(field.Encoding != EncodingUnsigned && field.Encoding != EncodingSigned) || field.BitLength > 64 {
-				return sourceError(resolver.name, "STRUCT child %q requires an atomic integer up to 64 bits", field.Name)
+				return sourceError(resolver.name, unsupportedf("STRUCT child %q requires an atomic integer up to 64 bits", field.Name))
 			}
 			field.Bitfield = bitfield
 			*fields = append(*fields, field)
@@ -64,16 +64,16 @@ func (resolver *resolver) appendBitfield(node *element, fields *[]Field, offset 
 		case "GAPDATAOBJ":
 			gap, err := strconv.ParseUint(child.attr("bl"), 10, 32)
 			if err != nil {
-				return sourceError(resolver.name, "STRUCT gap has invalid bit length %q", child.attr("bl"))
+				return sourceError(resolver.name, invalidf("STRUCT gap has invalid bit length %q", child.attr("bl")))
 			}
 			position += gap
 		case "STRUCT":
-			return sourceError(resolver.name, "nested STRUCT bitfields are prohibited")
+			return sourceError(resolver.name, invalidf("nested STRUCT bitfields are prohibited"))
 		default:
-			return sourceError(resolver.name, "STRUCT contains unsupported %s", child.name)
+			return sourceError(resolver.name, unsupportedf("STRUCT contains unsupported %s", child.name))
 		}
 		if position > uint64(bitfield.BitLength) {
-			return sourceError(resolver.name, "STRUCT children exceed the enclosing datatype size")
+			return sourceError(resolver.name, invalidf("STRUCT children exceed the enclosing datatype size"))
 		}
 	}
 	prependGroup((*fields)[start:], metadata(node))
@@ -99,7 +99,7 @@ func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) 
 			continue
 		}
 		if declaration != nil || candidate.name != "ENUMDEF" {
-			return false, fmt.Errorf("ReverseBitFieldBytes declaration is ambiguous or not an enumeration")
+			return false, invalidf("ReverseBitFieldBytes declaration is ambiguous or not an enumeration")
 		}
 		var err error
 		declaration, err = resolver.reference(candidate.attr("id"), "ENUMDEF")
@@ -111,7 +111,7 @@ func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) 
 	for _, attribute := range datatype.children {
 		if attribute.name != "ENUM" {
 			if declaration != nil && attribute.attr("attrref") == declaration.attr("id") {
-				return false, fmt.Errorf("ReverseBitFieldBytes requires an ENUM value")
+				return false, invalidf("ReverseBitFieldBytes requires an ENUM value")
 			}
 			continue
 		}
@@ -123,7 +123,7 @@ func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) 
 			continue
 		}
 		if override != nil {
-			return false, fmt.Errorf("ReverseBitFieldBytes is repeated")
+			return false, invalidf("ReverseBitFieldBytes is repeated")
 		}
 		override = attribute
 	}
@@ -136,7 +136,7 @@ func (resolver *resolver) reverseBitfieldBytes(datatype *element) (bool, error) 
 	}
 	number, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
-		return false, fmt.Errorf("invalid ReverseBitFieldBytes value %q", value)
+		return false, invalidf("invalid ReverseBitFieldBytes value %q", value)
 	}
 	return number != 0, nil
 }
