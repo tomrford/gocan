@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"sync"
 
 	"github.com/tomrford/gocan"
 )
@@ -21,29 +20,42 @@ func BusError(bus gocan.Bus) error {
 	return StopError(bus.Err())
 }
 
-// BusContext returns a context cancelled with BusError once bus stops. One
-// goroutine watches bus until it stops or release is called; release stops
-// watching without cancelling the context. Derive per-operation contexts with
-// Join so that operations start no goroutines of their own.
-func BusContext(bus gocan.Bus) (ctx context.Context, release func()) {
-	ctx, cancel := context.WithCancelCause(context.Background())
-	quit := make(chan struct{})
+// BusContext returns a child of parent that is also cancelled with BusError
+// once bus stops. A bus that has already stopped cancels it before return.
+// Otherwise one goroutine watches bus until either ends, so cancel the context
+// when the operation it scopes finishes.
+//
+// The watcher is started by the caller rather than shared across operations:
+// a Bus offers only a channel, and a long-lived watcher would outlive values
+// that have no Close and would cancel contexts across testing/synctest bubbles.
+func BusContext(parent context.Context, bus gocan.Bus) (context.Context, context.CancelCauseFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	select {
+	case <-bus.Done():
+		cancel(BusError(bus))
+		return ctx, cancel
+	default:
+	}
 	go func() {
 		select {
 		case <-bus.Done():
 			cancel(BusError(bus))
-		case <-quit:
+		case <-ctx.Done():
 		}
 	}()
-	var once sync.Once
-	return ctx, func() { once.Do(func() { close(quit) }) }
+	return ctx, cancel
 }
 
 // Join returns a child of parent that is also cancelled with the cause of
-// other once other ends. It starts no goroutine until other ends. Calling
-// cancel detaches other and cancels the child with cause.
+// other once other ends. An already-ended other cancels it before return;
+// otherwise no goroutine starts unless other ends first. Calling cancel
+// detaches other and cancels the child with cause.
 func Join(parent, other context.Context) (context.Context, context.CancelCauseFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
+	if other.Err() != nil {
+		cancel(context.Cause(other))
+		return ctx, cancel
+	}
 	stop := context.AfterFunc(other, func() { cancel(context.Cause(other)) })
 	return ctx, func(cause error) {
 		stop()

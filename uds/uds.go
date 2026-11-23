@@ -188,21 +188,14 @@ func sendRequest(ctx context.Context, link payloadSender, request Request) error
 	return wrapRequestTransportError(link.Send(ctx, payload))
 }
 
-// requestSender transmits a request without collecting responses. Client and
-// Functional share the suppressed-response encoders below through it.
-type requestSender interface {
-	Send(context.Context, Request) error
-}
-
-func sendTesterPresent(ctx context.Context, sender requestSender) error {
-	return sender.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
-}
-
-func sendECUReset(ctx context.Context, sender requestSender, resetType ResetType) error {
+// ecuResetSuppressed encodes the ECU reset subfunction with its positive
+// response suppressed for Client and Functional. Each caller keeps the request
+// data local so sending through its concrete type does not allocate it.
+func ecuResetSuppressed(resetType ResetType) (byte, error) {
 	if err := validateSubfunction(byte(resetType), "ECU reset type"); err != nil {
-		return err
+		return 0, err
 	}
-	return sender.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{byte(resetType) | suppressPositiveResponse}})
+	return byte(resetType) | suppressPositiveResponse, nil
 }
 
 func wrapRequestTransportError(err error) error {

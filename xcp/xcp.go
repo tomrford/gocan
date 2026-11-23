@@ -134,18 +134,15 @@ func (err *NegativeResponseError) Error() string {
 // Once a SYNCH send is accepted, further CONNECT retries are blocked until
 // synchronisation succeeds, so an old marker cannot fence a newer CONNECT.
 type Client struct {
-	bus     gocan.Bus
-	capture *gocan.Capture
-	config  Config
-	key     gocan.FrameKey
-	gate    chan struct{}
-	ctx     context.Context
-	cancel  context.CancelCauseFunc
-	// busCtx ends with the bus's stop error until Close releases its watcher.
-	busCtx     context.Context
-	releaseBus func()
-	closeOnce  sync.Once
-	done       chan struct{}
+	bus       gocan.Bus
+	capture   *gocan.Capture
+	config    Config
+	key       gocan.FrameKey
+	gate      chan struct{}
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
+	closeOnce sync.Once
+	done      chan struct{}
 	// Session fields are protected by gate.
 	capabilities   Capabilities
 	connected      bool
@@ -190,18 +187,15 @@ func New(bus gocan.Bus, config Config) (*Client, error) {
 		config.Timeout = time.Second
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
-	busCtx, releaseBus := transport.BusContext(bus)
 	client := &Client{
-		bus:        bus,
-		capture:    bus.Capture(),
-		config:     config,
-		gate:       make(chan struct{}, 1),
-		ctx:        ctx,
-		cancel:     cancel,
-		busCtx:     busCtx,
-		releaseBus: releaseBus,
-		done:       make(chan struct{}),
-		key:        gocan.FrameKey{ID: config.ReceiveID, Bus: bus.ID(), Direction: gocan.DirectionReceive, Extended: config.FrameFlags.Has(gocan.FrameExtended)},
+		bus:     bus,
+		capture: bus.Capture(),
+		config:  config,
+		gate:    make(chan struct{}, 1),
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		key:     gocan.FrameKey{ID: config.ReceiveID, Bus: bus.ID(), Direction: gocan.DirectionReceive, Extended: config.FrameFlags.Has(gocan.FrameExtended)},
 	}
 	client.gate <- struct{}{}
 	return client, nil
@@ -214,7 +208,6 @@ func (client *Client) Close() error {
 	client.cancel(ErrClosed)
 	client.closeOnce.Do(func() {
 		<-client.gate
-		client.releaseBus()
 		client.mu.Lock()
 		client.retaining = false
 		client.mu.Unlock()
@@ -243,7 +236,7 @@ func (client *Client) begin(parent context.Context) (context.Context, func(), er
 	if err := context.Cause(client.ctx); err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := transport.Join(parent, client.busCtx)
+	ctx, cancel := transport.BusContext(parent, client.bus)
 	stop := context.AfterFunc(client.ctx, func() { cancel(ErrClosed) })
 	cleanup := func() { stop(); cancel(context.Canceled) }
 	select {

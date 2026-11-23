@@ -52,6 +52,21 @@ func (flags FrameFlags) Has(flag FrameFlags) bool {
 // empty string when none is set. An undefined bit renders as its hexadecimal
 // value. For example, "extended|fd|brs".
 func (flags FrameFlags) String() string {
+	// Single defined flags return their constant name without allocating.
+	switch flags {
+	case 0:
+		return ""
+	case FrameExtended:
+		return "extended"
+	case FrameRemote:
+		return "remote"
+	case FrameFD:
+		return "fd"
+	case FrameBitRateSwitch:
+		return "brs"
+	case FrameErrorStateIndicator:
+		return "esi"
+	}
 	// Longest: "extended|remote|fd|brs|esi|0xe0".
 	var buffer [32]byte
 	text := buffer[:0]

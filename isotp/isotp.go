@@ -107,9 +107,6 @@ type Config struct {
 // buffered in the driver. Capture loss fails the operation with
 // gocan.ErrCursorOutOfRange; the next starts at the oldest retained record.
 //
-// A Link watches its bus from New until the bus stops, so operations need no
-// goroutines of their own; create Links once per endpoint, not per request.
-//
 // Send and Receive calls are serialised independently. Begin owns both paths
 // until its Exchange closes. Use Link as a client (Begin) or a server
 // (alternating Receive and Send). A server must finish Receive before Send:
@@ -117,8 +114,6 @@ type Config struct {
 type Link struct {
 	bus     gocan.Bus
 	capture *gocan.Capture
-	// busCtx ends with the bus's stop error; operations derive from it.
-	busCtx context.Context
 
 	transmitter
 	receiveKey gocan.FrameKey
@@ -193,12 +188,9 @@ func New(bus gocan.Bus, config Config) (*Link, error) {
 		waitFrameLimit = defaultWaitFrameLimit
 	}
 
-	// Link has no Close, so its watcher runs until the bus stops.
-	busCtx, _ := transport.BusContext(bus)
 	link := &Link{
 		bus:                     bus,
 		capture:                 capture,
-		busCtx:                  busCtx,
 		transmitter:             transmitter,
 		receiveKey:              gocan.FrameKey{Bus: bus.ID(), ID: config.ReceiveID, Direction: gocan.DirectionReceive, Extended: config.FrameFlags.Has(gocan.FrameExtended)},
 		blockSize:               config.AdvertisedBlockSize,
@@ -373,7 +365,8 @@ func (exchange *Exchange) Close() error {
 }
 
 func (link *Link) newExchange() *Exchange {
-	ctx, cancel := context.WithCancelCause(link.busCtx)
+	// Exchange operations join this context, so they start no bus watchers.
+	ctx, cancel := transport.BusContext(context.Background(), link.bus)
 	return &Exchange{link: link, ctx: ctx, cancel: cancel}
 }
 
@@ -461,15 +454,12 @@ func (link *Link) release(token chan struct{}) {
 }
 
 func (link *Link) operationContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return joinedContext(parent, link.busCtx)
+	ctx, cancel := transport.BusContext(parent, link.bus)
+	return ctx, func() { cancel(context.Canceled) }
 }
 
 func (exchange *Exchange) operationContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return joinedContext(parent, exchange.ctx)
-}
-
-func joinedContext(parent, other context.Context) (context.Context, context.CancelFunc) {
-	ctx, cancel := transport.Join(parent, other)
+	ctx, cancel := transport.Join(parent, exchange.ctx)
 	return ctx, func() { cancel(context.Canceled) }
 }
 

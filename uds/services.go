@@ -190,7 +190,11 @@ func (client *Client) ECUReset(ctx context.Context, resetType ResetType) ([]byte
 // SendECUReset sends resetType with its positive response suppressed, as Send.
 // It does not wait for the ECU to finish resetting.
 func (client *Client) SendECUReset(ctx context.Context, resetType ResetType) error {
-	return sendECUReset(ctx, client, resetType)
+	subfunction, err := ecuResetSuppressed(resetType)
+	if err != nil {
+		return err
+	}
+	return client.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{subfunction}})
 }
 
 // ReadDataByIdentifier reads one data identifier and returns its data record.
@@ -348,7 +352,7 @@ func (client *Client) TesterPresent(ctx context.Context) error {
 // SendTesterPresent sends a tester-present request with its positive response
 // suppressed, as Send.
 func (client *Client) SendTesterPresent(ctx context.Context) error {
-	return sendTesterPresent(ctx, client)
+	return client.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
 }
 
 func (client *Client) do(ctx context.Context, service ServiceID, data []byte) ([]byte, error) {

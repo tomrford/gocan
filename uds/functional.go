@@ -33,13 +33,17 @@ func (functional *Functional) Send(ctx context.Context, request Request) error {
 // SendTesterPresent broadcasts tester present with its positive response
 // suppressed.
 func (functional *Functional) SendTesterPresent(ctx context.Context) error {
-	return sendTesterPresent(ctx, functional)
+	return functional.Send(ctx, Request{Service: ServiceTesterPresent, Data: []byte{suppressPositiveResponse}})
 }
 
 // SendECUReset broadcasts resetType with its positive response suppressed.
 // Like Send, it does not wait for responses or for the ECUs to finish resetting.
 func (functional *Functional) SendECUReset(ctx context.Context, resetType ResetType) error {
-	return sendECUReset(ctx, functional, resetType)
+	subfunction, err := ecuResetSuppressed(resetType)
+	if err != nil {
+		return err
+	}
+	return functional.Send(ctx, Request{Service: ServiceECUReset, Data: []byte{subfunction}})
 }
 
 // SendCommunicationControl broadcasts controlType for the messages selected by

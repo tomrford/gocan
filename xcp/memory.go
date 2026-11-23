@@ -26,6 +26,9 @@ func (client *Client) ShortUpload(ctx context.Context, address Address, length i
 	return client.read(ctx, address, length, true)
 }
 
+// maxReadReservation bounds Read's initial buffer; larger reads grow by append.
+const maxReadReservation = 64 << 10
+
 func (client *Client) read(ctx context.Context, address Address, length int, short bool) ([]byte, error) {
 	// A transfer ending at 2^32 would wrap the ECU's incremented MTA as well.
 	if length < 0 || uint64(address.Value)+uint64(length) > uint64(^uint32(0)) {
@@ -66,12 +69,17 @@ func (client *Client) read(ctx context.Context, address Address, length int, sho
 	if _, err := client.command(ctx, Request{Command: CommandSetMTA, Data: parameters}); err != nil {
 		return nil, err
 	}
-	result := make([]byte, 0, length)
+	var result []byte
 	for len(result) < length {
 		count := min(maximum, length-len(result))
 		response, err := client.command(ctx, Request{Command: CommandUpload, Data: []byte{byte(count)}})
 		if err != nil {
 			return result, err
+		}
+		if result == nil {
+			// Reserve once the ECU answers, bounding what a large request
+			// commits before its data arrives.
+			result = make([]byte, 0, min(length, maxReadReservation))
 		}
 		result = append(result, response.Data[:count]...)
 	}
