@@ -5,6 +5,7 @@ package pcan
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -54,7 +55,8 @@ func TestPCANTransmitQueueFull(t *testing.T) {
 		ID:        frame.ID,
 		Direction: gocan.DirectionTransmit,
 	}
-	if got := len(capture.Series(key)); got != accepted {
+	seq, _, _ := capture.Series(key, gocan.Range{})
+	if got := len(slices.Collect(seq)); got != accepted {
 		t.Fatalf("capture holds %d transmissions after %d accepted sends and one rejection", got, accepted)
 	}
 
@@ -179,11 +181,11 @@ func waitForPCANEvents(
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		events, next, err := capture.BusEventsSince(bus, cursor)
+		events, next, err := capture.BusEvents(bus, gocan.Since(cursor))
 		if err != nil {
-			t.Fatalf("BusEventsSince: %v", err)
+			t.Fatalf("BusEvents: %v", err)
 		}
-		for _, event := range events {
+		for event := range events {
 			if accept(event) {
 				return next
 			}
@@ -191,7 +193,8 @@ func waitForPCANEvents(
 		cursor = next
 		time.Sleep(5 * time.Millisecond)
 	}
-	events := capture.BusEvents(bus)
+	allEvents, _, _ := capture.BusEvents(bus, gocan.Range{})
+	events := slices.Collect(allEvents)
 	if len(events) > 10 {
 		events = events[len(events)-10:]
 	}

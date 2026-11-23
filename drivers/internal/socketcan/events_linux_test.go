@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,7 +48,8 @@ func TestVCanInjectedErrorPackets(t *testing.T) {
 		t.Fatalf("bus error = %v, want ErrBusOff", bus.Err())
 	}
 
-	events := capture.BusEvents(bus.ID())
+	eventSeq, _, _ := capture.BusEvents(bus.ID(), gocan.Range{})
+	events := slices.Collect(eventSeq)
 	if len(events) != 6 {
 		t.Fatalf("captured %d events, want 6: %+v", len(events), events)
 	}
@@ -88,7 +90,8 @@ func TestVCanInjectedReceiveOverrun(t *testing.T) {
 		t.Fatalf("bus error = %v, want ErrReceiveOverrun", bus.Err())
 	}
 
-	events := capture.BusEvents(bus.ID())
+	eventSeq, _, _ := capture.BusEvents(bus.ID(), gocan.Range{})
+	events := slices.Collect(eventSeq)
 	if len(events) != 2 {
 		t.Fatalf("captured %d events, want 2: %+v", len(events), events)
 	}

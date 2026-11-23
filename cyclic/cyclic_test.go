@@ -84,10 +84,18 @@ func TestTaskLifecycle(t *testing.T) {
 			t.Fatalf("Update after Stop = %v, want ErrStopped", err)
 		}
 
-		before := len(capture.Series(key))
+		countSeries := func() int {
+			seq, _, _ := capture.Series(key, gocan.Range{})
+			n := 0
+			for range seq {
+				n++
+			}
+			return n
+		}
+		before := countSeries()
 		time.Sleep(3 * 10 * time.Millisecond)
 		synctest.Wait()
-		if after := len(capture.Series(key)); after != before {
+		if after := countSeries(); after != before {
 			t.Fatalf("capture gained %d transmissions after Stop", after-before)
 		}
 	})

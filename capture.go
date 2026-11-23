@@ -33,19 +33,13 @@ type Capture struct {
 	mu     sync.RWMutex
 	origin time.Time
 
-	generation uint64
-	chunks     []*captureChunk
-	active     *captureChunk
-	next       *captureChunk
-
-	allocatingNext bool
-	nextFor        *captureChunk
-	nextRecordCap  int
-	nextPayloadCap int
-	latest         map[FrameKey]FrameEvent
-	latestStates   map[BusID]Event
-	waiters        map[FrameKey]*captureWaiter
-	length         int
+	generation   uint64
+	chunks       []*captureChunk
+	active       *captureChunk
+	latest       map[FrameKey]FrameEvent
+	latestStates map[BusID]Event
+	waiters      map[FrameKey]*captureWaiter
+	length       int
 	// pruneSeam keeps the last discarded record's cursor usable as a read boundary.
 	pruneSeam Cursor
 }
@@ -54,19 +48,19 @@ var captureEpochs atomic.Uint64
 
 // NewCapture creates an empty capture.
 func NewCapture() *Capture {
-	active := newCaptureChunk(
+	return newCapture(
 		initialCaptureChunkRecordCapacity,
 		initialCaptureChunkPayloadCapacity,
 	)
+}
+
+func newCapture(recordCapacity, payloadCapacity int) *Capture {
+	active := newCaptureChunk(recordCapacity, payloadCapacity)
 	return &Capture{
-		origin:     time.Now(),
-		generation: captureEpochs.Add(1),
-		chunks:     []*captureChunk{active},
-		active:     active,
-		next: newCaptureChunk(
-			initialCaptureChunkRecordCapacity*2,
-			initialCaptureChunkPayloadCapacity*2,
-		),
+		origin:       time.Now(),
+		generation:   captureEpochs.Add(1),
+		chunks:       []*captureChunk{active},
+		active:       active,
 		latest:       make(map[FrameKey]FrameEvent),
 		latestStates: make(map[BusID]Event),
 	}
@@ -234,9 +228,9 @@ func (err *CursorOutOfRangeError) Unwrap() error {
 // retained record, so every read accepts it.
 //
 // Cursors track global capture position, not per-series progress, so a cursor
-// returned by one Since read may be passed to any Since read of the same
-// Capture and never moves backwards. Cursors hold no references, so retaining
-// one costs nothing.
+// returned by one read may be passed to any later read of the same Capture and
+// never moves backwards. Cursors hold no references, so retaining one costs
+// nothing.
 //
 // A cursor the capture cannot place, because Clear discarded its generation
 // or Prune discarded records after it, fails the read that carries it with
@@ -286,15 +280,6 @@ func locateCursor(
 	return index, int(cursor.record), nil
 }
 
-func newestCursor(cursor Cursor, generation uint64, views []captureView) Cursor {
-	for i := len(views) - 1; i >= 0; i-- {
-		if count := len(views[i].records); count > 0 {
-			return Cursor{generation: generation, chunk: views[i].sequence, record: uint32(count - 1)}
-		}
-	}
-	return cursor
-}
-
 func (chunk *captureChunk) appendPayload(data []byte) uint32 {
 	offset := uint32(len(chunk.payload))
 	chunk.payload = append(chunk.payload, data...)
@@ -322,7 +307,7 @@ type RecordWriter interface {
 
 // RecordWriteError reports a RecordWriter failure. Cursor identifies the
 // record whose writer call failed. The cursor returned separately by
-// WriteRecordsSince identifies the last record whose writer call succeeded.
+// WriteRecords identifies the last record whose writer call succeeded.
 type RecordWriteError struct {
 	Cursor Cursor
 	Err    error
@@ -386,17 +371,11 @@ func (capture *Capture) rotate(payloadLength int) {
 	}
 
 	filled := capture.active
-	next := capture.next
-	capture.next = nil
-	if next == nil || cap(next.payload) < payloadLength || cap(next.records) == 0 {
-		recordCapacity, payloadCapacity := nextChunkCapacities(filled, len(filled.records), len(filled.payload))
-		next = newCaptureChunk(recordCapacity, payloadCapacity)
-	}
+	recordCapacity, payloadCapacity := nextChunkCapacities(filled, len(filled.records), len(filled.payload))
+	next := newCaptureChunk(recordCapacity, payloadCapacity)
 	next.sequence = filled.sequence + 1
 	capture.active = next
 	capture.chunks = append(capture.chunks, capture.active)
-	recordCapacity, payloadCapacity := nextChunkCapacities(capture.active, len(filled.records), len(filled.payload))
-	capture.prepareNextLocked(recordCapacity, payloadCapacity)
 }
 
 // nextChunkCapacities grows the chunk budget geometrically up to the cap while
@@ -420,48 +399,6 @@ func nextChunkCapacities(base *captureChunk, records, payloadBytes int) (recordC
 		payloadCapacity = int(int64(payloadBytes) * int64(targetRecords) / int64(records))
 	}
 	return max(recordCapacity, minRecords), max(payloadCapacity, minPayload)
-}
-
-func (capture *Capture) prepareNextLocked(recordCapacity, payloadCapacity int) {
-	if capture.next != nil {
-		return
-	}
-
-	capture.nextFor = capture.active
-	capture.nextRecordCap = recordCapacity
-	capture.nextPayloadCap = payloadCapacity
-	if capture.allocatingNext {
-		return
-	}
-	capture.allocatingNext = true
-	go capture.allocateNext()
-}
-
-func (capture *Capture) allocateNext() {
-	capture.mu.Lock()
-	for {
-		active := capture.nextFor
-		recordCapacity := capture.nextRecordCap
-		payloadCapacity := capture.nextPayloadCap
-		if capture.active != active || capture.next != nil {
-			capture.allocatingNext = false
-			capture.nextFor = nil
-			capture.mu.Unlock()
-			return
-		}
-		capture.mu.Unlock()
-
-		next := newCaptureChunk(recordCapacity, payloadCapacity)
-
-		capture.mu.Lock()
-		if capture.active == active && capture.next == nil {
-			capture.next = next
-			capture.allocatingNext = false
-			capture.nextFor = nil
-			capture.mu.Unlock()
-			return
-		}
-	}
 }
 
 // Append adds a frame event to the capture.
@@ -643,7 +580,7 @@ func (capture *Capture) LatestControllerState(bus BusID) (Event, bool) {
 }
 
 // End returns the cursor at the current end of the capture. A caller can pass
-// it to Next or any Since method to observe only later records.
+// it to Next or Since to observe only later records.
 func (capture *Capture) End() Cursor {
 	capture.mu.RLock()
 	defer capture.mu.RUnlock()
@@ -754,8 +691,8 @@ func (capture *Capture) FirstSince(key FrameKey, cursor Cursor) (FrameEvent, Cur
 //
 // Next is built for following a frontier: each call costs the key's own
 // traffic since cursor, however busy the rest of the capture is. To step
-// through deep history, read in bulk with SeriesSince and continue from the
-// returned cursor.
+// through deep history, stream with Series and continue from the returned
+// cursor.
 //
 // Clear or Prune after registration cannot invalidate the call: it reads its
 // snapshot or receives the first later matching append. See Cursor for validity
@@ -890,381 +827,6 @@ func (capture *Capture) removeWaiter(key FrameKey, waiter *captureWaiter) {
 	}
 }
 
-// Frames returns owned copies of every captured frame in append order.
-func (capture *Capture) Frames() []FrameEvent {
-	frames, _, _ := capture.FramesSince(Cursor{})
-	return frames
-}
-
-// WriteRecordsSince sends every frame and event appended after cursor to
-// writer in Capture append order. On success it returns the cursor of the
-// newest record observed. On failure it returns the cursor of the last record
-// whose writer call succeeded and a *RecordWriteError whose Cursor identifies
-// the failed record. Retry from the returned cursor, or deliberately skip the
-// failed record by continuing from the error's Cursor.
-//
-// A writer may commit partial output before returning an error. Capture tracks
-// completed writer calls, not the transactional state of the underlying
-// output. Pass the zero Cursor to write the full retained Capture.
-func (capture *Capture) WriteRecordsSince(cursor Cursor, writer RecordWriter) (Cursor, error) {
-	views, skip, next, err := capture.viewsSince(cursor)
-	if err != nil {
-		return cursor, err
-	}
-	return writeRecords(views, skip, cursor, next, writer)
-}
-
-func writeRecords(
-	views []captureView,
-	skip int,
-	lastWritten Cursor,
-	success Cursor,
-	writer RecordWriter,
-) (Cursor, error) {
-	for i := range views {
-		from := 0
-		if i == 0 {
-			from = skip
-		}
-		for record := from; record < len(views[i].records); record++ {
-			var err error
-			switch views[i].records[record].kind {
-			case captureRecordFrame:
-				err = writer.WriteFrame(views[i].frameAt(uint32(record)))
-			case captureRecordEvent:
-				err = writer.WriteEvent(views[i].eventAt(uint32(record)))
-			default:
-				panic("gocan: capture record has an unknown kind")
-			}
-			recordCursor := Cursor{
-				generation: success.generation,
-				chunk:      views[i].sequence,
-				record:     uint32(record),
-			}
-			if err != nil {
-				return lastWritten, &RecordWriteError{Cursor: recordCursor, Err: err}
-			}
-			lastWritten = recordCursor
-		}
-	}
-	return success, nil
-}
-
-// FramesSince returns owned copies of every frame appended after cursor, in
-// append order, together with the cursor of the newest record observed. Pass
-// the returned cursor to a later Since read to receive only what arrived in
-// between; pass the zero Cursor to start from the beginning.
-func (capture *Capture) FramesSince(cursor Cursor) ([]FrameEvent, Cursor, error) {
-	views, skip, next, err := capture.viewsSince(cursor)
-	if err != nil {
-		return nil, cursor, err
-	}
-	return framesFromViews(views, skip), next, nil
-}
-
-func framesFromViews(views []captureView, skip int) []FrameEvent {
-	total := recordKindCount(views, skip, captureRecordFrame)
-	if total <= 0 {
-		return nil
-	}
-
-	frames := make([]FrameEvent, 0, total)
-	for i := range views {
-		from := 0
-		if i == 0 {
-			from = skip
-		}
-		for record := from; record < len(views[i].records); record++ {
-			if views[i].records[record].kind == captureRecordFrame {
-				frames = append(frames, views[i].frameAt(uint32(record)))
-			}
-		}
-	}
-	return frames
-}
-
-// Events returns every captured non-frame event in append order.
-func (capture *Capture) Events() []Event {
-	events, _, _ := capture.EventsSince(Cursor{})
-	return events
-}
-
-// EventsSince returns every non-frame event appended after cursor, in append
-// order, together with the cursor of the newest record observed. Pass the
-// returned cursor to a later Since read to receive only what arrived in
-// between; pass the zero Cursor to start from the beginning.
-func (capture *Capture) EventsSince(cursor Cursor) ([]Event, Cursor, error) {
-	views, skip, next, err := capture.viewsSince(cursor)
-	if err != nil {
-		return nil, cursor, err
-	}
-	return eventsFromViews(views, skip), next, nil
-}
-
-func eventsFromViews(views []captureView, skip int) []Event {
-	total := recordKindCount(views, skip, captureRecordEvent)
-	if total <= 0 {
-		return nil
-	}
-
-	events := make([]Event, 0, total)
-	for i := range views {
-		from := 0
-		if i == 0 {
-			from = skip
-		}
-		for record := from; record < len(views[i].records); record++ {
-			if views[i].records[record].kind == captureRecordEvent {
-				events = append(events, views[i].eventAt(uint32(record)))
-			}
-		}
-	}
-	return events
-}
-
-func (capture *Capture) viewsSince(cursor Cursor) ([]captureView, int, Cursor, error) {
-	capture.mu.RLock()
-	chunks := capture.chunks
-	activeView := capture.active.view()
-	generation := capture.generation
-	pruneSeam := capture.pruneSeam
-	capture.mu.RUnlock()
-
-	start, boundary, err := locateCursor(cursor, generation, chunks, len(activeView.records), pruneSeam)
-	if err != nil {
-		return nil, 0, cursor, err
-	}
-	skip := boundary + 1
-	views := make([]captureView, len(chunks)-start)
-	for i := range views {
-		if start+i == len(chunks)-1 {
-			views[i] = activeView
-		} else {
-			views[i] = chunks[start+i].view()
-		}
-	}
-
-	return views, skip, newestCursor(cursor, generation, views), nil
-}
-
-func recordKindCount(views []captureView, skip int, kind captureRecordKind) int {
-	total := 0
-	for i := range views {
-		from := 0
-		if i == 0 {
-			from = skip
-		}
-		for record := from; record < len(views[i].records); record++ {
-			if views[i].records[record].kind == kind {
-				total++
-			}
-		}
-	}
-	return total
-}
-
-// Series returns owned copies of every captured frame matching key in append
-// order.
-func (capture *Capture) Series(key FrameKey) []FrameEvent {
-	frames, _, _ := capture.SeriesSince(key, Cursor{})
-	return frames
-}
-
-// SeriesSince returns owned copies of every frame matching key appended after
-// cursor, in append order, together with the cursor of the newest record
-// observed anywhere in the capture. Pass the returned cursor to a later Since
-// read to receive only what arrived in between; pass the zero Cursor to start
-// from the beginning.
-func (capture *Capture) SeriesSince(key FrameKey, cursor Cursor) ([]FrameEvent, Cursor, error) {
-	capture.mu.RLock()
-	chunks := capture.chunks
-	activeView := capture.active.view()
-	activeState := capture.active.keyStates[key].captureIndexState
-	generation := capture.generation
-	pruneSeam := capture.pruneSeam
-	capture.mu.RUnlock()
-
-	return collectSince(
-		cursor,
-		generation,
-		chunks,
-		activeView,
-		activeState,
-		pruneSeam,
-		func(chunk *captureChunk) captureIndexState { return chunk.keyStates[key].captureIndexState },
-		captureView.frameAt,
-	)
-}
-
-// BusEvents returns every captured event from bus in append order.
-func (capture *Capture) BusEvents(bus BusID) []Event {
-	events, _, _ := capture.BusEventsSince(bus, Cursor{})
-	return events
-}
-
-// BusEventsSince returns every event from bus appended after cursor, in append
-// order, together with the cursor of the newest record observed anywhere in
-// the capture. Pass the returned cursor to a later Since read to receive only
-// what arrived in between; pass the zero Cursor to start from the beginning.
-func (capture *Capture) BusEventsSince(bus BusID, cursor Cursor) ([]Event, Cursor, error) {
-	capture.mu.RLock()
-	chunks := capture.chunks
-	activeView := capture.active.view()
-	activeState := capture.active.eventStates[bus]
-	generation := capture.generation
-	pruneSeam := capture.pruneSeam
-	capture.mu.RUnlock()
-
-	return collectSince(
-		cursor,
-		generation,
-		chunks,
-		activeView,
-		activeState,
-		pruneSeam,
-		func(chunk *captureChunk) captureIndexState { return chunk.eventStates[bus] },
-		captureView.eventAt,
-	)
-}
-
-func collectSince[T any](
-	cursor Cursor,
-	generation uint64,
-	chunks []*captureChunk,
-	activeView captureView,
-	activeState captureIndexState,
-	pruneSeam Cursor,
-	chunkState func(*captureChunk) captureIndexState,
-	decode func(captureView, uint32) T,
-) ([]T, Cursor, error) {
-	start, boundary, err := locateCursor(cursor, generation, chunks, len(activeView.records), pruneSeam)
-	if err != nil {
-		return nil, cursor, err
-	}
-	var viewBuf [4]captureView
-	var stateBuf [4]captureIndexState
-	count := len(chunks) - start
-	var views []captureView
-	var states []captureIndexState
-	if count <= len(viewBuf) {
-		views = viewBuf[:count]
-		states = stateBuf[:count]
-	} else {
-		views = make([]captureView, count)
-		states = make([]captureIndexState, count)
-	}
-	for i := range views {
-		chunkIndex := start + i
-		if chunkIndex == len(chunks)-1 {
-			views[i], states[i] = activeView, activeState
-		} else {
-			views[i] = chunks[chunkIndex].view()
-			states[i] = chunkState(chunks[chunkIndex])
-		}
-	}
-
-	next := newestCursor(cursor, generation, views)
-	endBoundary := len(views[len(views)-1].records) - 1
-	return collectIndexedRecords(views, states, boundary, endBoundary, nil, decode), next, nil
-}
-
-func collectIndexedRecords[T any](
-	views []captureView,
-	states []captureIndexState,
-	startBoundary int,
-	endBoundary int,
-	match func(captureView, uint32) bool,
-	decode func(captureView, uint32) T,
-) []T {
-	var headBuf [4]uint32
-	var heads []uint32
-	if len(views) <= len(headBuf) {
-		heads = headBuf[:len(views)]
-	} else {
-		heads = make([]uint32, len(views))
-	}
-
-	total := 0
-	tailScan := false
-	for i := range views {
-		if states[i].count == 0 {
-			heads[i] = noCaptureRecord
-			continue
-		}
-		stop := -1
-		if i == 0 {
-			stop = startBoundary
-		}
-		head := states[i].lastRecord
-		trimmedEnd := false
-		if i == len(views)-1 && int(head) > endBoundary {
-			trimmedEnd = true
-			// Bound the backward skip to the requested tail interval's size so
-			// narrow historical reads do not walk past thousands of newer hits.
-			budget := endBoundary - stop
-			steps := 0
-			for head != noCaptureRecord && int(head) > endBoundary {
-				if match != nil && steps >= budget {
-					tailScan = true
-					break
-				}
-				head = views[i].records[head].previous
-				steps++
-			}
-			if tailScan {
-				heads[i] = noCaptureRecord
-				for r := stop + 1; r <= endBoundary; r++ {
-					if match(views[i], uint32(r)) {
-						total++
-					}
-				}
-				continue
-			}
-		}
-		heads[i] = head
-		if head == noCaptureRecord {
-			continue
-		}
-		if (i == 0 && startBoundary >= 0) || trimmedEnd {
-			for r := head; r != noCaptureRecord && int(r) > stop; r = views[i].records[r].previous {
-				total++
-			}
-		} else {
-			total += int(states[i].count)
-		}
-	}
-	if total == 0 {
-		return nil
-	}
-
-	out := make([]T, total)
-	remaining := total
-	for i := len(views) - 1; i >= 0; i-- {
-		stop := -1
-		if i == 0 {
-			stop = startBoundary
-		}
-		if i == len(views)-1 && tailScan {
-			for r := endBoundary; r > stop; r-- {
-				if match(views[i], uint32(r)) {
-					remaining--
-					out[remaining] = decode(views[i], uint32(r))
-				}
-			}
-			continue
-		}
-		head := heads[i]
-		if head == noCaptureRecord {
-			continue
-		}
-		for r := head; r != noCaptureRecord && int(r) > stop; r = views[i].records[r].previous {
-			remaining--
-			out[remaining] = decode(views[i], r)
-		}
-	}
-	return out
-}
-
 // Len returns the number of frame and event records the capture retains, which
 // Clear and Prune reduce.
 func (capture *Capture) Len() int {
@@ -1282,11 +844,7 @@ func (capture *Capture) Clear() {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 
-	fresh := capture.next
-	capture.next = nil
-	if fresh == nil {
-		fresh = newCaptureChunk(cap(capture.active.records), cap(capture.active.payload))
-	}
+	fresh := newCaptureChunk(cap(capture.active.records), cap(capture.active.payload))
 	capture.generation = captureEpochs.Add(1)
 	capture.active = fresh
 	capture.chunks = []*captureChunk{fresh}
@@ -1294,5 +852,4 @@ func (capture *Capture) Clear() {
 	clear(capture.latestStates)
 	capture.length = 0
 	capture.pruneSeam = Cursor{}
-	capture.prepareNextLocked(cap(fresh.records), cap(fresh.payload))
 }

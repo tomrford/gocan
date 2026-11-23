@@ -173,7 +173,7 @@ func (recorder *Recorder) run() {
 
 func (recorder *Recorder) pass() error {
 	previous := recorder.accepted
-	next, writeErr := recorder.capture.WriteRecordsSince(previous, recorder.writer)
+	next, writeErr := recorder.capture.WriteRecords(gocan.Since(previous), recorder.writer)
 
 	recorder.mu.Lock()
 	recorder.accepted = next

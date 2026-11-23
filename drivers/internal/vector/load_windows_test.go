@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -105,7 +106,8 @@ func runVectorTransmitQueueFull(t *testing.T, setup vectorSaturationSetup) {
 		ID:        setup.frame.ID,
 		Direction: gocan.DirectionTransmit,
 	}
-	if got := len(capture.Series(key)); got != accepted {
+	seq, _, _ := capture.Series(key, gocan.Range{})
+	if got := len(slices.Collect(seq)); got != accepted {
 		t.Fatalf("capture holds %d transmissions after %d accepted sends and one rejection", got, accepted)
 	}
 
@@ -331,7 +333,8 @@ func verifyThreeAdapterLoad(t *testing.T, capture *gocan.Capture, buses []gocan.
 					t.Fatalf("traffic from %s arrived out of order on %s: got %d, want %d", sourceBus.Name(), observer.Name(), got, sequence)
 				}
 			}
-			if got := len(capture.Series(key)); got != framesPerAdapter {
+			seq, _, _ := capture.Series(key, gocan.Range{})
+			if got := len(slices.Collect(seq)); got != framesPerAdapter {
 				t.Fatalf("traffic from %s has %d events on %s, want %d", sourceBus.Name(), got, observer.Name(), framesPerAdapter)
 			}
 		}

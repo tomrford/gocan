@@ -5,6 +5,7 @@ package vector
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -218,7 +219,8 @@ func TestVectorFDCollisionBusOffEvents(t *testing.T) {
 	default:
 	}
 
-	loserEvents := capture.BusEvents(loser.ID())
+	loserSeq, _, _ := capture.BusEvents(loser.ID(), gocan.Range{})
+	loserEvents := slices.Collect(loserSeq)
 	seenError := false
 	seenBusOff := false
 	for _, event := range loserEvents {
@@ -355,11 +357,11 @@ func waitForVectorEvents(
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		events, next, err := capture.BusEventsSince(bus, cursor)
+		events, next, err := capture.BusEvents(bus, gocan.Since(cursor))
 		if err != nil {
-			t.Fatalf("BusEventsSince: %v", err)
+			t.Fatalf("BusEvents: %v", err)
 		}
-		for _, event := range events {
+		for event := range events {
 			if accept(event) {
 				return next
 			}
@@ -367,7 +369,8 @@ func waitForVectorEvents(
 		cursor = next
 		time.Sleep(5 * time.Millisecond)
 	}
-	events := capture.BusEvents(bus)
+	allEvents, _, _ := capture.BusEvents(bus, gocan.Range{})
+	events := slices.Collect(allEvents)
 	if len(events) > 10 {
 		events = events[len(events)-10:]
 	}

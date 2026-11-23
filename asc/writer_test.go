@@ -40,7 +40,7 @@ func TestWriterStreamsCapture(t *testing.T) {
 	}
 	var output bytes.Buffer
 	writer := asc.NewWriter(&output)
-	cursor, err := capture.WriteRecordsSince(gocan.Cursor{}, writer)
+	cursor, err := capture.WriteRecords(gocan.Range{}, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,11 +94,11 @@ func TestWriterStreamsCapture(t *testing.T) {
 	if err := capture.AppendEvent(overrun); err != nil {
 		t.Fatal(err)
 	}
-	cursor, err = capture.WriteRecordsSince(cursor, writer)
+	cursor, err = capture.WriteRecords(gocan.Since(cursor), writer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := capture.WriteRecordsSince(cursor, writer); err != nil {
+	if _, err := capture.WriteRecords(gocan.Since(cursor), writer); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

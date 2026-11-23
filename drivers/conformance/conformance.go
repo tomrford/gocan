@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -218,7 +219,8 @@ func testRejectsInvalid(t *testing.T, open Pair) {
 			t.Fatalf("Send accepted invalid frame %+v", frame)
 		}
 	}
-	if got := len(capture.Frames()); got != 0 {
+	frames, _, _ := capture.Frames(gocan.Range{})
+	if got := len(slices.Collect(frames)); got != 0 {
 		t.Fatalf("capture holds %d frames after rejected sends", got)
 	}
 
@@ -249,7 +251,8 @@ func testCancellation(t *testing.T, open Pair) {
 			t.Fatalf("captured %+v, want the accepted transmission", event)
 		}
 	case errors.Is(err, context.Canceled):
-		if got := len(capture.Frames()); got != 0 {
+		frames, _, _ := capture.Frames(gocan.Range{})
+		if got := len(slices.Collect(frames)); got != 0 {
 			t.Fatalf("Send reported cancellation but the capture holds %d frames", got)
 		}
 	default:
@@ -327,7 +330,8 @@ func testFrameShapes(t *testing.T, open Pair, caps Capabilities) {
 				{b, gocan.DirectionTransmit},
 				{b, gocan.DirectionReceive},
 			} {
-				series := capture.Series(frameKey(expect.bus, shape.frame, expect.direction))
+				seq, _, _ := capture.Series(frameKey(expect.bus, shape.frame, expect.direction), gocan.Range{})
+				series := slices.Collect(seq)
 				if len(series) != 1 || series[0].Direction != expect.direction {
 					t.Fatalf("%v series on %s has %d events, want exactly one",
 						expect.direction, expect.bus.Name(), len(series))
@@ -377,10 +381,12 @@ func testConcurrentTraffic(t *testing.T, open Pair) {
 				t.Fatalf("series %#x out of order: event %d has sequence %d", key.ID, seq, got)
 			}
 		}
-		if series := capture.Series(key); len(series) != perSender {
+		rxSeq, _, _ := capture.Series(key, gocan.Range{})
+		if series := slices.Collect(rxSeq); len(series) != perSender {
 			t.Fatalf("series %#x holds %d events, want exactly %d", key.ID, len(series), perSender)
 		}
-		if series := capture.Series(gocan.FrameKey{Bus: a.ID(), ID: key.ID, Direction: gocan.DirectionTransmit}); len(series) != perSender {
+		txSeq, _, _ := capture.Series(gocan.FrameKey{Bus: a.ID(), ID: key.ID, Direction: gocan.DirectionTransmit}, gocan.Range{})
+		if series := slices.Collect(txSeq); len(series) != perSender {
 			t.Fatalf("TX series %#x holds %d events, want exactly %d", key.ID, len(series), perSender)
 		}
 	}
@@ -398,7 +404,8 @@ func testOverrun(t *testing.T, open Pair, caps Capabilities) {
 	if err := b.Err(); !errors.Is(err, gocan.ErrReceiveOverrun) {
 		t.Fatalf("Err after overrun = %v, want ErrReceiveOverrun", err)
 	}
-	events := capture.BusEvents(b.ID())
+	eventSeq, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
+	events := slices.Collect(eventSeq)
 	if len(events) == 0 || events[len(events)-1].Kind != gocan.EventReceiveOverrun {
 		t.Fatalf("last bus event after overrun = %+v, want EventReceiveOverrun", events)
 	}

@@ -5,6 +5,7 @@ package zlg
 import (
 	"context"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -168,7 +169,8 @@ func runSoakCycle(t *testing.T, cycle, frames int, zlgConfig Config, pcanConfig 
 	if err := peer.Close(); err != nil {
 		t.Fatalf("cycle %d: close PCAN: %v", cycle, err)
 	}
-	for _, event := range capture.Events() {
+	events, _, _ := capture.Events(gocan.Range{})
+	for event := range events {
 		if event.Kind != gocan.EventControllerState || event.ControllerState != gocan.ControllerActive {
 			t.Fatalf("cycle %d: bus %d reported %+v", cycle, event.Bus, event)
 		}
@@ -183,10 +185,12 @@ func expectSequence(t *testing.T, cycle int, capture *gocan.Capture, bus gocan.B
 	for sequence := range frames {
 		event, next, err := capture.Next(ctx, gocan.FrameKey{Bus: bus, ID: id, Direction: gocan.DirectionReceive}, cursor)
 		if err != nil {
-			t.Fatalf("cycle %d: bus %d received %d of %d frames %#x: %v; events %+v", cycle, bus, sequence, frames, id, err, capture.Events())
+			events, _, _ := capture.Events(gocan.Range{})
+			t.Fatalf("cycle %d: bus %d received %d of %d frames %#x: %v; events %+v", cycle, bus, sequence, frames, id, err, slices.Collect(events))
 		}
 		if got := int(event.Frame.Data[0])<<8 | int(event.Frame.Data[1]); got != sequence {
-			t.Fatalf("cycle %d: bus %d frame %d of %#x arrived as sequence %d; events %+v", cycle, bus, sequence, id, got, capture.Events())
+			events, _, _ := capture.Events(gocan.Range{})
+			t.Fatalf("cycle %d: bus %d frame %d of %#x arrived as sequence %d; events %+v", cycle, bus, sequence, id, got, slices.Collect(events))
 		}
 		cursor = next
 	}

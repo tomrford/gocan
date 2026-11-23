@@ -174,7 +174,7 @@ func (client *Client) receive(ctx context.Context, command Command, minimum int)
 		// Next preserves a parked waiter across Clear/Prune. Validate its old
 		// position before advancing, otherwise a reply from a new capture
 		// generation could silently bridge lost command history.
-		if _, err := client.capture.FramesBetween(cursor, cursor); err != nil {
+		if _, _, err := client.capture.Frames(gocan.Between(cursor, cursor)); err != nil {
 			return Response{}, err
 		}
 		if err != nil {
