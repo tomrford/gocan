@@ -43,6 +43,8 @@ var (
 )
 
 type messageCodec struct {
+	// signals is the first element of the signal storage the codec compiled.
+	signals       *Signal
 	signalsByName map[string]int
 	constraints   []map[int][]MultiplexRange
 	selectors     []bool
@@ -104,11 +106,11 @@ func (message *Message) SignalByName(name string) (*Signal, bool) {
 	if message == nil {
 		return nil, false
 	}
-	// The codec index describes the parsed signals, which an Edit callback may
-	// change on its copy, so the copy scans.
-	if codec := message.codec; codec != nil && !message.editing {
+	// The index describes only the signal storage Parse resolved. Copies, such
+	// as those an Edit callback changes, scan.
+	if codec := message.codec; codec != nil && codec.indexes(message.Signals) {
 		index, ok := codec.signalsByName[name]
-		if ok && index < len(message.Signals) && message.Signals[index].Name == name {
+		if ok && message.Signals[index].Name == name {
 			return &message.Signals[index], true
 		}
 		// A compile error can leave the index short; otherwise it is complete.
@@ -324,12 +326,21 @@ func (message *Message) writableCodec() (*messageCodec, error) {
 	return codec, nil
 }
 
+// indexes reports whether signals is the storage the codec compiled, so its
+// name index applies.
+func (codec *messageCodec) indexes(signals []Signal) bool {
+	return len(signals) > 0 && len(signals) == len(codec.selectors) && &signals[0] == codec.signals
+}
+
 func compileMessageCodec(message *Message) *messageCodec {
 	codec := &messageCodec{
 		signalsByName: make(map[string]int, len(message.Signals)),
 		constraints:   make([]map[int][]MultiplexRange, len(message.Signals)),
 		selectors:     make([]bool, len(message.Signals)),
 		choices:       make([][]scalar.Choice, len(message.Signals)),
+	}
+	if len(message.Signals) > 0 {
+		codec.signals = &message.Signals[0]
 	}
 	for index, signal := range message.Signals {
 		if signal.BitLength > 64 {

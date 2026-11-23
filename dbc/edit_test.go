@@ -2,6 +2,7 @@ package dbc_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -182,5 +183,42 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	if !ok || status.Name != "DEV_0_STAT" || len(base.Messages) != 3 || base.Messages[1].ID != 0x10063001 ||
 		base.Comment == `C:\logs\` {
 		t.Fatalf("base database changed: %#v", base.Messages)
+	}
+}
+
+// A database built in code rather than parsed is edited like a parsed one: the
+// callback's lookups find what db declares.
+func TestEditConstructedDatabase(t *testing.T) {
+	constructed := &dbc.Database{
+		Nodes: []dbc.Node{{Name: "ECU"}},
+		Messages: []dbc.Message{{
+			ID: 0x100, Name: "Status", Length: 1, Transmitters: []string{"ECU"},
+			Signals: []dbc.Signal{{Name: "Value", BitLength: 8, ByteOrder: binary.LittleEndian, Factor: 1, Maximum: 255}},
+		}},
+	}
+	edited, err := constructed.Edit("constructed.dbc", func(db *dbc.Database) {
+		status, ok := db.MessageByName("Status")
+		if !ok {
+			t.Fatal("callback lookup missed Status")
+		}
+		value, ok := status.SignalByName("Value")
+		if !ok {
+			t.Fatal("callback lookup missed Value")
+		}
+		value.Name = "Level"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := edited.MessageByID(0x100, false)
+	if !ok {
+		t.Fatal("edited database lost Status")
+	}
+	frame, err := status.Encode(dbc.Values{"Level": uint64(42)})
+	if err != nil || frame.Data[0] != 42 {
+		t.Fatalf("Encode edited Status = %v, %v", frame, err)
+	}
+	if constructed.Messages[0].Signals[0].Name != "Value" {
+		t.Fatal("Edit changed the constructed database")
 	}
 }

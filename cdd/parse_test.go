@@ -94,7 +94,9 @@ func TestParseClassifiesFailures(t *testing.T) {
 		{"truncated XML", strings.NewReader(`<CANDELA><ECUDOC>`), cdd.ErrInvalid},
 		{"foreign root", strings.NewReader(`<ODX/>`), cdd.ErrInvalid},
 		{"unsupported charset", strings.NewReader(`<?xml version="1.0" encoding="EBCDIC"?><CANDELA/>`), cdd.ErrUnsupported},
+		{"XML 1.1", strings.NewReader(`<?xml version="1.1"?><CANDELA/>`), cdd.ErrUnsupported},
 		{"reader failure", io.MultiReader(strings.NewReader(`<CANDELA><ECUDOC>`), iotest.ErrReader(failed)), failed},
+		{"reader failure within a character", io.MultiReader(strings.NewReader("<CANDELA><ECUDOC><QUAL>\xc3"), iotest.ErrReader(failed)), failed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := cdd.Parse(test.name, test.reader)

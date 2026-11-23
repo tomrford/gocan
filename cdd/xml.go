@@ -19,7 +19,8 @@ type element struct {
 }
 
 func decodeXML(name string, r io.Reader) (*element, error) {
-	decoder := xml.NewDecoder(r)
+	input := &recordingReader{reader: r}
+	decoder := xml.NewDecoder(input)
 	// encoding/xml reports charset failures as plain text, so the
 	// unsupported encoding is kept to classify the decode error.
 	var charsetErr error
@@ -46,7 +47,7 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 			return nil, sourceError(name, charsetErr)
 		}
 		if err != nil {
-			return nil, sourceError(name, xmlError(err))
+			return nil, sourceError(name, xmlError(err, input.err))
 		}
 		switch token := token.(type) {
 		case xml.StartElement:
@@ -89,14 +90,35 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 	return root, nil
 }
 
-// xmlError classifies a decoder failure: malformed XML makes the document
-// invalid, while a reader failure says nothing about the document.
-func xmlError(err error) error {
+// xmlError classifies a decoder failure. A reader failure says nothing about
+// the document, even when the decoder reports it as a syntax error, such as
+// a character cut short. Otherwise malformed XML makes the document invalid,
+// and the decoder's remaining errors reject an XML version or encoding it
+// does not implement.
+func xmlError(err, readErr error) error {
+	if readErr != nil {
+		return fmt.Errorf("read XML: %w", readErr)
+	}
 	var syntaxErr *xml.SyntaxError
 	if errors.As(err, &syntaxErr) {
 		return invalidf("decode XML: %w", err)
 	}
-	return fmt.Errorf("decode XML: %w", err)
+	return unsupportedf("decode XML: %w", err)
+}
+
+// recordingReader keeps the first reader failure, which the decoder may
+// report only as malformed input.
+type recordingReader struct {
+	reader io.Reader
+	err    error
+}
+
+func (r *recordingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err != nil && err != io.EOF && r.err == nil {
+		r.err = err
+	}
+	return n, err
 }
 
 func (node *element) attr(name string) string {

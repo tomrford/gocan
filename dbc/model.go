@@ -57,7 +57,6 @@ func (db *Database) clone() (*Database, error) {
 	clone.Messages = slices.Clone(db.Messages)
 	for index := range clone.Messages {
 		message := &clone.Messages[index]
-		message.editing = true
 		message.Transmitters = slices.Clone(message.Transmitters)
 		message.Signals = slices.Clone(message.Signals)
 		for index := range message.Signals {
@@ -129,8 +128,6 @@ type Message struct {
 
 	bitRateSwitch bool
 	codec         *messageCodec
-	// editing marks a copy handed to an Edit callback.
-	editing bool
 }
 
 // Values maps runtime-loaded signal names to their values. Encoding accepts
