@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 	"github.com/tomrford/gocan/internal/devicechange"
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
@@ -112,7 +113,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := validateConfig(config); err != nil {
+	if err := ValidateConfig(config); err != nil {
 		return nil, err
 	}
 	api, err := loadAPI()
@@ -149,10 +150,16 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		txDone:    make(chan struct{}),
 		lifecycle: driverstate.New(nil),
 	}
-	if config.Termination != 0 {
+	var termValue string
+	switch config.Termination {
+	case drivercfg.TerminationOff:
+		termValue = "0"
+	case drivercfg.TerminationOn:
+		termValue = "1"
+	}
+	if termValue != "" {
 		// ZLG applies termination after InitCAN and spells the property this way.
-		value := strconv.Itoa(int(config.Termination - 1))
-		if err := api.setValue(device.handle, fmt.Sprintf("%d/initenal_resistance", config.Channel), value); err != nil {
+		if err := api.setValue(device.handle, fmt.Sprintf("%d/initenal_resistance", config.Channel), termValue); err != nil {
 			return nil, errors.Join(err, bus.cleanup())
 		}
 	}

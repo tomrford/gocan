@@ -10,10 +10,11 @@ available through `Config.Termination` on channels whose `SupportsTermination`
 method returns true; the default leaves NI's default setting.
 
 NI-XNET serializes native reads and capture appends with transmission by default.
-Set `drivers.Config.NIXNETConcurrentIO` to `true` when opening a bus to let
-native reads run concurrently with sends and reduce send delays. Capture batches
-remain serialized with sends, timestamps remain in host capture order, and Send
-still returns when NI accepts the frame into its transmit queue.
+Pass `drivers.NIXNETOptions{ConcurrentIO: true}` in `drivers.Config.Vendor` when
+opening a bus to let native reads run concurrently with sends and reduce send
+delays. Capture batches remain serialized with sends, timestamps remain in host
+capture order, and Send still returns when NI accepts the frame into its
+transmit queue.
 
 In concurrent mode, an old reply fetched before a new request can be captured
 after that request. Use it for fully awaited exchanges without stale or

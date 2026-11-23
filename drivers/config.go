@@ -1,13 +1,16 @@
 package drivers
 
 import (
-	"errors"
 	"fmt"
 	"math"
-	"slices"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 )
+
+// ErrInvalidConfig identifies an invalid or unsupported channel or Config
+// rejected before opening hardware.
+var ErrInvalidConfig = drivercfg.ErrInvalidConfig
 
 // Config names an opened bus and selects how its bit timing is configured.
 // Set either Bitrate (optionally with DataBitrate), FDTiming, or External.
@@ -35,13 +38,18 @@ type Config struct {
 	// Termination selects switchable bus termination on supported channels.
 	// Default leaves the driver default; unsupported explicit choices are rejected.
 	Termination Termination
-	// NIXNETConcurrentIO lets NI-XNET read frames and controller state without
-	// holding the transmit lock to reduce send delays during slow native reads.
-	// Capture ordering can then place an earlier-fetched reply after a newer
-	// request; use it only for fully awaited exchanges without stale or
-	// unsolicited replies on that receive address. Fixed at Open and rejected
-	// for other drivers.
-	NIXNETConcurrentIO bool
+	// Vendor carries optional driver-specific settings, such as NIXNETOptions
+	// or a non-nil pointer to it. Nil leaves the driver's defaults in place.
+	// Options for another driver, typed-nil pointers, or unknown option types
+	// fail with ErrInvalidConfig before any native driver call.
+	Vendor VendorOptions
+}
+
+// VendorOptions carries driver-specific settings for Config.Vendor.
+// Concrete option types such as NIXNETOptions are defined in this package;
+// unknown implementations are rejected with ErrInvalidConfig.
+type VendorOptions interface {
+	vendorOptions()
 }
 
 // Termination selects the physical bus termination resistor.
@@ -55,6 +63,19 @@ const (
 	// TerminationOn enables the termination resistor.
 	TerminationOn
 )
+
+func (termination Termination) toInternal() (drivercfg.Termination, error) {
+	switch termination {
+	case TerminationDefault:
+		return drivercfg.TerminationDefault, nil
+	case TerminationOff:
+		return drivercfg.TerminationOff, nil
+	case TerminationOn:
+		return drivercfg.TerminationOn, nil
+	default:
+		return 0, fmt.Errorf("%w: invalid CAN termination choice %d", ErrInvalidConfig, termination)
+	}
+}
 
 // FDRatePreset is a gocan-provided nominal/data rate pair in bits per second.
 // Copy its fields to Config to open a channel using the preset's timing.
@@ -73,7 +94,7 @@ type fdPreset struct {
 // Halving the data prescaler gives 4M with the same sample point. Both presets
 // also satisfy Vector XLcanFdConf's segment limits and 80 MHz clock/prescaler
 // equation (XL Driver Library Manual 20.30, section 5.4.1).
-var fdPresets = [...]fdPreset{
+var fdPresets80MHz = [...]fdPreset{
 	{
 		rate: FDRatePreset{Bitrate: 500_000, DataBitrate: 2_000_000},
 		timing: FDTiming{
@@ -92,6 +113,14 @@ var fdPresets = [...]fdPreset{
 	},
 }
 
+func presetRates(presets []fdPreset) []FDRatePreset {
+	rates := make([]FDRatePreset, len(presets))
+	for i, preset := range presets {
+		rates[i] = preset.rate
+	}
+	return rates
+}
+
 // FDRatePresets returns an owned list of gocan-provided rate presets for this
 // channel, ordered by nominal then data bitrate. These are configuration
 // choices, not an exhaustive list of rates the hardware supports or a guarantee
@@ -99,31 +128,15 @@ var fdPresets = [...]fdPreset{
 // available; use SupportsFD to check hardware capability. Config.FDTiming allows
 // custom timing on programmable channels.
 func (channel Channel) FDRatePresets() []FDRatePreset {
-	if channel.driver == driverZLG && channel.supportsFD {
-		return slices.Clone(zlgFDRates[:])
-	}
-	var rates []FDRatePreset
-	for _, preset := range channel.fdPresets() {
-		rates = append(rates, preset.rate)
-	}
-	return rates
-}
-
-func (channel Channel) fdPresets() []fdPreset {
-	if !channel.supportsFD || channel.external {
+	if channel.driver == nil || !channel.supportsFD || channel.external || channel.driver.fdRatePresets == nil {
 		return nil
 	}
-	switch channel.driver {
-	case driverPCAN, driverVector:
-		return fdPresets[:]
-	case driverNIXNET:
-		return nixnetFDPresets[:]
-	default:
-		return nil
-	}
+	return channel.driver.fdRatePresets()
 }
 
 // FDTiming defines exact CAN FD arbitration- and data-phase bit timing.
+// Native drivers may enforce additional hardware clock or segment limits when
+// opening the channel.
 type FDTiming struct {
 	// ClockHz is the controller clock in hertz.
 	ClockHz uint32
@@ -145,89 +158,98 @@ type BitTiming struct {
 	SJW uint32
 }
 
-func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (Config, error) {
+type preparedConfig struct {
+	config      Config
+	termination drivercfg.Termination
+	fd          bool
+}
+
+func prepareOpen(capture *gocan.Capture, channel Channel, config Config) (preparedOpen, error) {
 	switch {
 	case capture == nil:
-		return Config{}, errors.New("drivers: physical CAN bus requires a capture")
-	case channel.driver == driverUnknown:
-		return Config{}, errors.New("drivers: physical CAN bus requires a channel returned by Discover")
+		return nil, fmt.Errorf("%w: physical CAN bus requires a capture", ErrInvalidConfig)
+	case channel.driver == nil:
+		return nil, fmt.Errorf("%w: physical CAN bus requires a channel returned by Discover", ErrInvalidConfig)
 	case config.ID == 0:
-		return Config{}, errors.New("drivers: physical CAN bus requires an ID")
+		return nil, fmt.Errorf("%w: physical CAN bus requires an ID", ErrInvalidConfig)
 	case config.Name == "":
-		return Config{}, errors.New("drivers: physical CAN bus requires a name")
+		return nil, fmt.Errorf("%w: physical CAN bus requires a name", ErrInvalidConfig)
 	}
 
-	if config.Termination > TerminationOn {
-		return Config{}, errors.New("drivers: invalid CAN termination choice")
+	termination, err := config.Termination.toInternal()
+	if err != nil {
+		return nil, err
 	}
-	if config.Termination != TerminationDefault && !channel.supportsTermination {
-		return Config{}, fmt.Errorf("drivers: %s does not support switchable termination", channel.Identifier())
-	}
-	if config.NIXNETConcurrentIO && channel.driver != driverNIXNET {
-		return Config{}, errors.New("drivers: NIXNETConcurrentIO requires an NI-XNET channel")
+	if termination != drivercfg.TerminationDefault && !channel.supportsTermination {
+		return nil, fmt.Errorf("%w: %s does not support switchable termination", ErrInvalidConfig, channel.Identifier())
 	}
 
-	fd := config.FDTiming != (FDTiming{})
+	hasFDTiming := config.FDTiming != (FDTiming{})
 	choices := 0
 	if config.Bitrate != 0 || config.DataBitrate != 0 {
 		choices++
 	}
-	if fd {
+	if hasFDTiming {
 		choices++
 	}
 	if config.External {
 		choices++
 	}
 	if choices != 1 {
-		return Config{}, errors.New("drivers: physical CAN bus requires exactly one of Bitrate (optionally with DataBitrate), FDTiming, and External")
+		return nil, fmt.Errorf("%w: physical CAN bus requires exactly one of Bitrate (optionally with DataBitrate), FDTiming, and External", ErrInvalidConfig)
 	}
 
 	if channel.external && !config.External {
-		return Config{}, fmt.Errorf("drivers: %s is configured externally; set Config.External", channel.Identifier())
+		return nil, fmt.Errorf("%w: %s is configured externally; set Config.External", ErrInvalidConfig, channel.Identifier())
 	}
 	if !channel.external && config.External {
-		return Config{}, fmt.Errorf("drivers: %s requires programmable bit timing", channel.Identifier())
+		return nil, fmt.Errorf("%w: %s requires programmable bit timing", ErrInvalidConfig, channel.Identifier())
 	}
 	if config.DataBitrate != 0 && config.Bitrate == 0 {
-		return Config{}, errors.New("drivers: CAN FD DataBitrate requires a nominal Bitrate")
+		return nil, fmt.Errorf("%w: CAN FD DataBitrate requires a nominal Bitrate", ErrInvalidConfig)
 	}
-	if fd || config.DataBitrate != 0 {
-		if !channel.supportsFD {
-			return Config{}, fmt.Errorf("drivers: %s does not support CAN FD", channel.Identifier())
-		}
-		if channel.driver == driverZLG {
-			if fd || !slices.Contains(zlgFDRates[:], FDRatePreset{config.Bitrate, config.DataBitrate}) {
-				return Config{}, fmt.Errorf("drivers: %s accepts only its CAN FD rate presets", channel.Identifier())
-			}
-			return config, nil
-		}
-		if config.DataBitrate != 0 {
-			var err error
-			config.FDTiming, err = fdRatePreset(channel, config.Bitrate, config.DataBitrate)
-			if err != nil {
-				return Config{}, err
-			}
-			config.Bitrate, config.DataBitrate = 0, 0
-		}
-		if _, _, err := deriveFDBitrates(config.FDTiming); err != nil {
-			return Config{}, err
-		}
+
+	fd := hasFDTiming || config.DataBitrate != 0
+	if fd && !channel.supportsFD {
+		return nil, fmt.Errorf("%w: %s does not support CAN FD", ErrInvalidConfig, channel.Identifier())
 	}
-	return config, nil
+
+	return channel.driver.prepare(channel, preparedConfig{
+		config:      config,
+		termination: termination,
+		fd:          fd,
+	})
 }
 
-func fdRatePreset(channel Channel, nominal, data uint32) (FDTiming, error) {
-	for _, preset := range channel.fdPresets() {
-		if preset.rate.Bitrate == nominal && preset.rate.DataBitrate == data {
-			return preset.timing, nil
+func rejectVendorOptions(channel Channel, vendor VendorOptions) error {
+	return fmt.Errorf("%w: %s does not accept vendor options %T", ErrInvalidConfig, channel.Identifier(), vendor)
+}
+
+func resolveFDTiming(config Config, presets []fdPreset) (FDTiming, uint32, uint32, error) {
+	timing := config.FDTiming
+	if config.DataBitrate != 0 {
+		var matched bool
+		for _, preset := range presets {
+			if preset.rate.Bitrate == config.Bitrate && preset.rate.DataBitrate == config.DataBitrate {
+				timing = preset.timing
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return FDTiming{}, 0, 0, fmt.Errorf("%w: unsupported CAN FD rate pair %d/%d bits/s; use FDTiming for custom timing", ErrInvalidConfig, config.Bitrate, config.DataBitrate)
 		}
 	}
-	return FDTiming{}, fmt.Errorf("drivers: unsupported CAN FD rate pair %d/%d bits/s; use FDTiming for custom timing", nominal, data)
+	nominal, data, err := deriveFDBitrates(timing)
+	if err != nil {
+		return FDTiming{}, 0, 0, err
+	}
+	return timing, nominal, data, nil
 }
 
 func deriveFDBitrates(timing FDTiming) (uint32, uint32, error) {
 	if timing.ClockHz == 0 {
-		return 0, 0, errors.New("drivers: CAN FD timing requires a nonzero clock")
+		return 0, 0, fmt.Errorf("%w: CAN FD timing requires a nonzero clock", ErrInvalidConfig)
 	}
 	nominal, err := deriveBitrate(timing.ClockHz, "nominal", timing.Nominal)
 	if err != nil {
@@ -242,18 +264,18 @@ func deriveFDBitrates(timing FDTiming) (uint32, uint32, error) {
 
 func deriveBitrate(clock uint32, phase string, timing BitTiming) (uint32, error) {
 	if timing.BRP == 0 || timing.TSEG1 == 0 || timing.TSEG2 == 0 || timing.SJW == 0 {
-		return 0, fmt.Errorf("drivers: CAN FD %s timing requires nonzero BRP, TSEG1, TSEG2, and SJW", phase)
+		return 0, fmt.Errorf("%w: CAN FD %s timing requires nonzero BRP, TSEG1, TSEG2, and SJW", ErrInvalidConfig, phase)
 	}
 	if timing.SJW > timing.TSEG2 {
-		return 0, fmt.Errorf("drivers: CAN FD %s SJW %d exceeds TSEG2 %d", phase, timing.SJW, timing.TSEG2)
+		return 0, fmt.Errorf("%w: CAN FD %s SJW %d exceeds TSEG2 %d", ErrInvalidConfig, phase, timing.SJW, timing.TSEG2)
 	}
 	quanta := uint64(1) + uint64(timing.TSEG1) + uint64(timing.TSEG2)
 	if quanta > math.MaxUint64/uint64(timing.BRP) {
-		return 0, fmt.Errorf("drivers: CAN FD %s timing denominator overflows", phase)
+		return 0, fmt.Errorf("%w: CAN FD %s timing denominator overflows", ErrInvalidConfig, phase)
 	}
 	denominator := uint64(timing.BRP) * quanta
 	if uint64(clock)%denominator != 0 {
-		return 0, fmt.Errorf("drivers: CAN FD %s timing does not divide %d Hz into an integral bitrate", phase, clock)
+		return 0, fmt.Errorf("%w: CAN FD %s timing does not divide %d Hz into an integral bitrate", ErrInvalidConfig, phase, clock)
 	}
 	return uint32(uint64(clock) / denominator), nil
 }

@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/tomrford/gocan"
+	"github.com/tomrford/gocan/drivers/internal/drivercfg"
 	"github.com/tomrford/gocan/internal/driverstate"
 	"golang.org/x/sys/windows"
 )
@@ -222,10 +223,10 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 	// The 64-bit XL access mask cannot address higher indexes; a larger value
 	// would shift to an empty mask.
 	if config.ChannelIndex >= 64 {
-		return nil, fmt.Errorf("Vector channel index %d exceeds 63", config.ChannelIndex)
+		return nil, fmt.Errorf("%w: Vector channel index %d exceeds 63", drivercfg.ErrInvalidConfig, config.ChannelIndex)
 	}
 	if config.Join && (config.Bitrate != 0 || config.fd()) {
-		return nil, errors.New("joining a Vector channel keeps its timing; Bitrate and FDTiming must be zero")
+		return nil, fmt.Errorf("%w: joining a Vector channel keeps its timing; Bitrate and FDTiming must be zero", drivercfg.ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

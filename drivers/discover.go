@@ -2,40 +2,35 @@
 // selectors and configuration remain private to this package.
 package drivers
 
-import "fmt"
+import (
+	"context"
+	"fmt"
 
-type driverKind uint8
-
-const (
-	driverUnknown driverKind = iota
-	driverSocketCAN
-	driverPCAN
-	driverVector
-	driverNIXNET
-	driverZLG
+	"github.com/tomrford/gocan"
 )
 
-func (driver driverKind) String() string {
-	switch driver {
-	case driverSocketCAN:
-		return "socketcan"
-	case driverPCAN:
-		return "pcan"
-	case driverNIXNET:
-		return "nixnet"
-	case driverVector:
-		return "vector"
-	case driverZLG:
-		return "zlg"
-	default:
-		return ""
+type preparedOpen func(context.Context, *gocan.Capture) (gocan.Bus, error)
+
+type driverDescriptor struct {
+	name             string
+	formatIdentifier func(Channel) string
+	fdRatePresets    func() []FDRatePreset
+	prepare          func(Channel, preparedConfig) (preparedOpen, error)
+	discover         func() ([]Channel, error)
+}
+
+func (driver *driverDescriptor) discoverChannels() ([]Channel, error) {
+	channels, err := driver.discover()
+	for i := range channels {
+		channels[i].driver = driver
 	}
+	return channels, err
 }
 
 // Channel is one physical CAN channel returned by Discover. Its native
 // selector is intentionally opaque; pass the value unchanged to Open.
 type Channel struct {
-	driver              driverKind
+	driver              *driverDescriptor
 	name                string
 	nativeName          string
 	native              uint64
@@ -47,7 +42,12 @@ type Channel struct {
 }
 
 // Driver returns "socketcan", "pcan", "vector", "nixnet", or "zlg".
-func (channel Channel) Driver() string { return channel.driver.String() }
+func (channel Channel) Driver() string {
+	if channel.driver == nil {
+		return ""
+	}
+	return channel.driver.name
+}
 
 // Name returns the device or interface name reported by the native stack.
 // PCAN and ZLG report one name per device, so their names append a number
@@ -76,21 +76,10 @@ func (channel Channel) ExternalBitrates() (bitrate, dataBitrate uint32) {
 // Identifier returns a session-local display key which distinguishes channels
 // that have the same driver and name. Pass Channel itself to Open.
 func (channel Channel) Identifier() string {
-	switch channel.driver {
-	case driverSocketCAN:
-		return "socketcan:" + channel.nativeName
-	case driverPCAN:
-		return fmt.Sprintf("pcan:%#x", channel.native)
-	case driverNIXNET:
-		return "nixnet:" + channel.nativeName
-	case driverVector:
-		return fmt.Sprintf("vector:%d", channel.native)
-	case driverZLG:
-		deviceType, device, index := zlgSelector(channel.native)
-		return fmt.Sprintf("zlg:%d:%d:%d", deviceType, device, index)
-	default:
+	if channel.driver == nil {
 		return ""
 	}
+	return channel.driver.formatIdentifier(channel)
 }
 
 // SupportsTermination reports whether gocan can switch the channel's bus termination.
