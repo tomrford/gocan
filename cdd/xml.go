@@ -2,6 +2,8 @@ package cdd
 
 import (
 	"encoding/xml"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -44,7 +46,7 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 			return nil, sourceError(name, charsetErr)
 		}
 		if err != nil {
-			return nil, sourceError(name, invalidf("decode XML: %w", err))
+			return nil, sourceError(name, xmlError(err))
 		}
 		switch token := token.(type) {
 		case xml.StartElement:
@@ -85,6 +87,16 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		return nil, sourceError(name, invalidf("XML contains no root element"))
 	}
 	return root, nil
+}
+
+// xmlError classifies a decoder failure: malformed XML makes the document
+// invalid, while a reader failure says nothing about the document.
+func xmlError(err error) error {
+	var syntaxErr *xml.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return invalidf("decode XML: %w", err)
+	}
+	return fmt.Errorf("decode XML: %w", err)
 }
 
 func (node *element) attr(name string) string {

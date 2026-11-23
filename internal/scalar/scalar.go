@@ -22,7 +22,7 @@ func StringValue(value any) (string, bool) {
 	switch value := value.(type) {
 	case string:
 		return value, true
-	case json.Number:
+	case nil, json.Number, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 		return "", false
 	}
 	reflected := reflect.ValueOf(value)
@@ -336,6 +336,8 @@ func LinearFloat(value any) (float64, error) {
 			return 0, fmt.Errorf("integer value %d cannot be represented exactly as float64", integer)
 		}
 		return floating, nil
+	case floatNumber:
+		return number.float, nil
 	default:
 		return NumericFloat(value, 64)
 	}

@@ -6,6 +6,7 @@ package dbc
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"maps"
 	"slices"
 )
@@ -44,7 +45,10 @@ type messageID struct {
 // clone returns a deep copy of db's exported model. The copy shares only
 // state that is never modified after Parse: the lookups, codecs and source,
 // which keep describing db.
-func (db *Database) clone() *Database {
+//
+// clone rejects a signal byte order other than binary.BigEndian or
+// binary.LittleEndian, which Write cannot express and which may share state.
+func (db *Database) clone() (*Database, error) {
 	clone := *db
 	clone.Nodes = slices.Clone(db.Nodes)
 	for index := range clone.Nodes {
@@ -53,10 +57,14 @@ func (db *Database) clone() *Database {
 	clone.Messages = slices.Clone(db.Messages)
 	for index := range clone.Messages {
 		message := &clone.Messages[index]
+		message.editing = true
 		message.Transmitters = slices.Clone(message.Transmitters)
 		message.Signals = slices.Clone(message.Signals)
 		for index := range message.Signals {
 			signal := &message.Signals[index]
+			if signal.ByteOrder != binary.BigEndian && signal.ByteOrder != binary.LittleEndian {
+				return nil, fmt.Errorf("%w: signal %q has unsupported byte order %v", ErrUnrepresentable, signal.Name, signal.ByteOrder)
+			}
 			signal.Receivers = slices.Clone(signal.Receivers)
 			signal.Values = slices.Clone(signal.Values)
 			if signal.Multiplex != nil {
@@ -87,7 +95,7 @@ func (db *Database) clone() *Database {
 	}
 	clone.Attributes = maps.Clone(db.Attributes)
 	clone.Diagnostics = slices.Clone(db.Diagnostics)
-	return &clone
+	return &clone, nil
 }
 
 // Source returns a copy of the exact bytes read by Parse or ParseFile,
@@ -121,6 +129,8 @@ type Message struct {
 
 	bitRateSwitch bool
 	codec         *messageCodec
+	// editing marks a copy handed to an Edit callback.
+	editing bool
 }
 
 // Values maps runtime-loaded signal names to their values. Encoding accepts

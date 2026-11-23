@@ -462,8 +462,8 @@ BA_ "VFrameFormat" BO_ 2566834942 3;
 		{Values{"Intel": uint64(1)}, ErrMissingValue},
 	} {
 		got, err := message.EncodePayload(test.values)
-		if got != nil || !errors.Is(err, test.err) {
-			t.Fatalf("EncodePayload(%v) = % x, %v; want nil, %v", test.values, got, err, test.err)
+		if got != nil || !errors.Is(err, test.err) || test.err != ErrInactiveSignal && errors.Is(err, ErrInactiveSignal) {
+			t.Fatalf("EncodePayload(%v) = % x, %v; want nil, %v only", test.values, got, err, test.err)
 		}
 	}
 	if _, err := message.Encode(values); !errors.Is(err, ErrUnsupportedMessage) {

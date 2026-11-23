@@ -91,7 +91,14 @@ func TestEditIsolatesOriginal(t *testing.T) {
 
 			// The scribbled copy need not be a valid database; only the
 			// original matters here.
-			_, _ = original.Edit(fixture+"-scribbled.dbc", func(db *Database) { scribble(reflect.ValueOf(db).Elem()) })
+			scribbled := false
+			_, _ = original.Edit(fixture+"-scribbled.dbc", func(db *Database) {
+				scribble(reflect.ValueOf(db).Elem())
+				scribbled = true
+			})
+			if !scribbled {
+				t.Fatal("Edit did not run the callback")
+			}
 			assertEquivalent(t, pristine, original)
 			if !reflect.DeepEqual(pristine.Diagnostics, original.Diagnostics) || !bytes.Equal(pristine.Source(), original.Source()) {
 				t.Fatal("Edit changed the original diagnostics or source")

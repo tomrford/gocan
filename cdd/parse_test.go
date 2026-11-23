@@ -3,8 +3,12 @@ package cdd_test
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/tomrford/gocan/cdd"
 )
@@ -76,6 +80,34 @@ func TestParseRecordLayouts(t *testing.T) {
 		t.Fatalf("unexpected variable field: %#v", bufferFields[1])
 	}
 
+}
+
+// Parse separates documents it cannot read from documents it cannot use, and
+// both from failures of the reader itself.
+func TestParseClassifiesFailures(t *testing.T) {
+	failed := errors.New("disk failed")
+	for _, test := range []struct {
+		name   string
+		reader io.Reader
+		want   error
+	}{
+		{"truncated XML", strings.NewReader(`<CANDELA><ECUDOC>`), cdd.ErrInvalid},
+		{"foreign root", strings.NewReader(`<ODX/>`), cdd.ErrInvalid},
+		{"unsupported charset", strings.NewReader(`<?xml version="1.0" encoding="EBCDIC"?><CANDELA/>`), cdd.ErrUnsupported},
+		{"reader failure", io.MultiReader(strings.NewReader(`<CANDELA><ECUDOC>`), iotest.ErrReader(failed)), failed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := cdd.Parse(test.name, test.reader)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Parse error = %v, want %v", err, test.want)
+			}
+			for _, kind := range []error{cdd.ErrInvalid, cdd.ErrUnsupported} {
+				if kind != test.want && errors.Is(err, kind) {
+					t.Fatalf("Parse error = %v, which also matches %v", err, kind)
+				}
+			}
+		})
+	}
 }
 
 func parseCatalogFile(path string) (*cdd.Database, error) {

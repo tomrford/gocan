@@ -146,7 +146,6 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	}
 	assertDevice(t, fromFile, 0xA)
 
-	var parseError *dbc.Error
 	for name, test := range map[string]struct {
 		edit func(*dbc.Database)
 		// keyword is the record Parse rejects; otherwise Write rejects the
@@ -166,6 +165,7 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			edited, err := base.Edit("invalid.dbc", test.edit)
+			var parseError *dbc.Error
 			switch {
 			case edited != nil:
 				t.Fatalf("Edit() = %v, want an error", edited)

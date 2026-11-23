@@ -28,7 +28,10 @@ import (
 // an error wrapping ErrUnrepresentable; one that Parse rejects returns its
 // *Error.
 func (db *Database) Edit(name string, edit func(*Database)) (*Database, error) {
-	edited := db.clone()
+	edited, err := db.clone()
+	if err != nil {
+		return nil, err
+	}
 	edit(edited)
 	var buf bytes.Buffer
 	if err := edited.Write(&buf); err != nil {

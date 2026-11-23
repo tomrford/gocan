@@ -10,7 +10,9 @@ import (
 // Definition errors returned by Parse, and those recorded in the Err fields and
 // Record.CodecError of resolved catalog objects, match ErrInvalid or
 // ErrUnsupported with errors.Is. An Err that joins several problems may match
-// both. Selection, encode and decode errors match neither.
+// both. Record.Encode and Record.Decode return the CodecError of a record that
+// has one. Reader failures, selection errors, and value or payload errors from
+// encoding and decoding match neither.
 var (
 	// ErrInvalid means the document is malformed or inconsistent: unparseable
 	// XML or values, unresolved or ambiguous references, or layouts whose

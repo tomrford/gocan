@@ -286,7 +286,11 @@ func (resolver *resolver) resolveParameter(instance, classTemplate, component *e
 		}
 	}
 	bits, err := strconv.ParseUint(width, 10, 32)
-	if err != nil || bits == 0 || bits > 64 {
+	if err != nil || bits == 0 {
+		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, invalidf("parameter %q has invalid width %q", component.attr("id"), width)))
+		return parameter
+	}
+	if bits > 64 {
 		parameter.Err = errors.Join(parameter.Err, sourceError(resolver.name, unsupportedf("parameter %q has unsupported width %q", component.attr("id"), width)))
 		return parameter
 	}

@@ -2,6 +2,7 @@ package dbc
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -27,12 +28,14 @@ var (
 	ErrInvalidValue = errors.New("dbc: invalid value")
 	// ErrFrameMismatch means a frame or payload does not match the message's
 	// identifier, frame format or length, or is too short to carry a requested
-	// signal or the multiplexors that select it.
+	// signal or the multiplexors that select it. A frame that is itself invalid
+	// returns an error wrapping gocan.ErrInvalidFrame instead.
 	ErrFrameMismatch = errors.New("dbc: frame does not match message")
 	// ErrUnsupportedMessage means the codec cannot perform the operation on
-	// this message definition, such as a signal wider than 64 bits, a frame
-	// operation on a message longer than one frame, or an encode on a message
-	// whose definition cannot be written consistently.
+	// this message definition, such as a message not obtained from Parse, a
+	// signal wider than 64 bits, a frame operation on a message longer than one
+	// frame, or an encode on a message whose definition cannot be written
+	// consistently.
 	ErrUnsupportedMessage = errors.New("dbc: unsupported message")
 	// ErrUnrepresentable means Write cannot express part of the model as DBC
 	// text, such as an out-of-range identifier or an invalid name or string.
@@ -101,11 +104,16 @@ func (message *Message) SignalByName(name string) (*Signal, bool) {
 	if message == nil {
 		return nil, false
 	}
-	// The codec index describes the parsed signals. Confirming the name keeps
-	// the lookup correct on a copy whose signals an Edit callback changed.
-	if message.codec != nil {
-		if index, ok := message.codec.signalsByName[name]; ok && index < len(message.Signals) && message.Signals[index].Name == name {
+	// The codec index describes the parsed signals, which an Edit callback may
+	// change on its copy, so the copy scans.
+	if codec := message.codec; codec != nil && !message.editing {
+		index, ok := codec.signalsByName[name]
+		if ok && index < len(message.Signals) && message.Signals[index].Name == name {
 			return &message.Signals[index], true
+		}
+		// A compile error can leave the index short; otherwise it is complete.
+		if !ok && codec.err == nil {
+			return nil, false
 		}
 	}
 	for index := range message.Signals {
@@ -297,7 +305,7 @@ func (message *Message) usableCodec() (*messageCodec, error) {
 		return nil, fmt.Errorf("dbc: message is nil")
 	}
 	if message.codec == nil {
-		return nil, fmt.Errorf("dbc: message %q has no resolved codec; obtain messages from Parse", message.Name)
+		return nil, fmt.Errorf("%w: message %q has no resolved codec; obtain messages from Parse", ErrUnsupportedMessage, message.Name)
 	}
 	if message.codec.err != nil {
 		return nil, fmt.Errorf("%w: message %q cannot be encoded or decoded: %w", ErrUnsupportedMessage, message.Name, message.codec.err)
@@ -755,8 +763,11 @@ func validatePhysical(signal Signal, value float64) error {
 }
 
 func boolValue(value any) (bool, bool) {
-	if boolean, ok := value.(bool); ok {
-		return boolean, true
+	switch value := value.(type) {
+	case bool:
+		return value, true
+	case nil, string, json.Number, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return false, false
 	}
 	reflected := reflect.ValueOf(value)
 	if reflected.IsValid() && reflected.Kind() == reflect.Bool {
