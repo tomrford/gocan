@@ -96,16 +96,13 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 }
 
 // xmlError classifies a decoder failure that is not a reader failure.
-// Malformed XML makes the document invalid. A reader that makes no progress
-// says nothing about the document. encoding/xml's remaining errors reject an
-// XML version or encoding it does not implement.
+// Malformed XML makes the document invalid. encoding/xml's remaining errors
+// reject an XML version or encoding it does not implement.
 func xmlError(err error) error {
 	var syntaxErr *xml.SyntaxError
 	switch {
 	case errors.As(err, &syntaxErr):
 		return invalidf("decode XML: %w", err)
-	case errors.Is(err, io.ErrNoProgress):
-		return fmt.Errorf("read XML: %w", err)
 	default:
 		return unsupportedf("decode XML: %w", err)
 	}

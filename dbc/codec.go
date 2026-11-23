@@ -2,7 +2,6 @@ package dbc
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -770,12 +769,6 @@ func validatePhysical(signal Signal, value float64) error {
 }
 
 func boolValue(value any) (bool, bool) {
-	switch value := value.(type) {
-	case bool:
-		return value, true
-	case nil, string, json.Number, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		return false, false
-	}
 	reflected := reflect.ValueOf(value)
 	if reflected.IsValid() && reflected.Kind() == reflect.Bool {
 		return reflected.Bool(), true

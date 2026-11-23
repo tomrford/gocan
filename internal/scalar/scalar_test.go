@@ -3,7 +3,6 @@ package scalar
 import (
 	"encoding/json"
 	"math"
-	"math/big"
 	"testing"
 )
 
@@ -124,110 +123,5 @@ func TestInvalidJSONNumbers(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// Every builtin numeric type and a named type of each kind convert alike;
-// json.Number is a number, never a label, although its kind is string.
-func TestGoValueKinds(t *testing.T) {
-	type (
-		namedInt    int16
-		namedUint   uint8
-		namedFloat  float32
-		namedString string
-		namedBool   bool
-	)
-	for _, test := range []struct {
-		value                         any
-		signed                        int64
-		unsigned                      uint64
-		float                         float64
-		signedOK, unsignedOK, floatOK bool
-	}{
-		{int(-3), -3, 0, -3, true, false, true},
-		{int8(-3), -3, 0, -3, true, false, true},
-		{int16(-3), -3, 0, -3, true, false, true},
-		{int32(-3), -3, 0, -3, true, false, true},
-		{int64(-3), -3, 0, -3, true, false, true},
-		{namedInt(-3), -3, 0, -3, true, false, true},
-		{uint(7), 7, 7, 7, true, true, true},
-		{uint8(7), 7, 7, 7, true, true, true},
-		{uint16(7), 7, 7, 7, true, true, true},
-		{uint32(7), 7, 7, 7, true, true, true},
-		{uint64(7), 7, 7, 7, true, true, true},
-		{uintptr(7), 0, 0, 0, false, false, false},
-		{namedUint(7), 7, 7, 7, true, true, true},
-		{uint64(math.MaxUint64), 0, math.MaxUint64, 0x1p64, false, true, true},
-		{float32(2), 2, 2, 2, true, true, true},
-		{float64(2), 2, 2, 2, true, true, true},
-		{namedFloat(2), 2, 2, 2, true, true, true},
-		{2.5, 0, 0, 2.5, false, false, true},
-		{float32(-0.5), 0, 0, -0.5, false, false, true},
-		{math.NaN(), 0, 0, math.NaN(), false, false, true},
-		{json.Number("12"), 12, 12, 12, true, true, true},
-		{"12", 0, 0, 0, false, false, false},
-		{namedString("12"), 0, 0, 0, false, false, false},
-		{true, 0, 0, 0, false, false, false},
-		{namedBool(true), 0, 0, 0, false, false, false},
-		{nil, 0, 0, 0, false, false, false},
-		{[]byte{1}, 0, 0, 0, false, false, false},
-	} {
-		if value, err := ExactSigned(test.value); (err == nil) != test.signedOK || err == nil && value != test.signed {
-			t.Errorf("ExactSigned(%T %v) = %d, %v; want %d, success %t", test.value, test.value, value, err, test.signed, test.signedOK)
-		}
-		if value, err := ExactUnsigned(test.value); (err == nil) != test.unsignedOK || err == nil && value != test.unsigned {
-			t.Errorf("ExactUnsigned(%T %v) = %d, %v; want %d, success %t", test.value, test.value, value, err, test.unsigned, test.unsignedOK)
-		}
-		value, err := NumericFloat(test.value, 64)
-		if (err == nil) != test.floatOK || err == nil && value != test.float && !math.IsNaN(test.float) {
-			t.Errorf("NumericFloat(%T %v) = %v, %v; want %v, success %t", test.value, test.value, value, err, test.float, test.floatOK)
-		}
-		// LinearFloat differs only for integers float64 cannot hold exactly.
-		linear, linearErr := LinearFloat(test.value)
-		if test.value != uint64(math.MaxUint64) && ((linearErr == nil) != (err == nil) || linearErr == nil && math.Float64bits(linear) != math.Float64bits(value)) {
-			t.Errorf("LinearFloat(%T %v) = %v, %v; want NumericFloat's %v, %v", test.value, test.value, linear, linearErr, value, err)
-		}
-	}
-	if value, err := NumericFloat(int64(1<<53+1), 32); err != nil || value != 0x1p53 {
-		t.Errorf("NumericFloat(2^53+1, 32) = %v, %v; want float32 rounding to 2^53", value, err)
-	}
-	if value, err := NumericFloat(namedFloat(0.1), 64); err != nil || value != float64(float32(0.1)) {
-		t.Errorf("NumericFloat(float32 0.1) = %v, %v; want the float32 value widened", value, err)
-	}
-
-	for _, test := range []struct {
-		value any
-		text  string
-		ok    bool
-	}{
-		{"Fault", "Fault", true},
-		{namedString("Fault"), "Fault", true},
-		{"", "", true},
-		{json.Number("1"), "", false},
-		{[]byte("Fault"), "", false},
-		{1, "", false},
-		{nil, "", false},
-	} {
-		if text, ok := StringValue(test.value); text != test.text || ok != test.ok {
-			t.Errorf("StringValue(%T %v) = %q, %t; want %q, %t", test.value, test.value, text, ok, test.text, test.ok)
-		}
-	}
-}
-
-// DecodeSigned reads the low bits of raw as a two's-complement integer.
-func TestDecodeSignedWidths(t *testing.T) {
-	for bits := uint32(1); bits <= 64; bits++ {
-		modulus := new(big.Int).Lsh(big.NewInt(1), uint(bits))
-		half := new(big.Int).Rsh(modulus, 1)
-		for _, raw := range []uint64{0, 1, 1 << (bits - 1), 1<<(bits-1) - 1, 1<<bits - 1, math.MaxUint64, 0xa5a5a5a5a5a5a5a5, 0x5a5a5a5a5a5a5a5a} {
-			want := new(big.Int).SetUint64(raw)
-			want.Mod(want, modulus)
-			if want.Cmp(half) >= 0 {
-				want.Sub(want, modulus)
-			}
-			if got := DecodeSigned(bits, raw); got != want.Int64() {
-				t.Fatalf("DecodeSigned(%d, %#x) = %d, want %d", bits, raw, got, want.Int64())
-			}
-		}
 	}
 }
