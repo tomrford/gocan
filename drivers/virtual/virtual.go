@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/tomrford/gocan"
 	"github.com/tomrford/gocan/internal/transport"
@@ -74,7 +75,7 @@ func (network *Network) Open(ctx context.Context, capture *gocan.Capture, config
 		receiveOwnMessages: config.ReceiveOwnMessages,
 		sends:              make(chan sendRequest),
 		incoming:           make(chan gocan.Frame, receiveQueueCapacity),
-		failures:           make(chan error, 1),
+		overrun:            make(chan struct{}, 1),
 		stop:               make(chan struct{}),
 		ctx:                busCtx,
 		cancel:             cancel,
@@ -99,7 +100,7 @@ type Bus struct {
 
 	sends    chan sendRequest
 	incoming chan gocan.Frame
-	failures chan error
+	overrun  chan struct{}
 	stop     chan struct{}
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
@@ -107,7 +108,7 @@ type Bus struct {
 	closeOnce sync.Once
 	stateMu   sync.Mutex
 	closing   bool
-	terminal  error
+	busOff    atomic.Bool
 }
 
 var _ gocan.Bus = (*Bus)(nil)
@@ -128,7 +129,8 @@ func (bus *Bus) Capture() *gocan.Capture {
 }
 
 // Send hands frame to the virtual network and records the accepted
-// transmission before returning.
+// transmission before returning. It returns gocan.ErrBusOff while the endpoint
+// is bus-off.
 func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	if err := frame.Validate(); err != nil {
 		return err
@@ -138,20 +140,16 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		frame:  frame,
 		result: make(chan error, 1),
 	}
-	bus.stateMu.Lock()
-	if bus.terminal != nil || bus.closing {
-		err := bus.operationErrorLocked()
-		bus.stateMu.Unlock()
+	if err := bus.sendable(); err != nil {
 		return err
 	}
-	bus.stateMu.Unlock()
 
 	select {
 	case bus.sends <- request:
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-bus.ctx.Done():
-		return bus.operationError()
+		return transport.BusError(bus)
 	}
 
 	select {
@@ -162,9 +160,43 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		case err := <-request.result:
 			return err
 		default:
-			return bus.operationError()
+			return transport.BusError(bus)
 		}
 	}
+}
+
+// SetControllerState records state as this endpoint's controller state, so
+// tests can drive bus-off handling. While it is gocan.ControllerBusOff the
+// endpoint neither transmits nor receives.
+func (bus *Bus) SetControllerState(state gocan.ControllerState) error {
+	event := gocan.Event{Bus: bus.id, Kind: gocan.EventControllerState, ControllerState: state}
+	bus.stateMu.Lock()
+	defer bus.stateMu.Unlock()
+	if bus.closing {
+		return gocan.ErrBusClosed
+	}
+	select {
+	case <-bus.ctx.Done():
+		return transport.BusError(bus)
+	default:
+	}
+	nextBusOff := state == gocan.ControllerBusOff
+	prevBusOff := bus.busOff.Load()
+	if !nextBusOff {
+		// Clear busOff before publishing recovery so peers reacting to the
+		// event cannot have their frames dropped by broadcast; stateMu still
+		// serialises recording with run's TX and RX handling.
+		bus.busOff.Store(false)
+	}
+	err := bus.capture.RecordEvent(event)
+	if err != nil {
+		bus.busOff.Store(prevBusOff)
+		return err
+	}
+	if nextBusOff {
+		bus.busOff.Store(true)
+	}
+	return nil
 }
 
 // Context returns a context that is cancelled once this bus stops, with the
@@ -196,19 +228,15 @@ func (bus *Bus) run() {
 		select {
 		case request := <-bus.sends:
 			bus.stateMu.Lock()
-			if bus.terminal != nil || bus.closing {
-				err := bus.operationErrorLocked()
-				bus.stateMu.Unlock()
-				request.result <- err
-				continue
+			err := bus.sendableLocked()
+			if err == nil {
+				err = bus.capture.RecordFrame(gocan.FrameEvent{
+					Bus:       bus.id,
+					Direction: gocan.DirectionTransmit,
+					Frame:     request.frame,
+				})
 			}
 			bus.stateMu.Unlock()
-
-			err := bus.capture.RecordFrame(gocan.FrameEvent{
-				Bus:       bus.id,
-				Direction: gocan.DirectionTransmit,
-				Frame:     request.frame,
-			})
 			if err == nil {
 				bus.network.broadcast(bus, request.frame)
 			}
@@ -216,7 +244,7 @@ func (bus *Bus) run() {
 
 		case received := <-bus.incoming:
 			bus.stateMu.Lock()
-			if bus.terminal != nil || bus.closing {
+			if bus.closing || bus.busOff.Load() {
 				bus.stateMu.Unlock()
 				continue
 			}
@@ -225,60 +253,43 @@ func (bus *Bus) run() {
 				Direction: gocan.DirectionReceive,
 				Frame:     received,
 			}); err != nil {
-				bus.terminal = err
 				bus.stateMu.Unlock()
 				runErr = err
 				return
 			}
 			bus.stateMu.Unlock()
 
-		case runErr = <-bus.failures:
-			bus.recordTerminalEvent(&runErr)
-			return
+		case <-bus.overrun:
+			if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
+				runErr = err
+				return
+			}
 
 		case <-bus.stop:
-			bus.stateMu.Lock()
-			runErr = bus.terminal
-			bus.stateMu.Unlock()
-			bus.recordTerminalEvent(&runErr)
 			return
 		}
 	}
 }
 
-func (bus *Bus) recordTerminalEvent(runErr *error) {
-	if errors.Is(*runErr, gocan.ErrReceiveOverrun) {
-		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
-			*runErr = err
-		}
-	}
-}
-
-func (bus *Bus) fail(err error) {
+func (bus *Bus) sendable() error {
 	bus.stateMu.Lock()
 	defer bus.stateMu.Unlock()
-	if bus.terminal != nil || bus.closing {
-		return
+	return bus.sendableLocked()
+}
+
+func (bus *Bus) sendableLocked() error {
+	if bus.closing {
+		return gocan.ErrBusClosed
 	}
-	bus.terminal = err
 	select {
-	case bus.failures <- err:
 	case <-bus.ctx.Done():
+		return transport.BusError(bus)
 	default:
 	}
-}
-
-func (bus *Bus) operationError() error {
-	bus.stateMu.Lock()
-	defer bus.stateMu.Unlock()
-	return bus.operationErrorLocked()
-}
-
-func (bus *Bus) operationErrorLocked() error {
-	if bus.terminal != nil {
-		return bus.terminal
+	if bus.busOff.Load() {
+		return fmt.Errorf("%w: virtual bus %d", gocan.ErrBusOff, bus.id)
 	}
-	return transport.BusError(bus)
+	return nil
 }
 
 func (network *Network) broadcast(source *Bus, received gocan.Frame) {
@@ -289,11 +300,18 @@ func (network *Network) broadcast(source *Bus, received gocan.Frame) {
 		if destination == source && !source.receiveOwnMessages {
 			continue
 		}
+		if destination.busOff.Load() {
+			continue
+		}
 		select {
 		case destination.incoming <- received:
 		case <-destination.ctx.Done():
 		default:
-			destination.fail(gocan.ErrReceiveOverrun)
+			// The frame is lost; the destination reports one overrun per burst.
+			select {
+			case destination.overrun <- struct{}{}:
+			default:
+			}
 		}
 	}
 }

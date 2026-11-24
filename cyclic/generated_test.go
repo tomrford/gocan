@@ -65,7 +65,7 @@ func TestGeneratedFailures(t *testing.T) {
 		{"generation", gocan.Frame{}, generationErr, nil, generationErr},
 		{"generation queue error", gocan.Frame{}, gocan.ErrTransmitQueueFull, nil, gocan.ErrTransmitQueueFull},
 		{"validation", gocan.Frame{ID: gocan.MaxStandardID + 1}, nil, nil, gocan.ErrInvalidFrame},
-		{"send", gocan.Frame{}, nil, gocan.ErrBusOff, gocan.ErrBusOff},
+		{"send", gocan.Frame{}, nil, gocan.ErrHardwareDisconnected, gocan.ErrHardwareDisconnected},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

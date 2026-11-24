@@ -77,14 +77,15 @@ type Client struct {
 	address  Address
 	err      error
 	// Only the run goroutine accesses fields below.
-	claimed  bool
-	claimAt  time.Time
-	cannotAt time.Time
-	peers    [254]Name
-	tx       *transmission
-	rx       *reception
-	sent     uint64
-	observed uint64
+	claimed      bool
+	claimAt      time.Time
+	claimRetryAt time.Time
+	cannotAt     time.Time
+	peers        [254]Name
+	tx           *transmission
+	rx           *reception
+	sent         uint64
+	observed     uint64
 }
 
 type sendRequest struct {
@@ -173,7 +174,7 @@ func (c *Client) RetentionCursor() gocan.Cursor { c.mu.Lock(); defer c.mu.Unlock
 // complete when the bus accepts their frames; directed TP requires matching
 // EOMA. A caller deadline bounds the entire transfer, including repeated CTS
 // pauses/retransmissions. ErrBusy is returned without starting another TP session.
-// Directed DT retries a full native transmit queue within its packet deadline.
+// Directed DT retries a full native transmit queue or bus-off within its packet deadline.
 // While BAM is outgoing, all other Send/Request calls return ErrBusy so caller
 // traffic cannot delay its DT packets. Mandatory protocol replies still run.
 // PDU2 can be directed only when transported (more than eight bytes).
@@ -339,7 +340,7 @@ func (c *Client) handle(event gocan.FrameEvent, h Header) error {
 			if name < c.config.Name {
 				c.loseAddress()
 			} else {
-				return c.claim(c.config.Address)
+				return c.claimOrRetry()
 			}
 		}
 		for addr, old := range c.peers {
@@ -360,7 +361,7 @@ func (c *Client) handle(event gocan.FrameEvent, h Header) error {
 		pgn := PGN(data[0]) | PGN(data[1])<<8 | PGN(data[2])<<16
 		if pgn == AddressClaimPGN {
 			if c.claimed || !c.claimAt.IsZero() {
-				return c.claim(c.config.Address)
+				return c.claimOrRetry()
 			}
 			if c.cannotAt.IsZero() {
 				c.scheduleCannotClaim()
@@ -391,9 +392,25 @@ func (c *Client) claim(address Address) error {
 	return c.frame(c.ctx, 6, AddressClaimPGN, address, GlobalAddress, data[:])
 }
 
+func (c *Client) claimOrRetry() error {
+	if !c.claimRetryAt.IsZero() {
+		return nil
+	}
+	err := c.claim(c.config.Address)
+	if err == nil {
+		return nil
+	}
+	if transientSendError(err) {
+		c.claimRetryAt = time.Now().Add(transientRetryDelay(err))
+		return nil
+	}
+	return err
+}
+
 func (c *Client) loseAddress() {
 	c.claimed = false
 	c.claimAt = time.Time{}
+	c.claimRetryAt = time.Time{}
 	c.mu.Lock()
 	c.address = NullAddress
 	c.mu.Unlock()
@@ -408,17 +425,49 @@ func (c *Client) scheduleCannotClaim() {
 }
 
 func (c *Client) tick(now time.Time) error {
-	if !c.cannotAt.IsZero() && !now.Before(c.cannotAt) {
-		c.cannotAt = time.Time{}
-		if err := c.claim(NullAddress); err != nil {
-			return err
-		}
-		select {
-		case c.ready <- ErrAddressLost:
-		default:
+	sent := false
+	if !c.claimRetryAt.IsZero() && !now.Before(c.claimRetryAt) {
+		c.claimRetryAt = time.Time{}
+		if c.claimed || !c.claimAt.IsZero() {
+			sent = true
+			if err := c.claimOrRetry(); err != nil {
+				return err
+			}
 		}
 	}
+	if !c.cannotAt.IsZero() && !now.Before(c.cannotAt) {
+		c.cannotAt = time.Time{}
+		sent = true
+		if err := c.claim(NullAddress); err != nil {
+			if !transientSendError(err) {
+				return err
+			}
+			c.cannotAt = time.Now().Add(transientRetryDelay(err))
+		} else {
+			select {
+			case c.ready <- ErrAddressLost:
+			default:
+			}
+		}
+	}
+	if sent {
+		// Refresh now so tickTransport does not launch an overdue DT after a
+		// blocking claim send; receive/control waits expire only after the next
+		// poll processes any responses that already landed in Capture.
+		now = time.Now()
+	}
 	return c.tickTransport(now)
+}
+
+func transientSendError(err error) bool {
+	return errors.Is(err, gocan.ErrTransmitQueueFull) || errors.Is(err, gocan.ErrBusOff)
+}
+
+func transientRetryDelay(err error) time.Duration {
+	if errors.Is(err, gocan.ErrBusOff) {
+		return 10 * time.Millisecond
+	}
+	return 5 * time.Millisecond
 }
 
 func (c *Client) frame(ctx context.Context, priority uint8, pgn PGN, source, destination Address, data []byte) error {

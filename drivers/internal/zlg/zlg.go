@@ -341,15 +341,13 @@ func decodeFDFrame(native canFDFrame) (gocan.Frame, error) {
 }
 
 // controllerEvent maps a polled controller status and the accumulated error
-// code, which reading clears, so terminal conditions are reported once. Only
-// SJA1000-based USBCAN adapters report a bus status bit. Without a status the
-// error counters are unknown, so only terminal conditions produce an event;
-// otherwise the returned event has no Kind.
-func controllerEvent(bus gocan.BusID, status *channelStatus, errorCode uint32, sja1000 bool) (gocan.Event, error) {
-	if errorCode&(errorControllerOverflow|errorBufferOverflow|errorDeviceOverflow) != 0 {
-		return gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun},
-			fmt.Errorf("%w: ZLG error code %#04x", gocan.ErrReceiveOverrun, errorCode)
-	}
+// code, which reading clears, so a loss is reported once. Only SJA1000-based
+// USBCAN adapters report a bus status bit. Without a status (USBCANFD) the
+// error counters are unknown: bus-off reports ControllerBusOff, and a
+// subsequent clean poll after bus-off reports ControllerActive with unknown
+// counts; otherwise the returned event has no Kind.
+func controllerEvent(bus gocan.BusID, status *channelStatus, errorCode uint32, sja1000, wasBusOff bool) (state gocan.Event, lost bool) {
+	lost = errorCode&(errorControllerOverflow|errorBufferOverflow|errorDeviceOverflow) != 0
 	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState}
 	if status != nil {
 		event.TXErrorCount, event.RXErrorCount, event.ErrorCountsKnown = status.txErrorCount, status.rxErrorCount, true
@@ -357,9 +355,11 @@ func controllerEvent(bus gocan.BusID, status *channelStatus, errorCode uint32, s
 	switch {
 	case errorCode&errorBusOff != 0 || sja1000 && status != nil && status.status&sja1000BusStatus != 0:
 		event.ControllerState = gocan.ControllerBusOff
-		return event, fmt.Errorf("%w: ZLG controller entered bus-off", gocan.ErrBusOff)
 	case status == nil:
-		return gocan.Event{}, nil
+		if !wasBusOff {
+			return gocan.Event{}, lost
+		}
+		event.ControllerState = gocan.ControllerActive
 	case status.txErrorCount >= 128 || status.rxErrorCount >= 128:
 		event.ControllerState = gocan.ControllerPassive
 	case status.txErrorCount >= 96 || status.rxErrorCount >= 96:
@@ -367,5 +367,5 @@ func controllerEvent(bus gocan.BusID, status *channelStatus, errorCode uint32, s
 	default:
 		event.ControllerState = gocan.ControllerActive
 	}
-	return event, nil
+	return event, lost
 }

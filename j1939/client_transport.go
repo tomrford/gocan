@@ -114,7 +114,10 @@ func (c *Client) control(destination Address, data [8]byte) error {
 func (c *Client) abort(destination Address, pgn PGN, reason byte) error {
 	data := controlBytes(transportAbort, pgn)
 	data[1] = reason
-	return c.control(destination, data)
+	if err := c.control(destination, data); err != nil && !transientSendError(err) {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) failSend(err error, reason byte) error {
@@ -176,10 +179,10 @@ func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) 
 			ack := controlBytes(transportEOMA, r.pgn)
 			binary.LittleEndian.PutUint16(ack[1:3], uint16(r.size))
 			ack[3] = byte(r.packets)
-			if err := c.control(r.source, ack); err != nil {
+			c.rx = nil
+			if err := c.control(r.source, ack); err != nil && !transientSendError(err) {
 				return err
 			}
-			c.rx = nil
 			return nil
 		}
 		if r.next > r.end {
@@ -277,6 +280,10 @@ func (c *Client) grant() error {
 	data[2] = byte(r.next)
 	r.end = r.next + count - 1
 	if err := c.control(r.source, data); err != nil {
+		if transientSendError(err) {
+			c.rx = nil
+			return nil
+		}
 		return err
 	}
 	r.barrier = c.sent
@@ -319,11 +326,14 @@ func (c *Client) tickTransport(now time.Time) error {
 	if r.destination == GlobalAddress && now.Sub(t.due) > 150*time.Millisecond {
 		return c.failSend(ErrTimeout, 3)
 	}
+	if r.destination != GlobalAddress && !now.Before(t.deadline) {
+		return c.failSend(ErrTimeout, 3)
+	}
 	data := [8]byte{byte(t.next), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	copy(data[1:], r.payload[(t.next-1)*7:])
 	if err := c.sendFrame(r, transportDataPGN, 7, data[:]); err != nil {
-		if r.destination != GlobalAddress && errors.Is(err, gocan.ErrTransmitQueueFull) {
-			t.due = time.Now().Add(5 * time.Millisecond)
+		if r.destination != GlobalAddress && transientSendError(err) {
+			t.due = time.Now().Add(transientRetryDelay(err))
 			return nil
 		}
 		return c.failSend(err, 2)

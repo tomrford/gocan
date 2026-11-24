@@ -29,15 +29,16 @@ var _ io.Closer = (*Task)(nil)
 type Config struct {
 	// Period is the positive interval between scheduled occurrences.
 	Period time.Duration
-	// TransmitRetryTimeout bounds queue-full retries for each occurrence.
+	// TransmitRetryTimeout bounds queue-full and bus-off retries for each
+	// occurrence.
 	// Zero disables retries and the occurrence deadline. A positive value also
 	// bounds sending by the next scheduled occurrence after frame generation.
 	// Native sends in progress finish with their definite result even if that
 	// deadline elapses.
 	TransmitRetryTimeout time.Duration
 	// MaxConsecutiveMisses permits this many consecutive send failures matching
-	// ErrOccurrenceMissed or gocan.ErrTransmitQueueFull before the next stops the
-	// task. Zero stops on the first failure. Acceptance resets the count.
+	// ErrOccurrenceMissed, gocan.ErrTransmitQueueFull, or gocan.ErrBusOff before
+	// the next stops the task. Zero stops on the first failure. Acceptance resets the count.
 	// Cancellation, bus closure, and generation or other send errors always stop.
 	MaxConsecutiveMisses uint
 }
@@ -200,8 +201,8 @@ func (task *Task) Err() error {
 	return task.err
 }
 
-// Missed counts occurrences whose send failed with ErrOccurrenceMissed or
-// gocan.ErrTransmitQueueFull, including a failure that stopped the Task.
+// Missed counts occurrences whose send failed with ErrOccurrenceMissed,
+// gocan.ErrTransmitQueueFull, or gocan.ErrBusOff, including a failure that stopped the Task.
 // Callers polling it can report misses that Config.MaxConsecutiveMisses
 // absorbed, which Err never surfaces.
 func (task *Task) Missed() uint64 {
@@ -279,7 +280,7 @@ func (task *Task) send(anchor time.Time) error {
 	}
 	if err == nil {
 		task.misses = 0
-	} else if task.ctx.Err() == nil && (errors.Is(err, ErrOccurrenceMissed) || errors.Is(err, gocan.ErrTransmitQueueFull)) {
+	} else if task.ctx.Err() == nil && (errors.Is(err, ErrOccurrenceMissed) || errors.Is(err, gocan.ErrTransmitQueueFull) || errors.Is(err, gocan.ErrBusOff)) {
 		select {
 		case <-task.bus.Context().Done():
 			cause := transport.BusError(task.bus)

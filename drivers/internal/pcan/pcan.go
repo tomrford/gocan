@@ -84,10 +84,16 @@ const (
 	pcanStatusInvalidData  pcanStatus = 0x20000
 	pcanStatusBusPassive   pcanStatus = 0x40000
 	pcanStatusCaution      pcanStatus = 0x2000000
+
+	pcanStatusOverrunMask  = pcanStatusOverrun | pcanStatusQueueOverrun
+	pcanStatusBusStateMask = pcanStatusBusLight | pcanStatusBusWarning | pcanStatusBusPassive | pcanStatusBusOff
+	pcanStatusTXFullMask   = pcanStatusTransmitFull | pcanStatusQueueTXFull
+	pcanStatusKnownMask    = pcanStatusBusStateMask | pcanStatusOverrunMask | pcanStatusTXFullMask | pcanStatusQueueEmpty
 )
 
 const (
 	pcanReceiveEvent      = 0x03
+	pcanBusOffAutoReset   = 0x07
 	pcanAllowStatusFrames = 0x1e
 	pcanAllowErrorFrames  = 0x20
 	pcanAttachedCount     = 0x2a
@@ -134,7 +140,6 @@ type pcanReceiveObservation struct {
 	hasFrame   bool
 	events     [3]gocan.Event
 	eventCount uint8
-	terminal   error
 }
 
 func (observation *pcanReceiveObservation) addEvent(event gocan.Event) {
@@ -252,7 +257,6 @@ func decodePCANErrorFrame(
 			ControllerState: gocan.ControllerBusOff,
 		}
 		observation.addEvent(state)
-		observation.terminal = fmt.Errorf("%w: PCAN controller entered bus-off", gocan.ErrBusOff)
 		return observation, nil
 	}
 
@@ -280,38 +284,34 @@ func decodePCANStatus(
 	status pcanStatus,
 	bus gocan.BusID,
 ) (pcanReceiveObservation, error) {
-	if status&(pcanStatusOverrun|pcanStatusQueueOverrun) != 0 {
-		event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
-		observation := pcanReceiveObservation{
-			terminal: fmt.Errorf("%w: PCAN status %#08x", gocan.ErrReceiveOverrun, uint32(status)),
-		}
-		observation.addEvent(event)
-		return observation, nil
+	if status&^pcanStatusKnownMask != 0 {
+		return pcanReceiveObservation{}, fmt.Errorf("unsupported PCAN receive status %#08x", uint32(status))
+	}
+	var observation pcanReceiveObservation
+	if status&pcanStatusOverrunMask != 0 {
+		observation.addEvent(gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun})
 	}
 
+	busState := status & pcanStatusBusStateMask
 	var state gocan.ControllerState
 	switch {
-	case status&pcanStatusBusOff != 0:
+	case busState&pcanStatusBusOff != 0:
 		state = gocan.ControllerBusOff
-	case status&pcanStatusBusPassive != 0:
+	case busState&pcanStatusBusPassive != 0:
 		state = gocan.ControllerPassive
-	case status&(pcanStatusBusLight|pcanStatusBusWarning) != 0:
+	case busState&(pcanStatusBusLight|pcanStatusBusWarning) != 0:
 		state = gocan.ControllerWarning
 	case status == pcanStatusOK:
 		state = gocan.ControllerActive
 	default:
-		return pcanReceiveObservation{}, fmt.Errorf("unsupported PCAN receive status %#08x", uint32(status))
+		return observation, nil
 	}
 	event := gocan.Event{
 		Bus:             bus,
 		Kind:            gocan.EventControllerState,
 		ControllerState: state,
 	}
-	var observation pcanReceiveObservation
 	observation.addEvent(event)
-	if state == gocan.ControllerBusOff {
-		observation.terminal = fmt.Errorf("%w: PCAN controller entered bus-off", gocan.ErrBusOff)
-	}
 	return observation, nil
 }
 

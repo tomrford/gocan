@@ -714,8 +714,16 @@ func (bus *Bus) receiveLoop() {
 func (bus *Bus) drainReceiveQueue() error {
 	for {
 		more, err := bus.receiveOne()
-		if err != nil || !more {
+		if err != nil {
 			return err
+		}
+		if now := time.Now(); !now.Before(bus.nextChipStateRequest) {
+			if err := bus.requestChipState(now); err != nil {
+				return err
+			}
+		}
+		if !more {
+			return nil
 		}
 	}
 }
@@ -750,12 +758,7 @@ func (bus *Bus) receiveClassic() (bool, error) {
 	case xlQueueEmpty:
 		return false, nil
 	case xlQueueOverrun:
-		observation := newOverrunObservation(
-			bus.id,
-			fmt.Sprintf("Vector receive status %d", status),
-		)
-		stopped, err := bus.applyObservation(observation)
-		return !stopped, err
+		return true, bus.applyObservation(newOverrunObservation(bus.id))
 	case xlSuccess:
 	default:
 		return false, bus.runtimeStatusError("receive Vector event", status)
@@ -768,8 +771,7 @@ func (bus *Bus) receiveClassic() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation)
-	return !stopped, err
+	return true, bus.applyObservation(observation)
 }
 
 func (bus *Bus) receiveFD() (bool, error) {
@@ -783,12 +785,7 @@ func (bus *Bus) receiveFD() (bool, error) {
 	case xlQueueEmpty:
 		return false, nil
 	case xlQueueOverrun:
-		observation := newOverrunObservation(
-			bus.id,
-			fmt.Sprintf("Vector CAN FD receive status %d", status),
-		)
-		stopped, err := bus.applyObservation(observation)
-		return !stopped, err
+		return true, bus.applyObservation(newOverrunObservation(bus.id))
 	case xlSuccess:
 	default:
 		return false, bus.runtimeStatusError("receive Vector CAN FD event", status)
@@ -798,15 +795,10 @@ func (bus *Bus) receiveFD() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation)
-	return !stopped, err
+	return true, bus.applyObservation(observation)
 }
 
-func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
-	if observation.terminal != nil {
-		bus.stopWithEvents(observation.terminal, observation.events[:observation.eventCount])
-		return true, nil
-	}
+func (bus *Bus) applyObservation(observation receiveObservation) error {
 	var timestamp time.Time
 	if observation.eventCount != 0 || observation.requestChipState {
 		timestamp = time.Now()
@@ -825,12 +817,12 @@ func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
 			bus.hasChipState = true
 		}
 		if err := bus.capture.RecordEvent(event); err != nil {
-			return false, err
+			return err
 		}
 	}
 	if observation.requestChipState {
 		if err := bus.requestChipState(timestamp); err != nil {
-			return false, err
+			return err
 		}
 	}
 	if observation.hasFrame {
@@ -839,10 +831,10 @@ func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
 			Direction: gocan.DirectionReceive,
 			Frame:     observation.frame,
 		}); err != nil {
-			return false, err
+			return err
 		}
 	}
-	return false, nil
+	return nil
 }
 
 func (bus *Bus) requestChipState(now time.Time) error {
@@ -899,17 +891,6 @@ func sameChipState(first, second gocan.Event) bool {
 
 func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
-}
-
-// stopWithEvents is called with ioMu held, after the native read.
-func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	for _, event := range events {
-		if err := bus.capture.RecordEvent(event); err != nil {
-			bus.stopWithError(err)
-			return
-		}
-	}
-	bus.stopWithError(terminal)
 }
 
 func (bus *Bus) finish() {

@@ -62,7 +62,7 @@ func TestQueueContractsHardware(t *testing.T) {
 	// Holding the I/O lock stalls reception before the read in serialized mode,
 	// or after at most one native batch in concurrent mode,
 	// without stopping the controller from acknowledging the peer's frames.
-	// This exercises the real native overflow status and terminal capture event.
+	// This exercises the real native overflow status and its capture event.
 	b.ioMu.Lock()
 	defer b.ioMu.Unlock()
 	rejected := 0
@@ -91,28 +91,35 @@ func TestQueueContractsHardware(t *testing.T) {
 		t.Fatal("did not exercise native TX backpressure")
 	}
 	b.ioMu.Unlock()
-	select {
-	case <-b.Context().Done():
-	case <-ctx.Done():
-		b.ioMu.Lock()
-		t.Fatal("RX overflow did not stop the bus")
-	}
-	b.ioMu.Lock()
-	foundOverrun := false
-	busEvents, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
-	for event := range busEvents {
-		if event.Kind == gocan.EventReceiveOverrun {
-			foundOverrun = true
+	for {
+		busEvents, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
+		if slices.ContainsFunc(slices.Collect(busEvents), func(event gocan.Event) bool {
+			return event.Kind == gocan.EventReceiveOverrun
+		}) {
 			break
 		}
+		if ctx.Err() != nil {
+			b.ioMu.Lock()
+			t.Fatal("native RX overrun did not produce a capture event")
+		}
+		time.Sleep(time.Millisecond)
 	}
-	if !foundOverrun {
-		t.Fatal("native RX overrun did not produce a capture event")
+	select {
+	case <-b.Context().Done():
+		b.ioMu.Lock()
+		t.Fatalf("RX overflow stopped the bus: %v", context.Cause(b.Context()))
+	default:
 	}
-	if cause := context.Cause(b.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
-		t.Fatalf("RX failure %v, want overrun", cause)
-	}
-	if err := a.Send(ctx, frame); err != nil {
+	// Reception continues: a frame sent after the overrun still arrives.
+	after, _ := gocan.NewFrame(0x322, []byte{1}, 0)
+	cursor := capture.End()
+	if err := gocan.Send(ctx, a, after, 5*time.Second); err != nil {
+		b.ioMu.Lock()
 		t.Fatalf("healthy peer after overrun: %v", err)
 	}
+	if _, _, err := capture.Next(ctx, gocan.FrameKey{Bus: b.ID(), ID: after.ID, Direction: gocan.DirectionReceive}, cursor); err != nil {
+		b.ioMu.Lock()
+		t.Fatalf("receive after overrun: %v", err)
+	}
+	b.ioMu.Lock()
 }

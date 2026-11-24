@@ -5,7 +5,6 @@ package socketcan
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"net"
 	"os"
 	"slices"
@@ -18,7 +17,8 @@ import (
 
 // TestVCanInjectedErrorPackets sends synthetic Linux error-message packets
 // through vcan. It exercises socket delivery, decoding, Capture order, and
-// terminal failure; it does not make a CAN controller enter these states.
+// bus-off recovery reporting; it does not make a CAN controller enter these
+// states.
 func TestVCanInjectedErrorPackets(t *testing.T) {
 	iface := os.Getenv("GOCAN_VCAN_INTERFACE")
 	if iface == "" {
@@ -38,27 +38,17 @@ func TestVCanInjectedErrorPackets(t *testing.T) {
 	sendErrorPacket(t, sender, unix.CAN_ERR_CRTL, [8]byte{})
 	sendErrorPacket(t, sender, unix.CAN_ERR_RESTARTED, [8]byte{})
 	sendErrorPacket(t, sender, unix.CAN_ERR_BUSOFF, [8]byte{})
+	sendErrorPacket(t, sender, unix.CAN_ERR_RESTARTED, [8]byte{})
 
-	select {
-	case <-bus.Context().Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("bus did not stop after bus-off")
-	}
-	if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrBusOff) {
-		t.Fatalf("bus cause = %v, want ErrBusOff", cause)
-	}
-
-	eventSeq, _, _ := capture.BusEvents(bus.ID(), gocan.Range{})
-	events := slices.Collect(eventSeq)
-	if len(events) != 6 {
-		t.Fatalf("captured %d events, want 6: %+v", len(events), events)
-	}
+	events := waitBusEvents(t, bus, 7)
 	requireStateEvent(t, events[0], gocan.ControllerWarning, 12, 34, true)
 	requireErrorEvent(t, events[1])
 	requireStateEvent(t, events[2], gocan.ControllerPassive, 128, 129, true)
 	requireErrorEvent(t, events[3])
 	requireStateEvent(t, events[4], gocan.ControllerActive, 0, 0, false)
 	requireStateEvent(t, events[5], gocan.ControllerBusOff, 0, 0, false)
+	requireStateEvent(t, events[6], gocan.ControllerActive, 0, 0, false)
+	requireBusOpen(t, bus)
 }
 
 func TestVCanInjectedReceiveOverrun(t *testing.T) {
@@ -81,23 +71,39 @@ func TestVCanInjectedReceiveOverrun(t *testing.T) {
 		7: 96,
 	})
 
-	select {
-	case <-bus.Context().Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("bus did not stop after receive overrun")
-	}
-	if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
-		t.Fatalf("bus cause = %v, want ErrReceiveOverrun", cause)
-	}
-
-	eventSeq, _, _ := capture.BusEvents(bus.ID(), gocan.Range{})
-	events := slices.Collect(eventSeq)
-	if len(events) != 2 {
-		t.Fatalf("captured %d events, want 2: %+v", len(events), events)
-	}
+	events := waitBusEvents(t, bus, 2)
 	requireStateEvent(t, events[0], gocan.ControllerWarning, 3, 96, true)
 	if events[1].Kind != gocan.EventReceiveOverrun {
 		t.Fatalf("event = %+v, want receive-overrun event", events[1])
+	}
+	requireBusOpen(t, bus)
+}
+
+func waitBusEvents(t *testing.T, bus *Bus, count int) []gocan.Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		eventSeq, _, _ := bus.Capture().BusEvents(bus.ID(), gocan.Range{})
+		events := slices.Collect(eventSeq)
+		if len(events) > count {
+			t.Fatalf("captured %d events, want %d: %+v", len(events), count, events)
+		}
+		if len(events) == count {
+			return events
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("captured %d events, want %d: %+v (bus cause %v)", len(events), count, events, context.Cause(bus.Context()))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func requireBusOpen(t *testing.T, bus *Bus) {
+	t.Helper()
+	select {
+	case <-bus.Context().Done():
+		t.Fatalf("bus stopped: %v", context.Cause(bus.Context()))
+	default:
 	}
 }
 

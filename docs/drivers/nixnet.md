@@ -29,3 +29,12 @@ NI-XNET hardware tests require a connected, terminated pair selected through
 `CAN2`). They enable each endpoint's internal terminator and exercise classic
 CAN and ISO FD at 500k/2M and 500k/4M. The driver requires the installed NI-XNET
 runtime, with no C compiler or Python dependency in applications.
+
+Input-queue overflows produce one receive-overrun event each; on a single input
+stream the bus keeps receiving. On a shared interface where NI-XNET keeps
+returning overflow until every input stream stops or flushes, the bus stops
+with the overflow error if reception does not resume within one second. NI-XNET
+stays bus-off until its interface is started again, so when the 100 ms state
+poll reads bus-off, gocan restarts the sessions and reports the recovered
+state. Transmissions queued meanwhile can fill the transmit queue, which
+`gocan.Send` retries within its timeout.
