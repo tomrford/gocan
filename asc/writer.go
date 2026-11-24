@@ -13,7 +13,7 @@ import (
 	"github.com/tomrford/gocan"
 )
 
-var errWriterClosed = errors.New("ASC writer is closed")
+var errWriterClosed = errors.New("asc: writer is closed")
 
 const hexDigits = "0123456789ABCDEF"
 
@@ -30,10 +30,11 @@ const hexDigits = "0123456789ABCDEF"
 type Writer struct {
 	output *bufio.Writer
 
-	started bool
-	closed  bool
-	start   time.Time
-	last    time.Time
+	started  bool
+	closed   bool
+	closeErr error
+	start    time.Time
+	last     time.Time
 
 	scratch []byte
 }
@@ -137,7 +138,7 @@ func (writer *Writer) WriteEvent(event gocan.Event) error {
 		buf = strconv.AppendInt(buf, int64(event.Bus), 10)
 		buf = append(buf, " Status:receive queue overrun"...)
 	default:
-		return fmt.Errorf("unsupported gocan event kind %d", event.Kind)
+		return fmt.Errorf("asc: unsupported event kind %d", event.Kind)
 	}
 	return writer.writeRecord(event.Timestamp, buf)
 }
@@ -148,18 +149,21 @@ func (writer *Writer) Flush() error {
 }
 
 // Close writes the ASC footer and flushes buffered data. It does not close the
-// underlying writer. Close is safe to call more than once.
+// underlying writer. Close is safe to call more than once and returns the
+// error from the first Close on repeated calls.
 func (writer *Writer) Close() error {
 	if writer.closed {
-		return nil
+		return writer.closeErr
 	}
 	writer.closed = true
 	if writer.started {
 		if _, err := writer.output.WriteString("End TriggerBlock\n"); err != nil {
+			writer.closeErr = err
 			return err
 		}
 	}
-	return writer.output.Flush()
+	writer.closeErr = writer.output.Flush()
+	return writer.closeErr
 }
 
 func (writer *Writer) beginRecord(timestamp time.Time) ([]byte, error) {
@@ -172,7 +176,7 @@ func (writer *Writer) beginRecord(timestamp time.Time) ([]byte, error) {
 		}
 	}
 	if timestamp.Before(writer.last) {
-		return nil, fmt.Errorf("ASC timestamp %s precedes previous record %s", timestamp, writer.last)
+		return nil, fmt.Errorf("asc: timestamp %s precedes previous record %s", timestamp, writer.last)
 	}
 
 	offset := timestamp.Sub(writer.start).Microseconds()

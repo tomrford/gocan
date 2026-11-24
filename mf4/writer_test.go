@@ -485,4 +485,15 @@ func TestWriterFailures(t *testing.T) {
 	if _, err := mf4.NewWriter(f, mf4.Config{}); err == nil {
 		t.Fatal("overwrote existing output")
 	}
+
+	appendPath := filepath.Join(t.TempDir(), "append.mf4")
+	appendFile, err := os.OpenFile(appendPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = appendFile.Close() })
+	if w, err := mf4.NewWriter(appendFile, mf4.Config{}); err == nil {
+		_ = w.Close()
+		t.Fatal("NewWriter accepted append-only *os.File without reporting positioned-write failure")
+	}
 }

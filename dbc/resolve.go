@@ -1,7 +1,6 @@
 package dbc
 
 import (
-	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -572,13 +571,13 @@ func validateSignalLayout(messageLength uint32, signal Signal) error {
 	}
 	messageBits := uint64(messageLength) * 8
 	switch signal.ByteOrder {
-	case binary.LittleEndian:
+	case LittleEndian:
 		end := uint64(signal.StartBit) + uint64(signal.BitLength)
 		if end > messageBits {
 			return fmt.Errorf("bits %d..%d exceed %d-byte message", signal.StartBit, end-1, messageLength)
 		}
 		return nil
-	case binary.BigEndian:
+	case BigEndian:
 		bit := uint64(signal.StartBit)
 		for index := uint32(0); index < signal.BitLength; index++ {
 			if bit >= messageBits {

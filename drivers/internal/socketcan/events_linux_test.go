@@ -44,8 +44,8 @@ func TestVCanInjectedErrorPackets(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("bus did not stop after bus-off")
 	}
-	if !errors.Is(bus.Err(), gocan.ErrBusOff) {
-		t.Fatalf("bus error = %v, want ErrBusOff", bus.Err())
+	if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrBusOff) {
+		t.Fatalf("bus cause = %v, want ErrBusOff", cause)
 	}
 
 	eventSeq, _, _ := capture.BusEvents(bus.ID(), gocan.Range{})
@@ -86,8 +86,8 @@ func TestVCanInjectedReceiveOverrun(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("bus did not stop after receive overrun")
 	}
-	if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
-		t.Fatalf("bus error = %v, want ErrReceiveOverrun", bus.Err())
+	if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
+		t.Fatalf("bus cause = %v, want ErrReceiveOverrun", cause)
 	}
 
 	eventSeq, _, _ := capture.BusEvents(bus.ID(), gocan.Range{})

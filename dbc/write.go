@@ -2,7 +2,6 @@ package dbc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"maps"
@@ -27,10 +26,12 @@ import (
 // edit may change DBC declarations, including adding or removing nodes,
 // messages and signals. Message.Format is derived from VFrameFormat and
 // ProtocolType attributes; edit those attributes to change the frame format.
-// Diagnostics are also derived. On the copy, Database lookups, codecs,
-// Diagnostics and Source describe db before edit ran, while
-// Message.SignalByName finds the copy's current signals. A database that Parse
-// did not produce is written and parsed first, so its lookups work. An edit
+// Diagnostics are also derived. On the copy, Database and Message lookups
+// reflect the copy's current declarations, codec operations (Encode, Decode,
+// Patch) return ErrUnsupportedMessage until Edit reparses the result, and
+// Diagnostics and Source describe db before edit ran. A database that Parse
+// did not produce is written and parsed first so derived fields such as
+// Message.Format are populated. An edit
 // whose resulting text Write or the original encoding cannot express (including
 // characters already in db that Windows-1252 cannot encode) returns an error
 // wrapping ErrUnrepresentable; one that Parse rejects returns its *Error.
@@ -76,12 +77,12 @@ func encodeWindows1252(text string) ([]byte, error) {
 	return nil, fmt.Errorf("%w: encode as Windows-1252: %w", ErrUnrepresentable, err)
 }
 
-// editable returns the copy an Edit callback changes: a clone, so no signal
-// storage is shared with a codec index. A database that Parse did not resolve
-// has no lookups, so it is resolved through a round trip first.
+// editable returns the copy an Edit callback changes: a clone with cleared
+// lookup maps and codecs. A database that Parse did not resolve is written and
+// parsed first so derived fields such as Message.Format are populated.
 func (db *Database) editable(name string) (*Database, error) {
 	if db.messagesByName != nil {
-		return db.clone()
+		return db.clone(), nil
 	}
 	var buf bytes.Buffer
 	if err := db.Write(&buf); err != nil {
@@ -91,7 +92,7 @@ func (db *Database) editable(name string) (*Database, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parsed.clone()
+	return parsed.clone(), nil
 }
 
 // Write writes db as UTF-8 DBC text. For a parsed database, parsing the text
@@ -228,9 +229,9 @@ func (db *Database) Write(w io.Writer) error {
 			}
 			var order byte
 			switch signal.ByteOrder {
-			case binary.BigEndian:
+			case BigEndian:
 				order = '0'
-			case binary.LittleEndian:
+			case LittleEndian:
 				order = '1'
 			default:
 				fail("signal %q has unsupported byte order %v", signal.Name, signal.ByteOrder)

@@ -2,7 +2,6 @@ package dbc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +29,7 @@ func BenchmarkMessageCodecCompilation(b *testing.B) {
 			for index := range test.count {
 				message.Signals = append(message.Signals, Signal{
 					Name: fmt.Sprintf("Signal%d", index), StartBit: uint32(index) * test.width,
-					BitLength: test.width, ByteOrder: binary.LittleEndian, Factor: 1,
+					BitLength: test.width, ByteOrder: LittleEndian, Factor: 1,
 				})
 			}
 			b.ReportAllocs()

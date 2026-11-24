@@ -2,7 +2,6 @@ package dbc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -142,7 +141,7 @@ type rawSignal struct {
 	muxMarker string
 	startBit  uint32
 	bitLength uint32
-	byteOrder binary.ByteOrder
+	byteOrder ByteOrder
 	signed    bool
 	factor    float64
 	offset    float64
@@ -426,12 +425,12 @@ func (p *parser) parseSignal(keyword token) error {
 	if err != nil {
 		return err
 	}
-	var byteOrder binary.ByteOrder
+	var byteOrder ByteOrder
 	switch order.text {
 	case "0":
-		byteOrder = binary.BigEndian
+		byteOrder = BigEndian
 	case "1":
-		byteOrder = binary.LittleEndian
+		byteOrder = LittleEndian
 	default:
 		return p.errorAt(order, "byte order must be 0 or 1")
 	}

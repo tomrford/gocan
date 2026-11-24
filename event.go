@@ -48,7 +48,7 @@ const (
 	ControllerBusOff
 )
 
-// String returns the state's name as the trace formats spell it, or
+// String returns the state's name as ASC chip-status lines spell it, or
 // "ControllerState(n)" for an undefined value.
 func (state ControllerState) String() string {
 	switch state {

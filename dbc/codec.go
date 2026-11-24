@@ -1,7 +1,6 @@
 package dbc
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -53,19 +52,29 @@ type messageCodec struct {
 	writeErr      error
 }
 
-// MessageByName returns the resolved message with name.
+// MessageByName returns the message with name.
 func (db *Database) MessageByName(name string) (*Message, bool) {
 	if db == nil {
 		return nil, false
 	}
-	index, ok := db.messagesByName[name]
-	if !ok {
-		return nil, false
+	if db.messagesByName != nil {
+		index, ok := db.messagesByName[name]
+		if !ok {
+			return nil, false
+		}
+		if index < len(db.Messages) && db.Messages[index].Name == name {
+			return &db.Messages[index], true
+		}
 	}
-	return &db.Messages[index], true
+	for index := range db.Messages {
+		if db.Messages[index].Name == name {
+			return &db.Messages[index], true
+		}
+	}
+	return nil, false
 }
 
-// MessageByID returns the resolved message with arbitration identifier id,
+// MessageByID returns the message with arbitration identifier id,
 // which is 11-bit unless extended is set. The extended flag is part of the
 // identity, so an extended message never answers a standard lookup of the same
 // numeric identifier.
@@ -77,14 +86,24 @@ func (db *Database) MessageByID(id uint32, extended bool) (*Message, bool) {
 	if db == nil {
 		return nil, false
 	}
-	index, ok := db.messagesByID[messageID{id: id, extended: extended}]
-	if !ok {
-		return nil, false
+	if db.messagesByID != nil {
+		index, ok := db.messagesByID[messageID{id: id, extended: extended}]
+		if !ok {
+			return nil, false
+		}
+		if index < len(db.Messages) && db.Messages[index].ID == id && db.Messages[index].Extended == extended {
+			return &db.Messages[index], true
+		}
 	}
-	return &db.Messages[index], true
+	for index := range db.Messages {
+		if db.Messages[index].ID == id && db.Messages[index].Extended == extended {
+			return &db.Messages[index], true
+		}
+	}
+	return nil, false
 }
 
-// MessagesByPGN returns the resolved J1939 messages with the canonical 18-bit
+// MessagesByPGN returns the J1939 messages with the canonical 18-bit
 // parameter group number pgn, as j1939.Header.PGN reports it, in declaration
 // order. More than one message may deliberately describe the same PGN.
 // Callers must resolve multiple matches from their device/database context;
@@ -93,10 +112,27 @@ func (db *Database) MessagesByPGN(pgn uint32) []*Message {
 	if db == nil {
 		return nil
 	}
-	indexes := db.messagesByPGN[pgn]
-	messages := make([]*Message, len(indexes))
-	for i, index := range indexes {
-		messages[i] = &db.Messages[index]
+	if db.messagesByPGN != nil {
+		indexes := db.messagesByPGN[pgn]
+		if len(indexes) == 0 {
+			return nil
+		}
+		messages := make([]*Message, 0, len(indexes))
+		for _, index := range indexes {
+			if index < len(db.Messages) && db.Messages[index].Format == FrameFormatJ1939 && pgnOf(db.Messages[index].ID) == pgn {
+				messages = append(messages, &db.Messages[index])
+			}
+		}
+		if len(messages) == 0 {
+			return nil
+		}
+		return messages
+	}
+	var messages []*Message
+	for index := range db.Messages {
+		if db.Messages[index].Format == FrameFormatJ1939 && pgnOf(db.Messages[index].ID) == pgn {
+			messages = append(messages, &db.Messages[index])
+		}
 	}
 	return messages
 }
@@ -302,7 +338,7 @@ func (message *Message) usableCodec() (*messageCodec, error) {
 	if message == nil {
 		return nil, fmt.Errorf("dbc: message is nil")
 	}
-	if message.codec == nil {
+	if message.codec == nil || !message.codec.matches(message.Signals) {
 		return nil, fmt.Errorf("%w: message %q has no resolved codec; obtain messages from Parse", ErrUnsupportedMessage, message.Name)
 	}
 	if message.codec.err != nil {
@@ -322,10 +358,19 @@ func (message *Message) writableCodec() (*messageCodec, error) {
 	return codec, nil
 }
 
-// indexes reports whether signals is the storage the codec compiled, so its
-// name index applies.
+// indexes reports whether signals is the non-empty storage the codec compiled,
+// so its name index applies.
 func (codec *messageCodec) indexes(signals []Signal) bool {
 	return len(signals) > 0 && len(signals) == len(codec.selectors) && &signals[0] == codec.signals
+}
+
+// matches reports whether signals still matches the storage the codec compiled,
+// including an empty compiled message.
+func (codec *messageCodec) matches(signals []Signal) bool {
+	if len(signals) == 0 {
+		return len(codec.selectors) == 0
+	}
+	return codec.indexes(signals)
 }
 
 func compileMessageCodec(message *Message) *messageCodec {
@@ -343,7 +388,7 @@ func compileMessageCodec(message *Message) *messageCodec {
 			codec.err = fmt.Errorf("signal %q exceeds the 64-bit codec representation", signal.Name)
 			return codec
 		}
-		if signal.ByteOrder != binary.BigEndian && signal.ByteOrder != binary.LittleEndian {
+		if signal.ByteOrder != BigEndian && signal.ByteOrder != LittleEndian {
 			codec.err = fmt.Errorf("signal %q has unsupported byte order %v", signal.Name, signal.ByteOrder)
 			return codec
 		}
@@ -779,7 +824,7 @@ func boolValue(value any) (bool, bool) {
 
 func readSignalBits(data []byte, signal Signal) uint64 {
 	var value uint64
-	if signal.ByteOrder == binary.LittleEndian {
+	if signal.ByteOrder == LittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
 			if data[dataBit/8]&(byte(1)<<(dataBit%8)) != 0 {
@@ -800,7 +845,7 @@ func readSignalBits(data []byte, signal Signal) uint64 {
 }
 
 func writeSignalBits(data []byte, signal Signal, value uint64) {
-	if signal.ByteOrder == binary.LittleEndian {
+	if signal.ByteOrder == LittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
 			setDataBit(data, dataBit, value&(uint64(1)<<valueBit) != 0)
@@ -836,7 +881,7 @@ func signalAvailable(signal Signal, payloadLength int) bool {
 }
 
 func visitSignalBits(signal Signal, visit func(uint32)) {
-	if signal.ByteOrder == binary.LittleEndian {
+	if signal.ByteOrder == LittleEndian {
 		for index := uint32(0); index < signal.BitLength; index++ {
 			visit(signal.StartBit + index)
 		}

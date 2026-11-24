@@ -43,16 +43,15 @@ var (
 // The package-level Send function provides bounded queue-full retries.
 //
 // Context returns the same non-nil context on every call. It is cancelled once
-// acquisition stops, with Err (or ErrBusClosed after normal Close) as its cause.
-// Err reports the background failure or nil after normal Close. ID is the
-// one-based trace channel; Name is its label. Close is idempotent.
+// acquisition stops, with the background failure (or ErrBusClosed after normal
+// Close) as its cause. ID is the one-based trace channel; Name is its label.
+// Close is idempotent.
 type Bus interface {
 	ID() BusID
 	Name() string
 	Capture() *Capture
 	Send(context.Context, Frame) error
 	Context() context.Context
-	Err() error
 	Close() error
 }
 
@@ -87,7 +86,7 @@ func Send(ctx context.Context, bus Bus, frame Frame, retryTimeout time.Duration)
 		select {
 		case <-ctx.Done():
 		case <-bus.Context().Done():
-			cause := bus.Err()
+			cause := context.Cause(bus.Context())
 			if cause == nil {
 				cause = ErrBusClosed
 			}

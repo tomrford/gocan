@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && amd64
 
 package drivers
 
@@ -26,5 +26,9 @@ func discoverZLG() ([]Channel, error) {
 }
 
 func openZLG(ctx context.Context, capture *gocan.Capture, config zlg.Config) (gocan.Bus, error) {
-	return zlg.Open(ctx, capture, config)
+	bus, err := zlg.Open(ctx, capture, config)
+	if err != nil {
+		return nil, err
+	}
+	return bus, nil
 }

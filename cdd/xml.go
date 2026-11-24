@@ -1,6 +1,7 @@
 package cdd
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 
 	var root *element
 	var stack []*element
+	seenToken := false
 	for {
 		token, err := decoder.Token()
 		// A read can return data with its failure, and the decoder may first
@@ -73,6 +75,14 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 		case xml.CharData:
 			if len(stack) != 0 {
 				stack[len(stack)-1].text.Write(token)
+			} else {
+				trimmed := []byte(token)
+				if !seenToken {
+					trimmed = bytes.TrimPrefix(trimmed, []byte("\xef\xbb\xbf"))
+				}
+				if hasNonXMLWhitespace(trimmed) {
+					return nil, sourceError(name, invalidf("XML contains unexpected character data outside root element"))
+				}
 			}
 		case xml.EndElement:
 			node := stack[len(stack)-1]
@@ -88,11 +98,23 @@ func decodeXML(name string, r io.Reader) (*element, error) {
 				}
 			}
 		}
+		seenToken = true
 	}
 	if root == nil {
 		return nil, sourceError(name, invalidf("XML contains no root element"))
 	}
 	return root, nil
+}
+
+// hasNonXMLWhitespace reports whether data contains any byte outside the four
+// XML 1.0 whitespace characters (S ::= (#x20 | #x9 | #xD | #xA)+).
+func hasNonXMLWhitespace(data []byte) bool {
+	for _, b := range data {
+		if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+			return true
+		}
+	}
+	return false
 }
 
 // xmlError classifies a decoder failure that is not a reader failure.

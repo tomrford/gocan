@@ -290,7 +290,6 @@ func TestRetryScheduleAndStop(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(context.Background())
 			busCtx, cancelBus := context.WithCancelCause(context.Background())
 			bus.ctx = busCtx
-			bus.err = test.busErr
 			bus.send = func(ctx context.Context, _ gocan.Frame) error {
 				if test.sendErr != nil {
 					if test.sendErr == cyclic.ErrOccurrenceMissed {
@@ -345,7 +344,6 @@ func TestRetryScheduleAndStop(t *testing.T) {
 type callbackBus struct {
 	send func(context.Context, gocan.Frame) error
 	ctx  context.Context
-	err  error
 }
 
 func (bus *callbackBus) ID() gocan.BusID         { return 1 }
@@ -360,5 +358,4 @@ func (bus *callbackBus) Context() context.Context {
 	}
 	return context.Background()
 }
-func (bus *callbackBus) Err() error   { return bus.err }
 func (bus *callbackBus) Close() error { return nil }

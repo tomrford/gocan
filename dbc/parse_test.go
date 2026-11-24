@@ -2,7 +2,6 @@ package dbc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"os"
 	"slices"
@@ -27,7 +26,7 @@ func TestParseCoreDatabase(t *testing.T) {
 	if len(status.Transmitters) != 2 || status.Transmitters[0] != "ECU" || status.Transmitters[1] != "Logger" {
 		t.Fatalf("unexpected Status transmitters: %v", status.Transmitters)
 	}
-	if len(status.Signals) != 4 || status.Signals[2].ByteOrder != binary.BigEndian {
+	if len(status.Signals) != 4 || status.Signals[2].ByteOrder != BigEndian {
 		t.Fatalf("unexpected Status signals: %#v", status.Signals)
 	}
 	ratio, ok := status.SignalByName("Ratio")

@@ -13,7 +13,6 @@ const (
 	initialCaptureChunkPayloadCapacity = 256 << 10
 	initialCaptureChunkRecordCapacity  = initialCaptureChunkPayloadCapacity / MaxDataLength
 	maxCaptureChunkPayloadCapacity     = 4 << 20
-	maxCaptureChunkRecordCapacity      = maxCaptureChunkPayloadCapacity / MaxDataLength
 
 	noCaptureRecord = ^uint32(0)
 )
@@ -457,9 +456,11 @@ func (capture *Capture) allocateNext() {
 
 // Append adds a frame event to the capture.
 //
-// Only the wall-clock reading of event.Timestamp is stored. Retrieved frames
-// carry UTC timestamps with no monotonic reading, so a round-tripped event
-// may not compare equal to the original even though the instants match.
+// Only the wall-clock reading of event.Timestamp is stored, and it must lie
+// within Go's int64 nanosecond Unix range (roughly years 1678 to 2262).
+// Retrieved frames carry UTC timestamps with no monotonic reading, so a
+// round-tripped event may not compare equal to the original even though the
+// instants match.
 func (capture *Capture) Append(event FrameEvent) error {
 	return capture.appendFrame(event, false)
 }
@@ -488,7 +489,11 @@ func (capture *Capture) appendFrame(event FrameEvent, live bool) error {
 	var timestamp int64
 	if !live {
 		timestamp = event.Timestamp.UnixNano()
-		event.Timestamp = time.Unix(0, timestamp).UTC()
+		normalized := time.Unix(0, timestamp).UTC()
+		if !normalized.Equal(event.Timestamp) {
+			return fmt.Errorf("gocan: timestamp %s is outside the nanosecond Unix range", event.Timestamp)
+		}
+		event.Timestamp = normalized
 	}
 
 	capture.mu.Lock()
@@ -539,8 +544,9 @@ func (capture *Capture) appendFrame(event FrameEvent, live bool) error {
 
 // AppendEvent adds a non-frame event to the capture.
 //
-// Only the wall-clock reading of event.Timestamp is stored. Retrieved events
-// carry UTC timestamps with no monotonic reading.
+// Only the wall-clock reading of event.Timestamp is stored, and it must lie
+// within Go's int64 nanosecond Unix range (roughly years 1678 to 2262).
+// Retrieved events carry UTC timestamps with no monotonic reading.
 func (capture *Capture) AppendEvent(event Event) error {
 	return capture.appendEvent(event, false)
 }
@@ -560,7 +566,11 @@ func (capture *Capture) appendEvent(event Event, live bool) error {
 	var timestamp int64
 	if !live {
 		timestamp = event.Timestamp.UnixNano()
-		event.Timestamp = time.Unix(0, timestamp).UTC()
+		normalized := time.Unix(0, timestamp).UTC()
+		if !normalized.Equal(event.Timestamp) {
+			return fmt.Errorf("gocan: timestamp %s is outside the nanosecond Unix range", event.Timestamp)
+		}
+		event.Timestamp = normalized
 	}
 
 	capture.mu.Lock()

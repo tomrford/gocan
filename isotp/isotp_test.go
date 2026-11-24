@@ -1026,6 +1026,16 @@ func TestReset(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Begin: %v", err)
 		}
+		if err := tester.Send(ctx, []byte{0x7e, 0x00}); err != nil {
+			t.Fatalf("Send buffered reply: %v", err)
+		}
+		synctest.Wait()
+		if _, err := exchange.Next(cancelled, 0); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Next with cancelled context on buffered reply = %v, want context.Canceled", err)
+		}
+		if reply, err := exchange.Next(ctx, 0); err != nil || !bytes.Equal(reply, []byte{0x7e, 0x00}) {
+			t.Fatalf("Next after cancelled call = %x, %v; want 7e00", reply, err)
+		}
 		done := make(chan error, 1)
 		go func() { done <- ecu.Reset(ctx) }()
 		synctest.Wait()

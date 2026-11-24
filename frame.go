@@ -203,7 +203,7 @@ func (frame Frame) String() string {
 			frame.ID, frame.DLC, uint8(frame.Flags), frame.Data[:min(int(frame.DLC), MaxDataLength)])
 	}
 
-	buffer := make([]byte, 0, 8+2+2*MaxDataLength)
+	buffer := make([]byte, 0, 8+3+2*MaxDataLength)
 	if frame.Flags.Has(FrameExtended) {
 		buffer = fmt.Appendf(buffer, "%08X#", frame.ID)
 	} else {

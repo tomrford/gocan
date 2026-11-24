@@ -148,9 +148,6 @@ func testLifecycle(t *testing.T, open Pair) {
 			t.Fatalf("cycle %d: Close: %v", cycle, err)
 		}
 		requireClosed(t, a)
-		if err := a.Err(); err != nil {
-			t.Fatalf("cycle %d: Err after normal close = %v, want nil", cycle, err)
-		}
 		if cause := context.Cause(a.Context()); !errors.Is(cause, gocan.ErrBusClosed) {
 			t.Fatalf("cycle %d: Context cause after normal close = %v, want ErrBusClosed", cycle, cause)
 		}
@@ -404,9 +401,6 @@ func testOverrun(t *testing.T, open Pair, caps Capabilities) {
 
 	caps.InduceOverrun(t, a, b)
 	requireClosed(t, b)
-	if err := b.Err(); !errors.Is(err, gocan.ErrReceiveOverrun) {
-		t.Fatalf("Err after overrun = %v, want ErrReceiveOverrun", err)
-	}
 	if cause := context.Cause(b.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
 		t.Fatalf("Context cause after overrun = %v, want ErrReceiveOverrun", cause)
 	}

@@ -85,10 +85,15 @@ func TestSendRetryLifecycle(t *testing.T) {
 			}
 		}
 		bus.send = func(context.Context, gocan.Frame) error { return gocan.ErrTransmitQueueFull }
-		time.AfterFunc(2*time.Millisecond, func() { cancelBus(gocan.ErrBusClosed) })
-		start = time.Now()
-		if err := gocan.Send(context.Background(), bus, frame, time.Second); !errors.Is(err, gocan.ErrBusClosed) || time.Since(start) != 2*time.Millisecond {
-			t.Fatalf("closed bus: %v after %v", err, time.Since(start))
+		for _, stopCause := range []error{gocan.ErrBusClosed, gocan.ErrHardwareDisconnected} {
+			stopCtx, stopBus := context.WithCancelCause(context.Background())
+			bus.ctx = stopCtx
+			time.AfterFunc(2*time.Millisecond, func() { stopBus(stopCause) })
+			start = time.Now()
+			err := gocan.Send(context.Background(), bus, frame, time.Second)
+			if !errors.Is(err, stopCause) || !errors.Is(err, gocan.ErrTransmitQueueFull) || time.Since(start) != 2*time.Millisecond {
+				t.Fatalf("stopped bus (%v): %v after %v", stopCause, err, time.Since(start))
+			}
 		}
 	})
 }
@@ -103,4 +108,3 @@ func (bus *sendBus) Send(ctx context.Context, frame gocan.Frame) error {
 	return bus.send(ctx, frame)
 }
 func (bus *sendBus) Context() context.Context { return bus.ctx }
-func (bus *sendBus) Err() error               { return nil }

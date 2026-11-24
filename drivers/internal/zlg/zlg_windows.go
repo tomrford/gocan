@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && amd64
 
 package zlg
 
@@ -256,7 +256,7 @@ var loadAPI = sync.OnceValues(func() (*api, error) {
 	} {
 		if *procedure.proc, err = dll.FindProc(procedure.name); err != nil {
 			_ = windows.FreeLibrary(module)
-			return nil, fmt.Errorf("%w: resolve %s in %s: %v", gocan.ErrDriverUnavailable, procedure.name, libraryName, err)
+			return nil, fmt.Errorf("resolve %s in %s: %w", procedure.name, libraryName, err)
 		}
 	}
 	return a, nil
@@ -443,7 +443,6 @@ func (bus *Bus) ID() gocan.BusID          { return bus.config.ID }
 func (bus *Bus) Name() string             { return bus.config.Name }
 func (bus *Bus) Capture() *gocan.Capture  { return bus.capture }
 func (bus *Bus) Context() context.Context { return bus.lifecycle.Context() }
-func (bus *Bus) Err() error               { return bus.lifecycle.Err() }
 
 // Close transmits frames already accepted by Send, stopping early if a
 // transmission fails, then releases the channel.
@@ -500,6 +499,12 @@ func (bus *Bus) sendable(ctx context.Context) error {
 // leave the adapter, about 1 ms per call plus 0.45 ms per frame (October 2026).
 func (bus *Bus) transmitLoop() {
 	defer close(bus.txDone)
+	// Ensure any Send that passed sendable under txMu before Stop finishes
+	// recording and queueing before txDone unblocks cleanup and MarkDone.
+	defer func() {
+		bus.txMu.Lock()
+		bus.txMu.Unlock()
+	}()
 	batch := make([]gocan.Frame, 0, transmitBatchFrames)
 	for {
 		// select picks randomly among ready cases, so a stop is checked before

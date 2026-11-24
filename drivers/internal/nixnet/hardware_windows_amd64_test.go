@@ -109,8 +109,8 @@ func TestQueueContractsHardware(t *testing.T) {
 	if !foundOverrun {
 		t.Fatal("native RX overrun did not produce a capture event")
 	}
-	if !errors.Is(b.Err(), gocan.ErrReceiveOverrun) {
-		t.Fatalf("RX failure %v, want overrun", b.Err())
+	if cause := context.Cause(b.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
+		t.Fatalf("RX failure %v, want overrun", cause)
 	}
 	if err := a.Send(ctx, frame); err != nil {
 		t.Fatalf("healthy peer after overrun: %v", err)

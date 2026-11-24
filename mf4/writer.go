@@ -22,6 +22,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -120,6 +121,8 @@ var _ gocan.RecordWriter = (*Writer)(nil)
 // nanoseconds in the header. Relative time precision decreases for long runs.
 // Each bus may have one DBC attachment, linked from both frame structures.
 // Event markers retain their own append order separately from frame records.
+// Output must honor positioned writes (do not pass an append-only file); for
+// *os.File, in-place header and link patches use WriteAt.
 func NewWriter(output io.WriteSeeker, config Config) (*Writer, error) {
 	if output == nil {
 		return nil, errors.New("mf4: writer requires an output")
@@ -547,6 +550,14 @@ func (w *Writer) patch64(offset int64, value uint64) {
 
 func (w *Writer) patch(offset int64, data []byte) {
 	if w.err != nil {
+		return
+	}
+	if file, ok := w.output.(*os.File); ok {
+		n, err := file.WriteAt(data, offset)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		w.err = err
 		return
 	}
 	if _, w.err = w.output.Seek(offset, io.SeekStart); w.err != nil {

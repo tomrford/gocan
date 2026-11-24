@@ -424,6 +424,9 @@ func (link *Link) setCursor(cursor gocan.Cursor) {
 
 // Callers must hold the receiving token.
 func (link *Link) nextFrame(ctx context.Context) (gocan.FrameEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return gocan.FrameEvent{}, err
+	}
 	frame, cursor, err := link.capture.Next(ctx, link.receiveKey, link.Cursor())
 	if err != nil {
 		if errors.Is(err, gocan.ErrCursorOutOfRange) {

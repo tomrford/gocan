@@ -214,11 +214,12 @@ func emptySeq[T any](func(T) bool) {}
 // reachable until the iterator is discarded, even after Prune or Clear.
 //
 // If a cursor in r cannot be placed or the range is reversed, Frames returns
-// nil, the range's start cursor, and an error wrapping ErrCursorOutOfRange.
+// an empty iterator, the range's start cursor, and an error wrapping
+// ErrCursorOutOfRange.
 func (capture *Capture) Frames(r Range) (iter.Seq[FrameEvent], Cursor, error) {
 	window, _, next, empty, err := capture.window(r)
 	if err != nil {
-		return nil, r.start, err
+		return emptySeq[FrameEvent], r.start, err
 	}
 	if empty {
 		return emptySeq[FrameEvent], next, nil
@@ -234,7 +235,7 @@ func (capture *Capture) Frames(r Range) (iter.Seq[FrameEvent], Cursor, error) {
 func (capture *Capture) Events(r Range) (iter.Seq[Event], Cursor, error) {
 	window, _, next, empty, err := capture.window(r)
 	if err != nil {
-		return nil, r.start, err
+		return emptySeq[Event], r.start, err
 	}
 	if empty {
 		return emptySeq[Event], next, nil
@@ -290,7 +291,7 @@ func (capture *Capture) Series(key FrameKey, r Range) (iter.Seq[FrameEvent], Cur
 
 	window, next, empty, err := resolveWindow(r, generation, chunks, activeView, pruneSeam)
 	if err != nil {
-		return nil, r.start, err
+		return emptySeq[FrameEvent], r.start, err
 	}
 	if empty {
 		return emptySeq[FrameEvent], next, nil
@@ -364,7 +365,7 @@ func (capture *Capture) BusEvents(bus BusID, r Range) (iter.Seq[Event], Cursor, 
 
 	window, next, empty, err := resolveWindow(r, generation, chunks, activeView, pruneSeam)
 	if err != nil {
-		return nil, r.start, err
+		return emptySeq[Event], r.start, err
 	}
 	if empty {
 		return emptySeq[Event], next, nil

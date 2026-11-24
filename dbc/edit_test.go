@@ -2,7 +2,6 @@ package dbc_test
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -163,7 +162,7 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 		}, ""},
 		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, ""},
 		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, ""},
-		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, ""},
+		"zero byte order":               {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = 0 }, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			edited, err := base.Edit("invalid.dbc", test.edit)
@@ -194,7 +193,7 @@ func TestEditConstructedDatabase(t *testing.T) {
 		Nodes: []dbc.Node{{Name: "ECU"}},
 		Messages: []dbc.Message{{
 			ID: 0x100, Name: "Status", Length: 1, Transmitters: []string{"ECU"},
-			Signals: []dbc.Signal{{Name: "Value", BitLength: 8, ByteOrder: binary.LittleEndian, Factor: 1, Maximum: 255}},
+			Signals: []dbc.Signal{{Name: "Value", BitLength: 8, ByteOrder: dbc.LittleEndian, Factor: 1, Maximum: 255}},
 		}},
 	}
 	edited, err := constructed.Edit("constructed.dbc", func(db *dbc.Database) {
@@ -236,6 +235,55 @@ func TestEditConstructedDatabase(t *testing.T) {
 	}
 	if constructed.Messages[0].Signals[0].Name != "Value" {
 		t.Fatal("Edit changed the constructed database")
+	}
+}
+
+func TestEditCallbackLookupsTrackMutatedSlicesAndRejectCodecs(t *testing.T) {
+	base, err := dbc.ParseFile("testdata/device.dbc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited, err := base.Edit("mutated.dbc", func(db *dbc.Database) {
+		// Drop the first message and confirm lookups track the shortened slice
+		// without panicking or resolving the wrong message.
+		db.Messages = db.Messages[1:]
+		if _, ok := db.MessageByName("DEV_0_STAT"); ok {
+			t.Fatal("MessageByName returned removed message")
+		}
+		ctrl, ok := db.MessageByName("DEV_0_CTRL")
+		if !ok || ctrl.Name != "DEV_0_CTRL" {
+			t.Fatalf("MessageByName(DEV_0_CTRL) = %#v, %t", ctrl, ok)
+		}
+		if byID, ok := db.MessageByID(ctrl.ID, ctrl.Extended); !ok || byID != ctrl {
+			t.Fatalf("MessageByID = %#v, %t; want DEV_0_CTRL", byID, ok)
+		}
+
+		// Removing a signal and calling codec methods on the editable copy
+		// must fail cleanly with ErrUnsupportedMessage instead of panicking.
+		ctrl.Signals = nil
+		if _, err := ctrl.DecodePayload(make([]byte, ctrl.Length), "Enable"); !errors.Is(err, dbc.ErrUnsupportedMessage) {
+			t.Fatalf("DecodePayload on editable copy = %v, want %v", err, dbc.ErrUnsupportedMessage)
+		}
+		if _, err := ctrl.Encode(dbc.Values{}); !errors.Is(err, dbc.ErrUnsupportedMessage) {
+			t.Fatalf("Encode on editable copy = %v, want %v", err, dbc.ErrUnsupportedMessage)
+		}
+
+		// Even a value copy of a parsed Message whose Signals are replaced
+		// must fail cleanly instead of indexing into stale codec metadata.
+		copied := base.Messages[0]
+		copied.Signals = nil
+		if _, err := copied.DecodePayload(make([]byte, copied.Length), "Coolant"); !errors.Is(err, dbc.ErrUnsupportedMessage) {
+			t.Fatalf("DecodePayload on mutated parsed Message copy = %v, want %v", err, dbc.ErrUnsupportedMessage)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := edited.MessageByName("DEV_0_STAT"); ok {
+		t.Fatal("edited database retained removed message")
+	}
+	if ctrl, ok := edited.MessageByName("DEV_0_CTRL"); !ok || len(ctrl.Signals) != 0 {
+		t.Fatalf("edited DEV_0_CTRL = %#v, %t", ctrl, ok)
 	}
 }
 

@@ -241,10 +241,6 @@ func (bus *Bus) Context() context.Context {
 	return bus.lifecycle.Context()
 }
 
-func (bus *Bus) Err() error {
-	return bus.lifecycle.Err()
-}
-
 func (bus *Bus) Close() error {
 	bus.ioMu.Lock()
 	bus.stopWithError(nil)
@@ -257,6 +253,7 @@ func (bus *Bus) Close() error {
 // recording one packet. Closing waits until all native callbacks have returned.
 func (bus *Bus) receiveLoop() {
 	defer func() {
+		bus.lifecycle.Stop(nil)
 		bus.ioMu.Lock()
 		_ = bus.file.Close()
 		bus.ioMu.Unlock()

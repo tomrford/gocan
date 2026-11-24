@@ -192,7 +192,7 @@ func waitForFrameSince(t *testing.T, capture *gocan.Capture, on gocan.Bus, ident
 		Direction: gocan.DirectionReceive,
 	}, cursor)
 	if err != nil {
-		t.Fatalf("wait for %#x on %s: %v (bus error: %v)", identifier, on.Name(), err, on.Err())
+		t.Fatalf("wait for %#x on %s: %v (bus cause: %v)", identifier, on.Name(), err, context.Cause(on.Context()))
 	}
 	return event
 }
@@ -201,7 +201,7 @@ func requireOpen(t *testing.T, bus gocan.Bus) {
 	t.Helper()
 	select {
 	case <-bus.Context().Done():
-		t.Fatalf("%s stopped: %v", bus.Name(), bus.Err())
+		t.Fatalf("%s stopped: %v", bus.Name(), context.Cause(bus.Context()))
 	default:
 	}
 }

@@ -2,6 +2,7 @@ package asc_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -213,6 +214,31 @@ func TestWriterControllerStates(t *testing.T) {
 		if !strings.HasSuffix(records[i], wantSuffix) {
 			t.Fatalf("ASC state line %d = %q, want suffix %q", i, records[i], wantSuffix)
 		}
+	}
+}
+
+type failWriter struct{ err error }
+
+func (w failWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestWriterClosePreservesFailureAcrossCalls(t *testing.T) {
+	boom := errors.New("disk full")
+	writer := asc.NewWriter(failWriter{err: boom})
+	frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteFrame(gocan.FrameEvent{
+		Bus: 1, Timestamp: time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC),
+		Direction: gocan.DirectionReceive, Frame: frame,
+	}); err != nil {
+		t.Fatalf("buffered WriteFrame: %v", err)
+	}
+	if err := writer.Close(); !errors.Is(err, boom) {
+		t.Fatalf("first Close = %v, want %v", err, boom)
+	}
+	if err := writer.Close(); !errors.Is(err, boom) {
+		t.Fatalf("second Close = %v, want %v", err, boom)
 	}
 }
 
