@@ -135,7 +135,7 @@ func TestVectorFDMismatchedDataBitrateEvents(t *testing.T) {
 	})
 	select {
 	case <-receiver.Context().Done():
-		t.Fatalf("Vector receiver stopped after an FD receive error: %v", receiver.Err())
+		t.Fatalf("Vector receiver stopped after an FD receive error: %v", context.Cause(receiver.Context()))
 	default:
 	}
 }
@@ -210,12 +210,12 @@ func TestVectorFDCollisionBusOffEvents(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Vector collision loser did not enter bus-off")
 	}
-	if !errors.Is(loser.Err(), gocan.ErrBusOff) {
-		t.Fatalf("Vector collision loser Err() = %v, want ErrBusOff", loser.Err())
+	if cause := context.Cause(loser.Context()); !errors.Is(cause, gocan.ErrBusOff) {
+		t.Fatalf("Vector collision loser cause = %v, want ErrBusOff", cause)
 	}
 	select {
 	case <-winner.Context().Done():
-		t.Fatalf("Vector collision winner stopped: %v", winner.Err())
+		t.Fatalf("Vector collision winner stopped: %v", context.Cause(winner.Context()))
 	default:
 	}
 
@@ -298,7 +298,7 @@ func runVectorEventRecovery(t *testing.T, setup vectorEventSetup) {
 	})
 	select {
 	case <-vectorBus.Context().Done():
-		t.Fatalf("Vector bus stopped in error-passive: %v", vectorBus.Err())
+		t.Fatalf("Vector bus stopped in error-passive: %v", context.Cause(vectorBus.Context()))
 	default:
 	}
 

@@ -80,9 +80,9 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 	for sendErr == nil {
 		select {
 		case <-first.Context().Done():
-			sendErr = first.Err()
+			sendErr = context.Cause(first.Context())
 		case <-second.Context().Done():
-			sendErr = second.Err()
+			sendErr = context.Cause(second.Context())
 		case <-ticker.C:
 			sendErr = first.Send(context.Background(), frame)
 		case <-deadline.C:
@@ -93,15 +93,15 @@ func TestVectorCrossAdapterPhysicalDisconnect(t *testing.T) {
 
 	select {
 	case <-first.Context().Done():
-		if !errors.Is(first.Err(), gocan.ErrHardwareDisconnected) {
-			t.Fatalf("Vector bus %q Err() = %v, want ErrHardwareDisconnected", first.Name(), first.Err())
+		if cause := context.Cause(first.Context()); !errors.Is(cause, gocan.ErrHardwareDisconnected) {
+			t.Fatalf("Vector bus %q cause = %v, want ErrHardwareDisconnected", first.Name(), cause)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Vector bus %q remained open after disconnect; first observation: %v", first.Name(), sendErr)
 	}
 	select {
 	case <-second.Context().Done():
-		t.Fatalf("Vector bus %q on a different adapter stopped after disconnect: %v", second.Name(), second.Err())
+		t.Fatalf("Vector bus %q on a different adapter stopped after disconnect: %v", second.Name(), context.Cause(second.Context()))
 	case <-time.After(2 * chipStateHealthInterval):
 	}
 }

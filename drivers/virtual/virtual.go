@@ -108,8 +108,6 @@ type Bus struct {
 	stateMu   sync.Mutex
 	closing   bool
 	terminal  error
-	errMu     sync.RWMutex
-	err       error
 }
 
 var _ gocan.Bus = (*Bus)(nil)
@@ -169,17 +167,10 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	}
 }
 
-// Context returns a context that is cancelled once this bus stops, with Err
-// (or gocan.ErrBusClosed after normal Close) as its cause.
+// Context returns a context that is cancelled once this bus stops, with the
+// background failure (or gocan.ErrBusClosed after normal Close) as its cause.
 func (bus *Bus) Context() context.Context {
 	return bus.ctx
-}
-
-// Err returns the background failure that stopped this bus, if any.
-func (bus *Bus) Err() error {
-	bus.errMu.RLock()
-	defer bus.errMu.RUnlock()
-	return bus.err
 }
 
 // Close stops the bus. It is safe to call more than once.
@@ -197,9 +188,6 @@ func (bus *Bus) Close() error {
 func (bus *Bus) run() {
 	var runErr error
 	defer func() {
-		bus.errMu.Lock()
-		bus.err = runErr
-		bus.errMu.Unlock()
 		bus.network.remove(bus)
 		bus.cancel(transport.StopError(runErr))
 	}()
@@ -237,6 +225,7 @@ func (bus *Bus) run() {
 				Direction: gocan.DirectionReceive,
 				Frame:     received,
 			}); err != nil {
+				bus.terminal = err
 				bus.stateMu.Unlock()
 				runErr = err
 				return
@@ -289,7 +278,7 @@ func (bus *Bus) operationErrorLocked() error {
 	if bus.terminal != nil {
 		return bus.terminal
 	}
-	return transport.StopError(bus.Err())
+	return transport.BusError(bus)
 }
 
 func (network *Network) broadcast(source *Bus, received gocan.Frame) {

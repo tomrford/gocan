@@ -17,7 +17,10 @@ func StopError(err error) error {
 
 // BusError reports why bus stopped. Call it once bus.Context is done.
 func BusError(bus gocan.Bus) error {
-	return StopError(bus.Err())
+	if cause := context.Cause(bus.Context()); cause != nil {
+		return cause
+	}
+	return gocan.ErrBusClosed
 }
 
 // BusContext returns a child of parent that is also cancelled with BusError

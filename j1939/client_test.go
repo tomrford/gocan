@@ -38,7 +38,6 @@ func (b *activeBus) ID() gocan.BusID          { return 1 }
 func (b *activeBus) Name() string             { return "J1939 fixture" }
 func (b *activeBus) Capture() *gocan.Capture  { return b.capture }
 func (b *activeBus) Context() context.Context { return b.ctx }
-func (b *activeBus) Err() error               { return nil }
 func (b *activeBus) Close() error             { b.cancel(gocan.ErrBusClosed); return nil }
 func (b *activeBus) Send(ctx context.Context, f gocan.Frame) error {
 	if err := ctx.Err(); err != nil {

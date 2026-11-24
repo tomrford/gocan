@@ -2,7 +2,6 @@ package dbc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"maps"
@@ -83,7 +82,7 @@ func encodeWindows1252(text string) ([]byte, error) {
 // parsed first so derived fields such as Message.Format are populated.
 func (db *Database) editable(name string) (*Database, error) {
 	if db.messagesByName != nil {
-		return db.clone()
+		return db.clone(), nil
 	}
 	var buf bytes.Buffer
 	if err := db.Write(&buf); err != nil {
@@ -93,7 +92,7 @@ func (db *Database) editable(name string) (*Database, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parsed.clone()
+	return parsed.clone(), nil
 }
 
 // Write writes db as UTF-8 DBC text. For a parsed database, parsing the text
@@ -230,9 +229,9 @@ func (db *Database) Write(w io.Writer) error {
 			}
 			var order byte
 			switch signal.ByteOrder {
-			case binary.BigEndian:
+			case BigEndian:
 				order = '0'
-			case binary.LittleEndian:
+			case LittleEndian:
 				order = '1'
 			default:
 				fail("signal %q has unsupported byte order %v", signal.Name, signal.ByteOrder)

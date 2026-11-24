@@ -116,9 +116,6 @@ func TestTerminalFailureRejectsLaterSend(t *testing.T) {
 		default:
 			t.Fatal("bus did not stop after terminal failure")
 		}
-		if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
-			t.Fatalf("Err after terminal failure = %v, want ErrReceiveOverrun", bus.Err())
-		}
 		if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
 			t.Fatalf("Context cause after terminal failure = %v, want ErrReceiveOverrun", cause)
 		}
@@ -145,8 +142,8 @@ func TestOverrunRecordsEventWhenCloseRacesFailure(t *testing.T) {
 		if err := bus.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-		if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
-			t.Fatalf("Err = %v, want ErrReceiveOverrun", bus.Err())
+		if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
+			t.Fatalf("Context cause = %v, want ErrReceiveOverrun", cause)
 		}
 		events, _, err := capture.Events(gocan.Range{})
 		if err != nil {
@@ -219,8 +216,8 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close first: %v", err)
 	}
-	if first.Err() != nil {
-		t.Fatalf("first Err after normal close = %v, want nil", first.Err())
+	if cause := context.Cause(first.Context()); !errors.Is(cause, gocan.ErrBusClosed) {
+		t.Fatalf("first Context cause after normal close = %v, want ErrBusClosed", cause)
 	}
 	if err := first.Send(context.Background(), gocan.Frame{}); !errors.Is(err, gocan.ErrBusClosed) {
 		t.Fatalf("Send after close error = %v, want ErrBusClosed", err)

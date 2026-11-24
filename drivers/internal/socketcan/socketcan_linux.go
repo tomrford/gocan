@@ -241,10 +241,6 @@ func (bus *Bus) Context() context.Context {
 	return bus.lifecycle.Context()
 }
 
-func (bus *Bus) Err() error {
-	return bus.lifecycle.Err()
-}
-
 func (bus *Bus) Close() error {
 	bus.ioMu.Lock()
 	bus.stopWithError(nil)

@@ -1,7 +1,6 @@
 package dbc
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -389,7 +388,7 @@ func compileMessageCodec(message *Message) *messageCodec {
 			codec.err = fmt.Errorf("signal %q exceeds the 64-bit codec representation", signal.Name)
 			return codec
 		}
-		if signal.ByteOrder != binary.BigEndian && signal.ByteOrder != binary.LittleEndian {
+		if signal.ByteOrder != BigEndian && signal.ByteOrder != LittleEndian {
 			codec.err = fmt.Errorf("signal %q has unsupported byte order %v", signal.Name, signal.ByteOrder)
 			return codec
 		}
@@ -825,7 +824,7 @@ func boolValue(value any) (bool, bool) {
 
 func readSignalBits(data []byte, signal Signal) uint64 {
 	var value uint64
-	if signal.ByteOrder == binary.LittleEndian {
+	if signal.ByteOrder == LittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
 			if data[dataBit/8]&(byte(1)<<(dataBit%8)) != 0 {
@@ -846,7 +845,7 @@ func readSignalBits(data []byte, signal Signal) uint64 {
 }
 
 func writeSignalBits(data []byte, signal Signal, value uint64) {
-	if signal.ByteOrder == binary.LittleEndian {
+	if signal.ByteOrder == LittleEndian {
 		for valueBit := uint32(0); valueBit < signal.BitLength; valueBit++ {
 			dataBit := signal.StartBit + valueBit
 			setDataBit(data, dataBit, value&(uint64(1)<<valueBit) != 0)
@@ -882,7 +881,7 @@ func signalAvailable(signal Signal, payloadLength int) bool {
 }
 
 func visitSignalBits(signal Signal, visit func(uint32)) {
-	if signal.ByteOrder == binary.LittleEndian {
+	if signal.ByteOrder == LittleEndian {
 		for index := uint32(0); index < signal.BitLength; index++ {
 			visit(signal.StartBit + index)
 		}

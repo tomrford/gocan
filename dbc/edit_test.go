@@ -2,7 +2,6 @@ package dbc_test
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -163,7 +162,7 @@ func TestEditDerivesDeviceDatabases(t *testing.T) {
 		}, ""},
 		"name with a space":             {func(db *dbc.Database) { db.Messages[0].Name = "DEV 0 STAT" }, ""},
 		"comment ending in a backslash": {func(db *dbc.Database) { db.Comment = `C:\logs\` }, ""},
-		"nil byte order":                {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = nil }, ""},
+		"zero byte order":               {func(db *dbc.Database) { db.Messages[0].Signals[0].ByteOrder = 0 }, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			edited, err := base.Edit("invalid.dbc", test.edit)
@@ -194,7 +193,7 @@ func TestEditConstructedDatabase(t *testing.T) {
 		Nodes: []dbc.Node{{Name: "ECU"}},
 		Messages: []dbc.Message{{
 			ID: 0x100, Name: "Status", Length: 1, Transmitters: []string{"ECU"},
-			Signals: []dbc.Signal{{Name: "Value", BitLength: 8, ByteOrder: binary.LittleEndian, Factor: 1, Maximum: 255}},
+			Signals: []dbc.Signal{{Name: "Value", BitLength: 8, ByteOrder: dbc.LittleEndian, Factor: 1, Maximum: 255}},
 		}},
 	}
 	edited, err := constructed.Edit("constructed.dbc", func(db *dbc.Database) {

@@ -665,8 +665,8 @@ func TestCaptureCursorErrors(t *testing.T) {
 		t.Fatalf("append to the other capture: %v", err)
 	}
 	foreign := other.End()
-	if seq, gotCur, err := capture.Frames(Between(end, early)); !errors.Is(err, ErrCursorOutOfRange) || seq != nil || gotCur != end {
-		t.Fatalf("Frames(Between) over reversed range = (%t, %+v, %v)", seq != nil, gotCur, err)
+	if seq, gotCur, err := capture.Frames(Between(end, early)); !errors.Is(err, ErrCursorOutOfRange) || seq == nil || len(slices.Collect(seq)) != 0 || gotCur != end {
+		t.Fatalf("Frames(Between) over reversed range = (nil=%t, %+v, %v)", seq == nil, gotCur, err)
 	} else {
 		var rejected *CursorOutOfRangeError
 		if errors.As(err, &rejected) {
@@ -686,19 +686,19 @@ func TestCaptureCursorErrors(t *testing.T) {
 		}{
 			{"Frames(Since)", func() (bool, Cursor, error) {
 				seq, next, err := capture.Frames(Since(cursor))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"Events(Since)", func() (bool, Cursor, error) {
 				seq, next, err := capture.Events(Since(cursor))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"Series(Since)", func() (bool, Cursor, error) {
 				seq, next, err := capture.Series(key, Since(cursor))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"BusEvents(Since)", func() (bool, Cursor, error) {
 				seq, next, err := capture.BusEvents(testBus0, Since(cursor))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"WriteRecords(Since)", func() (bool, Cursor, error) {
 				next, err := capture.WriteRecords(Since(cursor), writer)
@@ -733,19 +733,19 @@ func TestCaptureCursorErrors(t *testing.T) {
 		}{
 			{"Frames(Between)", func(start, end Cursor) (bool, Cursor, error) {
 				seq, next, err := capture.Frames(Between(start, end))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"Events(Between)", func(start, end Cursor) (bool, Cursor, error) {
 				seq, next, err := capture.Events(Between(start, end))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"Series(Between)", func(start, end Cursor) (bool, Cursor, error) {
 				seq, next, err := capture.Series(key, Between(start, end))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"BusEvents(Between)", func(start, end Cursor) (bool, Cursor, error) {
 				seq, next, err := capture.BusEvents(testBus0, Between(start, end))
-				return seq != nil, next, err
+				return seq == nil || len(slices.Collect(seq)) != 0, next, err
 			}},
 			{"WriteRecords(Between)", func(start, end Cursor) (bool, Cursor, error) {
 				next, err := capture.WriteRecords(Between(start, end), writer)
@@ -930,8 +930,8 @@ func TestCaptureCursorIncremental(t *testing.T) {
 	if !errors.Is(err, ErrCursorOutOfRange) {
 		t.Fatalf("Series after Clear error = %v, want ErrCursorOutOfRange", err)
 	}
-	if stale != nil || returned != cursorA {
-		t.Fatalf("stale Series returned (%t, %+v)", stale != nil, returned)
+	if stale == nil || len(slices.Collect(stale)) != 0 || returned != cursorA {
+		t.Fatalf("stale Series returned (nil=%t, %+v)", stale == nil, returned)
 	}
 	seriesA, _ = readSeries("resynchronised", Cursor{})
 	requireEvents(t, "resynchronised after Clear", seriesA, []FrameEvent{revived})
@@ -1011,8 +1011,8 @@ func TestCapturePrune(t *testing.T) {
 	requireEvents(t, "Frames(Between) from the prune-point cursor", slices.Collect(betweenSeq), appended[sealed:])
 
 	stale, returned, err := capture.Frames(Since(cursors[0]))
-	if !errors.Is(err, ErrCursorOutOfRange) || stale != nil || returned != cursors[0] {
-		t.Fatalf("Frames(Since) a discarded cursor = (%t, cursor %+v, %v)", stale != nil, returned, err)
+	if !errors.Is(err, ErrCursorOutOfRange) || stale == nil || len(slices.Collect(stale)) != 0 || returned != cursors[0] {
+		t.Fatalf("Frames(Since) a discarded cursor = (nil=%t, cursor %+v, %v)", stale == nil, returned, err)
 	}
 	if err := capture.Prune(cursors[0]); !errors.Is(err, ErrCursorOutOfRange) {
 		t.Fatalf("Prune with a discarded cursor = %v, want ErrCursorOutOfRange", err)

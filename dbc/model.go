@@ -5,7 +5,6 @@ package dbc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"maps"
 	"slices"
@@ -55,10 +54,7 @@ type messageID struct {
 // maps and per-message codecs so editing messages or signals on the copy never
 // indexes stale positions; lookups scan the copy's live slices, and codec
 // methods reject the copy until Edit reparses it.
-//
-// clone rejects a signal byte order other than binary.BigEndian or
-// binary.LittleEndian, which Write cannot express and which may share state.
-func (db *Database) clone() (*Database, error) {
+func (db *Database) clone() *Database {
 	clone := *db
 	clone.messagesByName = nil
 	clone.messagesByID = nil
@@ -75,9 +71,6 @@ func (db *Database) clone() (*Database, error) {
 		message.Signals = slices.Clone(message.Signals)
 		for index := range message.Signals {
 			signal := &message.Signals[index]
-			if signal.ByteOrder != binary.BigEndian && signal.ByteOrder != binary.LittleEndian {
-				return nil, fmt.Errorf("%w: signal %q has unsupported byte order %v", ErrUnrepresentable, signal.Name, signal.ByteOrder)
-			}
 			signal.Receivers = slices.Clone(signal.Receivers)
 			signal.Values = slices.Clone(signal.Values)
 			if signal.Multiplex != nil {
@@ -108,7 +101,7 @@ func (db *Database) clone() (*Database, error) {
 	}
 	clone.Attributes = maps.Clone(db.Attributes)
 	clone.Diagnostics = slices.Clone(db.Diagnostics)
-	return &clone, nil
+	return &clone
 }
 
 // Source returns a copy of the exact bytes read by Parse or ParseFile, or
@@ -166,13 +159,37 @@ const (
 	FrameFormatJ1939
 )
 
+// ByteOrder is the bit numbering and byte order declared by a DBC signal's @0
+// or @1 marker. LittleEndian (@1, Intel) walks sequentially from StartBit;
+// BigEndian (@0, Motorola) walks toward bit 0 within each byte and wraps to bit
+// 7 of the next byte. Zero is invalid.
+type ByteOrder uint8
+
+const (
+	// LittleEndian is Intel byte order (@1 in DBC).
+	LittleEndian ByteOrder = iota + 1
+	// BigEndian is Motorola byte order (@0 in DBC).
+	BigEndian
+)
+
+// String returns the byte order's name, or "ByteOrder(n)" for an undefined value.
+func (order ByteOrder) String() string {
+	switch order {
+	case LittleEndian:
+		return "little-endian"
+	case BigEndian:
+		return "big-endian"
+	default:
+		return fmt.Sprintf("ByteOrder(%d)", uint8(order))
+	}
+}
+
 // Signal is one resolved SG_ definition.
-// ByteOrder is binary.BigEndian (@0, Motorola) or binary.LittleEndian (@1, Intel).
 type Signal struct {
 	Name          string
 	StartBit      uint32
 	BitLength     uint32
-	ByteOrder     binary.ByteOrder
+	ByteOrder     ByteOrder
 	Signed        bool
 	ValueType     ValueType
 	Factor        float64
