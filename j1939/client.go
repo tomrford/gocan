@@ -233,15 +233,16 @@ func activePGN(pgn PGN) error {
 func (c *Client) run() {
 	var runErr error
 	defer func() {
-		if ctxErr := context.Cause(c.ctx); ctxErr != nil &&
-			(runErr == nil || errors.Is(runErr, c.ctx.Err()) || errors.Is(runErr, ctxErr)) {
+		if ctxErr := context.Cause(c.ctx); ctxErr != nil {
 			if c.bus.Context().Err() == nil {
 				c.shutdown()
 			}
-			if errors.Is(ctxErr, errCloseRequested) {
-				runErr = nil
-			} else {
-				runErr = ctxErr
+			if runErr == nil || errors.Is(runErr, c.ctx.Err()) || errors.Is(runErr, ctxErr) {
+				if errors.Is(ctxErr, errCloseRequested) {
+					runErr = nil
+				} else {
+					runErr = ctxErr
+				}
 			}
 		}
 		c.cancel(runErr)
@@ -429,11 +430,15 @@ func (c *Client) frame(ctx context.Context, priority uint8, pgn PGN, source, des
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	sendCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	err = c.bus.Send(ctx, frame)
+	err = c.bus.Send(sendCtx, frame)
 	if err == nil {
 		c.sent++
+		return nil
+	}
+	if sendCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: transmit frame timed out: %w", ErrTimeout, err)
 	}
 	return err
 }

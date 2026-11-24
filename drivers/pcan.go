@@ -42,6 +42,9 @@ func nativePCANConfig(channel Channel, prepared preparedConfig) (pcan.Config, er
 		if err != nil {
 			return pcan.Config{}, err
 		}
+		if err := validatePCANFDTiming(timing); err != nil {
+			return pcan.Config{}, err
+		}
 		native.FDBitrate = pcanFDBitrate(timing)
 		return native, nil
 	}
@@ -50,6 +53,21 @@ func nativePCANConfig(channel Channel, prepared preparedConfig) (pcan.Config, er
 	}
 	native.Bitrate = prepared.config.Bitrate
 	return native, nil
+}
+
+func validatePCANFDTiming(timing FDTiming) error {
+	switch timing.ClockHz {
+	case 20_000_000, 24_000_000, 30_000_000, 40_000_000, 60_000_000, 80_000_000:
+	default:
+		return fmt.Errorf("%w: PCAN CAN FD clock %d Hz is not supported (must be 20, 24, 30, 40, 60, or 80 MHz)", ErrInvalidConfig, timing.ClockHz)
+	}
+	if timing.Nominal.BRP > 1024 || timing.Nominal.TSEG1 > 256 || timing.Nominal.TSEG2 > 128 || timing.Nominal.SJW > 128 {
+		return fmt.Errorf("%w: PCAN CAN FD timing exceeds nominal phase limits", ErrInvalidConfig)
+	}
+	if timing.Data.BRP > 1024 || timing.Data.TSEG1 > 32 || timing.Data.TSEG2 > 16 || timing.Data.SJW > 16 {
+		return fmt.Errorf("%w: PCAN CAN FD timing exceeds data phase limits", ErrInvalidConfig)
+	}
+	return nil
 }
 
 func pcanFDBitrate(timing FDTiming) string {

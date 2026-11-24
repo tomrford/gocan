@@ -26,5 +26,9 @@ func discoverVector() ([]Channel, error) {
 }
 
 func openVector(ctx context.Context, capture *gocan.Capture, config vector.Config) (gocan.Bus, error) {
-	return vector.Open(ctx, capture, config)
+	bus, err := vector.Open(ctx, capture, config)
+	if err != nil {
+		return nil, err
+	}
+	return bus, nil
 }

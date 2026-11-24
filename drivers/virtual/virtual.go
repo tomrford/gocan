@@ -244,19 +244,23 @@ func (bus *Bus) run() {
 			bus.stateMu.Unlock()
 
 		case runErr = <-bus.failures:
-			if errors.Is(runErr, gocan.ErrReceiveOverrun) {
-				err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun})
-				if err != nil {
-					runErr = err
-				}
-			}
+			bus.recordTerminalEvent(&runErr)
 			return
 
 		case <-bus.stop:
 			bus.stateMu.Lock()
 			runErr = bus.terminal
 			bus.stateMu.Unlock()
+			bus.recordTerminalEvent(&runErr)
 			return
+		}
+	}
+}
+
+func (bus *Bus) recordTerminalEvent(runErr *error) {
+	if errors.Is(*runErr, gocan.ErrReceiveOverrun) {
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
+			*runErr = err
 		}
 	}
 }

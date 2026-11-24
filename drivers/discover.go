@@ -97,8 +97,8 @@ func (channel Channel) String() string {
 //   - Linux: reports SocketCAN interfaces in kernel order, including interfaces
 //     that are down.
 //   - Windows: reports attached PCAN channels followed by CAN-capable Vector,
-//     NI-XNET, and ZLG channels, each in native driver order. Vector and
-//     NI-XNET are discovered on windows/amd64. A vendor stack that is not
+//     NI-XNET, and ZLG channels, each in native driver order. Vector, NI-XNET,
+//     and ZLG are discovered on windows/amd64. A vendor stack that is not
 //     installed contributes neither channels nor an error; an installed stack
 //     that fails to answer contributes no channels and joins its error into the
 //     returned error alongside the other drivers' channels.

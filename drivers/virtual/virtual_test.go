@@ -133,6 +133,32 @@ func TestTerminalFailureRejectsLaterSend(t *testing.T) {
 	})
 }
 
+func TestOverrunRecordsEventWhenCloseRacesFailure(t *testing.T) {
+	for range 32 {
+		capture := gocan.NewCapture()
+		var network Network
+		bus, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "overrun"})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		bus.fail(gocan.ErrReceiveOverrun)
+		if err := bus.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if !errors.Is(bus.Err(), gocan.ErrReceiveOverrun) {
+			t.Fatalf("Err = %v, want ErrReceiveOverrun", bus.Err())
+		}
+		events, _, err := capture.Events(gocan.Range{})
+		if err != nil {
+			t.Fatalf("Events: %v", err)
+		}
+		got := slices.Collect(events)
+		if len(got) != 1 || got[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("events = %+v, want one EventReceiveOverrun", got)
+		}
+	}
+}
+
 func TestBroadcastDetectsOverrun(t *testing.T) {
 	capture := gocan.NewCapture()
 	var network Network

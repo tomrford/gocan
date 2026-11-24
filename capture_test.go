@@ -115,6 +115,13 @@ func TestCaptureLiveClock(t *testing.T) {
 	if err := capture.RecordEvent(Event{Bus: 1, Kind: EventControllerState}); err == nil {
 		t.Fatal("accepted invalid live controller state")
 	}
+	farFuture := time.Date(2500, time.January, 1, 0, 0, 0, 0, time.UTC)
+	if err := capture.Append(FrameEvent{Bus: 1, Timestamp: farFuture, Direction: DirectionReceive}); err == nil {
+		t.Fatal("accepted frame with timestamp outside int64 nanosecond Unix range")
+	}
+	if err := capture.AppendEvent(Event{Bus: 1, Timestamp: farFuture, Kind: EventErrorFrame}); err == nil {
+		t.Fatal("accepted event with timestamp outside int64 nanosecond Unix range")
+	}
 	if capture.Len() != 0 {
 		t.Fatal("invalid records changed capture")
 	}

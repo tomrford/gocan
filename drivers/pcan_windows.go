@@ -24,5 +24,9 @@ func discoverPCAN() ([]Channel, error) {
 }
 
 func openPCAN(ctx context.Context, capture *gocan.Capture, config pcan.Config) (gocan.Bus, error) {
-	return pcan.Open(ctx, capture, config)
+	bus, err := pcan.Open(ctx, capture, config)
+	if err != nil {
+		return nil, err
+	}
+	return bus, nil
 }

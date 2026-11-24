@@ -917,6 +917,9 @@ func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
 }
 
 func (bus *Bus) finish() {
+	// Wait for any in-flight Stop wake callback to finish using stopEvent
+	// before cleanup closes the handle.
+	bus.lifecycle.Stop(nil)
 	bus.ioMu.Lock()
 	bus.cleanupErr = bus.cleanup()
 	bus.ioMu.Unlock()

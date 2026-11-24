@@ -118,19 +118,35 @@ func (c *Client) abort(destination Address, pgn PGN, reason byte) error {
 }
 
 func (c *Client) failSend(err error, reason byte) error {
+	if c.ctx.Err() != nil {
+		return c.ctx.Err()
+	}
 	r := c.tx.request
 	var abortErr error
 	if r.destination != GlobalAddress {
 		abortErr = c.abort(r.destination, r.pgn, reason)
+		if abortErr != nil && c.ctx.Err() != nil {
+			return c.ctx.Err()
+		}
 	}
 	c.finishSend(err)
 	return abortErr
 }
 
 func (c *Client) failReceive(reason byte) error {
+	if c.ctx.Err() != nil {
+		return c.ctx.Err()
+	}
 	r := c.rx
+	if err := c.abort(r.source, r.pgn, reason); err != nil {
+		if c.ctx.Err() != nil {
+			return c.ctx.Err()
+		}
+		c.rx = nil
+		return err
+	}
 	c.rx = nil
-	return c.abort(r.source, r.pgn, reason)
+	return nil
 }
 
 func (c *Client) invalidatePeer(peer Address) {
@@ -160,8 +176,11 @@ func (c *Client) handleTransport(event gocan.FrameEvent, h Header, data []byte) 
 			ack := controlBytes(transportEOMA, r.pgn)
 			binary.LittleEndian.PutUint16(ack[1:3], uint16(r.size))
 			ack[3] = byte(r.packets)
+			if err := c.control(r.source, ack); err != nil {
+				return err
+			}
 			c.rx = nil
-			return c.control(r.source, ack)
+			return nil
 		}
 		if r.next > r.end {
 			return c.grant()

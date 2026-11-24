@@ -257,6 +257,7 @@ func (bus *Bus) Close() error {
 // recording one packet. Closing waits until all native callbacks have returned.
 func (bus *Bus) receiveLoop() {
 	defer func() {
+		bus.lifecycle.Stop(nil)
 		bus.ioMu.Lock()
 		_ = bus.file.Close()
 		bus.ioMu.Unlock()

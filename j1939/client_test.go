@@ -820,3 +820,53 @@ func TestActiveBAMReportsLateNativeAcceptance(t *testing.T) {
 		})
 	}
 }
+
+type blockingDTBus struct {
+	*activeBus
+	dtStarted chan struct{}
+}
+
+func (b *blockingDTBus) Send(ctx context.Context, f gocan.Frame) error {
+	if f.ID == 0x1ceb2280 {
+		select {
+		case b.dtStarted <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return b.activeBus.Send(ctx, f)
+}
+
+func TestActiveCloseAbortsDirectedTransferDuringDTSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		base := newActiveBus()
+		b := &blockingDTBus{activeBus: base, dtStarted: make(chan struct{}, 1)}
+		c, err := j1939.Open(context.Background(), b, j1939.Config{Address: 0x80, Name: 0x1234})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		wire(t, base, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		time.Sleep(260 * time.Millisecond)
+
+		r := sendActive(c, context.Background(), 0x22, activePayload)
+		wire(t, base, 0x18ec2280, 0x10, 20, 0, 3, 3, 0xca, 0xfe, 0)
+		base.inject(t, 0x1cec8022, 0x11, 3, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		select {
+		case <-b.dtStarted:
+		case <-time.After(time.Second):
+			t.Fatal("TP.DT send did not start")
+		}
+
+		if err := c.Close(); err != nil {
+			t.Fatalf("Close = %v, want nil", err)
+		}
+		if err := c.Err(); err != nil {
+			t.Fatalf("Err = %v, want nil", err)
+		}
+		resultIs(t, r, j1939.ErrClosed)
+		wire(t, base, 0x1cec2280, 0xff, 2, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
+		quiet(t, base)
+	})
+}

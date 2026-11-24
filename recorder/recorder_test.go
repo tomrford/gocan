@@ -220,4 +220,53 @@ func TestRecorderFailureCheckpoints(t *testing.T) {
 			t.Fatal("failed lifecycle published an unsafe flush cursor")
 		}
 	})
+
+	t.Run("parent context cancel drains and joins cause with final flush error", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			capture := gocan.NewCapture()
+			writer := &writerProbe{}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			rec, err := recorder.Start(ctx, capture, writer, gocan.Cursor{}, time.Hour)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+
+			appendFrame(t, capture, 0x201)
+			end := capture.End()
+			cancel(gocan.ErrReceiveOverrun)
+			<-rec.Done()
+
+			if !errors.Is(rec.Err(), gocan.ErrReceiveOverrun) {
+				t.Fatalf("Err = %v, want ErrReceiveOverrun", rec.Err())
+			}
+			if !errors.Is(rec.Close(), gocan.ErrReceiveOverrun) {
+				t.Fatalf("Close = %v, want ErrReceiveOverrun", rec.Close())
+			}
+			if rec.Flushed() != end {
+				t.Fatal("parent context cancel did not flush final window")
+			}
+		})
+
+		synctest.Test(t, func(t *testing.T) {
+			capture := gocan.NewCapture()
+			flushErr := errors.New("storage full")
+			writer := &writerProbe{}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			rec, err := recorder.Start(ctx, capture, writer, gocan.Cursor{}, time.Hour)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+
+			writer.mu.Lock()
+			writer.flushErr = flushErr
+			writer.mu.Unlock()
+			appendFrame(t, capture, 0x202)
+			cancel(gocan.ErrReceiveOverrun)
+			<-rec.Done()
+
+			if !errors.Is(rec.Err(), flushErr) || !errors.Is(rec.Err(), gocan.ErrReceiveOverrun) {
+				t.Fatalf("Err = %v, want both flushErr and ErrReceiveOverrun", rec.Err())
+			}
+		})
+	})
 }

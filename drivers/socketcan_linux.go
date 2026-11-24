@@ -27,10 +27,14 @@ func discoverSocketCAN() ([]Channel, error) {
 }
 
 func openSocketCAN(ctx context.Context, capture *gocan.Capture, cfg socketcanPrepared) (gocan.Bus, error) {
-	return socketcan.Open(ctx, capture, socketcan.Config{
+	bus, err := socketcan.Open(ctx, capture, socketcan.Config{
 		ID:        cfg.id,
 		Name:      cfg.name,
 		Interface: cfg.iface,
 		FD:        cfg.fd,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return bus, nil
 }

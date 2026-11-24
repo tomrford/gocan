@@ -63,6 +63,10 @@ type Recorder struct {
 // Start takes ownership of writer's format lifecycle until it is closed. If
 // the initial write, flush, or close fails, Start returns the stopped Recorder
 // and its terminal error. Accepted and Flushed report how far it got.
+//
+// Canceling ctx stops recording after writing and flushing one final window,
+// closes writer, and makes Err and Close report context.Cause(ctx) (joined with
+// any final write, flush, or close error).
 func Start(
 	ctx context.Context,
 	capture *gocan.Capture,
@@ -152,14 +156,7 @@ func (recorder *Recorder) run() {
 	for {
 		select {
 		case <-recorder.ctx.Done():
-			cause := context.Cause(recorder.ctx)
-			if err := recorder.pass(); err != nil {
-				runErr = err
-				return
-			}
-			if !errors.Is(cause, errStopRequested) {
-				runErr = cause
-			}
+			runErr = recorder.pass()
 			return
 
 		case <-ticker.C:
@@ -193,6 +190,9 @@ func (recorder *Recorder) pass() error {
 }
 
 func (recorder *Recorder) finish(runErr error) error {
+	if cause := context.Cause(recorder.ctx); cause != nil && !errors.Is(cause, errStopRequested) {
+		runErr = errors.Join(runErr, cause)
+	}
 	recorder.cancel(runErr)
 	closeErr := recorder.writer.Close()
 	if closeErr != nil {

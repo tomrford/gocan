@@ -24,5 +24,9 @@ func discoverNIXNET() ([]Channel, error) {
 }
 
 func openNIXNET(ctx context.Context, capture *gocan.Capture, config nixnet.Config) (gocan.Bus, error) {
-	return nixnet.Open(ctx, capture, config)
+	bus, err := nixnet.Open(ctx, capture, config)
+	if err != nil {
+		return nil, err
+	}
+	return bus, nil
 }

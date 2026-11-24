@@ -201,6 +201,21 @@ func TestOpenRejectsInvalidConfigurations(t *testing.T) {
 		// Driver-specific bitrate and timing rules.
 		{"PCAN unsupported classical bitrate", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", Bitrate: 300_000}},
 		{"PCAN unsupported FD nominal preset", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", Bitrate: 250_000, DataBitrate: 2_000_000}},
+		{"PCAN unsupported FD clock", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", FDTiming: drivers.FDTiming{
+			ClockHz: 50_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 79, TSEG2: 20, SJW: 20},
+			Data:    drivers.BitTiming{BRP: 1, TSEG1: 19, TSEG2: 5, SJW: 5},
+		}}},
+		{"PCAN nominal TSEG1 exceeds limit", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: drivers.BitTiming{BRP: 1, TSEG1: 257, TSEG2: 62, SJW: 1},
+			Data:    qualifiedFDTiming.Data,
+		}}},
+		{"PCAN data TSEG1 exceeds limit", capture, pcanFD, drivers.Config{ID: 1, Name: "pcan", FDTiming: drivers.FDTiming{
+			ClockHz: 80_000_000,
+			Nominal: qualifiedFDTiming.Nominal,
+			Data:    drivers.BitTiming{BRP: 1, TSEG1: 33, TSEG2: 6, SJW: 1},
+		}}},
 		{"Vector unsupported FD data preset", capture, vectorFD, drivers.Config{ID: 1, Name: "vector", Bitrate: 500_000, DataBitrate: 3_000_000}},
 		{"Vector non-80MHz FD clock", capture, vectorFD, drivers.Config{ID: 1, Name: "vector", FDTiming: drivers.FDTiming{
 			ClockHz: 40_000_000,
