@@ -178,7 +178,21 @@ func TestPCANStateBenchSequences(t *testing.T) {
 	if _, ok := state.tick(now.Add(time.Second), 1); ok {
 		t.Fatal("quiet timer inferred Active while post-bus-off polling remained active")
 	}
-	polled, pcount, err = state.pollStatus(now.Add(3*busOffPollInterval), pcanStatusOK, 1)
+	// Counted passive during post-bus-off polling must not flap Warning<->Passive
+	// under repeated live 0x08 (BUSHEAVY) polls and repeated passive error frames.
+	if events, count = state.observe(now.Add(2*busOffPollInterval+6*time.Millisecond), passiveObs); count != 2 || events[1].ControllerState != gocan.ControllerPassive {
+		t.Fatalf("passive during post-bus-off poll = %+v", events[:count])
+	}
+	for step := range 3 {
+		pollAt := now.Add(time.Duration(3+step) * busOffPollInterval)
+		if polled, pcount, err = state.pollStatus(pollAt, pcanStatusBusWarning, 1); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
+			t.Fatalf("poll 0x08 while passive step %d = %+v, err=%v, next=%v", step, polled[:pcount], err, state.nextDeadline())
+		}
+		if events, count = state.observe(pollAt.Add(time.Millisecond), passiveObs); count != 1 || events[0].Kind != gocan.EventErrorFrame {
+			t.Fatalf("repeated passive after poll 0x08 step %d = %+v", step, events[:count])
+		}
+	}
+	polled, pcount, err = state.pollStatus(now.Add(6*busOffPollInterval), pcanStatusOK, 1)
 	if err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || !state.nextDeadline().IsZero() {
 		t.Fatalf("poll 0x00 = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
 	}

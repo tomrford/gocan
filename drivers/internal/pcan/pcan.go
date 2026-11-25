@@ -523,6 +523,12 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 		state.activeAt = time.Time{}
 		state.pollOverrun = false
 	}
+	if state.lastState.ControllerState == gocan.ControllerPassive &&
+		busState&pcanStatusBusWarning != 0 && busState&pcanStatusBusPassive == 0 {
+		// Classic PCAN-USB reports BUSHEAVY (0x08) while error-passive; keep
+		// polling for recovery without downgrading a known passive state.
+		return out, count, nil
+	}
 	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: nextState}
 	if !samePCANControllerState(state.lastState, event) {
 		state.lastState = event
