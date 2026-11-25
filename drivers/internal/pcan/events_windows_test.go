@@ -307,6 +307,18 @@ func TestPCANBusOffRecoveryHardware(t *testing.T) {
 	}, recoveryCursor); err != nil {
 		t.Fatalf("peer did not receive recovery frame: %v", err)
 	}
+	// The 10 kbit/s jammer leaves the target with REC >= 128; per ISO 11898
+	// REC only decreases on successful reception, so send clean peer traffic
+	// before waiting for ControllerActive.
+	cleanFrame, err := gocan.NewFrame(0x7f5, []byte{0x55}, 0)
+	if err != nil {
+		t.Fatalf("NewFrame clean: %v", err)
+	}
+	for i := range 64 {
+		if err := gocan.Send(context.Background(), peer, cleanFrame, time.Second); err != nil {
+			t.Fatalf("send clean peer frame %d: %v", i, err)
+		}
+	}
 	waitForPCANEvents(t, capture, target.ID(), recoveryCursor, func(event gocan.Event) bool {
 		return event.Kind == gocan.EventControllerState && event.ControllerState == gocan.ControllerActive
 	})
