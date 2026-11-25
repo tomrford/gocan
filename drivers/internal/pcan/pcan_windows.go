@@ -26,15 +26,16 @@ import (
 // readiness signal, so retain margin over the observed roughly 3 ms window.
 const channelSettleDelay = 25 * time.Millisecond
 
-// busOffPollInterval paces status reads from bus-off until the controller
-// leaves bus-off. PCAN-USB went from 0x14 through 0x8 to 0x0 over about 1 s
-// and sent no status message for the return (November 2026).
+// busOffPollInterval paces status reads while the controller is bus-off or
+// degraded. PCAN-USB went from 0x14 through 0x8 to 0x0 over about 1 s and sent
+// no status message for the return (November 2026).
 const busOffPollInterval = 10 * time.Millisecond
 
-// degradedPollInterval paces status reads while the controller is error
-// warning or error passive. Classic PCAN-USB also omits status frames when
-// warning or passive clears on clean traffic.
-const degradedPollInterval = 50 * time.Millisecond
+// degradedQuietWindow is how long a warning or passive channel must go without
+// error frames, after clean received traffic, before a PCAN_ERROR_OK read from
+// CAN_GetStatus is accepted as error-active. Classic PCAN-USB clears channel
+// status bits on CAN_Read, so CAN_GetStatus can read OK while still passive.
+const degradedQuietWindow = 500 * time.Millisecond
 
 // A PEAK USB removal is one shared PCAN process failure domain: every open
 // PCAN bus stops, because a classic PCAN-USB handle cannot be reliably mapped
@@ -188,16 +189,8 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		uninitialize()
 		return nil, fmt.Errorf("create PCAN stop event: %w", err)
 	}
-	wakeEvent, err := windows.CreateEvent(nil, 0, 0, nil)
-	if err != nil {
-		_ = windows.CloseHandle(stopEvent)
-		_ = windows.CloseHandle(receiveEvent)
-		uninitialize()
-		return nil, fmt.Errorf("create PCAN wake event: %w", err)
-	}
 
 	if uint64(receiveEvent) > uint64(^uint32(0)) {
-		_ = windows.CloseHandle(wakeEvent)
 		_ = windows.CloseHandle(stopEvent)
 		_ = windows.CloseHandle(receiveEvent)
 		uninitialize()
@@ -211,7 +204,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		unsafe.Sizeof(eventValue),
 	)
 	if status = pcanStatus(result); status != pcanStatusOK {
-		_ = windows.CloseHandle(wakeEvent)
 		_ = windows.CloseHandle(stopEvent)
 		_ = windows.CloseHandle(receiveEvent)
 		uninitialize()
@@ -227,7 +219,6 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		api:          api,
 		receiveEvent: receiveEvent,
 		stopEvent:    stopEvent,
-		wakeEvent:    wakeEvent,
 		lifecycle: driverstate.New(func() {
 			_ = windows.SetEvent(stopEvent)
 		}),
@@ -399,16 +390,17 @@ type Bus struct {
 
 	receiveEvent windows.Handle
 	stopEvent    windows.Handle
-	wakeEvent    windows.Handle
 
 	ioMu      sync.Mutex
 	lifecycle *driverstate.Lifecycle
 
-	// Guarded by ioMu. nextRecoveryPoll is non-zero whenever lastState is a
-	// degraded controller state (warning, passive, or bus-off) until the
-	// controller returns to error active.
-	lastState        gocan.Event
-	nextRecoveryPoll time.Time
+	// Guarded by ioMu. nextRecoveryPoll is non-zero while recoveringBusOff is
+	// true or lastState is degraded (warning or passive).
+	lastState              gocan.Event
+	recoveringBusOff       bool
+	nextRecoveryPoll       time.Time
+	lastErrorAt            time.Time
+	cleanTrafficSinceError bool
 
 	deviceSubscription *devicechange.Subscription
 	cleanupErr         error
@@ -452,6 +444,13 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	default:
 	}
 
+	// Avoid calling CAN_Write until live CAN_GetStatus confirms bus-off
+	// recovery: writes every <= 20 ms with an acknowledging peer keep PCAN-USB
+	// stuck in bus-off instead of letting auto-reset complete.
+	if bus.recoveringBusOff {
+		return gocan.ErrBusOff
+	}
+
 	var status pcanStatus
 	if bus.fd {
 		message := encodeFDMessage(frame)
@@ -470,10 +469,16 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	}
 	if status != pcanStatusOK {
 		if status&pcanStatusBusOff != 0 {
-			if err := bus.recordSendBusOffLocked(); err != nil {
+			event := gocan.Event{
+				Bus:             bus.id,
+				Kind:            gocan.EventControllerState,
+				ControllerState: gocan.ControllerBusOff,
+			}
+			if err := bus.applyControllerStateLocked(event, false, false); err != nil {
 				bus.stopWithError(err)
 				return err
 			}
+			_ = windows.SetEvent(bus.receiveEvent)
 			return fmt.Errorf("%w: PCAN status %#08x", gocan.ErrBusOff, uint32(status))
 		}
 		if status&pcanStatusTXFullMask != 0 {
@@ -486,6 +491,7 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		return err
 	}
 
+	bus.cleanTrafficSinceError = true
 	if err := bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
 		Direction: gocan.DirectionTransmit,
@@ -510,15 +516,12 @@ func (bus *Bus) Close() error {
 func (bus *Bus) receiveLoop() {
 	defer bus.finish()
 
-	events := []windows.Handle{bus.stopEvent, bus.receiveEvent, bus.wakeEvent}
+	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
 	for {
-		nextPoll, polled, err := bus.pollRecoveryIfDue()
+		nextPoll, err := bus.pollRecoveryIfDue()
 		if err != nil {
 			bus.stopWithError(err)
 			return
-		}
-		if polled {
-			continue
 		}
 		timeout := uint32(windows.INFINITE)
 		if !nextPoll.IsZero() {
@@ -533,13 +536,11 @@ func (bus *Bus) receiveLoop() {
 		switch event {
 		case windows.WAIT_OBJECT_0:
 			return
-		case windows.WAIT_OBJECT_0 + 1:
+		case windows.WAIT_OBJECT_0 + 1, uint32(windows.WAIT_TIMEOUT):
 			if err := bus.drainReceiveQueue(); err != nil {
 				bus.stopWithError(err)
 				return
 			}
-		case windows.WAIT_OBJECT_0 + 2, uint32(windows.WAIT_TIMEOUT):
-			continue
 		default:
 			bus.stopWithError(fmt.Errorf("wait for PCAN receive event: unexpected result %#x", event))
 			return
@@ -571,25 +572,22 @@ func (bus *Bus) drainReceiveQueue() error {
 	}
 }
 
-func (bus *Bus) pollRecoveryIfDue() (time.Time, bool, error) {
+func (bus *Bus) pollRecoveryIfDue() (time.Time, error) {
 	bus.ioMu.Lock()
 	defer bus.ioMu.Unlock()
 
-	if bus.nextRecoveryPoll.IsZero() {
-		return time.Time{}, false, nil
-	}
-	if time.Now().Before(bus.nextRecoveryPoll) {
-		return bus.nextRecoveryPoll, false, nil
+	if bus.nextRecoveryPoll.IsZero() || time.Now().Before(bus.nextRecoveryPoll) {
+		return bus.nextRecoveryPoll, nil
 	}
 	select {
 	case <-bus.lifecycle.StopSignal():
-		return time.Time{}, false, nil
+		return time.Time{}, nil
 	default:
 	}
 	if err := bus.pollRecoveryLocked(); err != nil {
-		return time.Time{}, false, err
+		return time.Time{}, err
 	}
-	return bus.nextRecoveryPoll, true, nil
+	return bus.nextRecoveryPoll, nil
 }
 
 // receiveOne serialises a single native read and capture append with Send.
@@ -658,11 +656,6 @@ func (bus *Bus) receiveOne() (bool, error) {
 	if err := bus.applyObservationLocked(observation, false); err != nil {
 		return false, err
 	}
-	if !bus.nextRecoveryPoll.IsZero() && !time.Now().Before(bus.nextRecoveryPoll) {
-		if err := bus.pollRecoveryLocked(); err != nil {
-			return false, err
-		}
-	}
 	return true, nil
 }
 
@@ -678,20 +671,11 @@ func (bus *Bus) applyQueueEmptyStatusLocked(status pcanStatus) error {
 	return bus.applyObservationLocked(observation, false)
 }
 
-func (bus *Bus) recordSendBusOffLocked() error {
-	event := gocan.Event{
-		Bus:             bus.id,
-		Kind:            gocan.EventControllerState,
-		ControllerState: gocan.ControllerBusOff,
-	}
-	return bus.applyControllerStateLocked(event, false, true)
-}
-
-// pollRecoveryLocked queries live controller status via CAN_GetStatus. Polling
-// stops only when CAN_GetStatus confirms an unmasked PCAN_ERROR_OK (or when
-// the receive path observes ControllerActive outside bus-off), so queued
-// error-frame counters or queue-only status bits cannot stop bus-off recovery
-// tracking early. Callers must hold bus.ioMu.
+// pollRecoveryLocked queries live controller status via CAN_GetStatus after the
+// receive queue has drained. Bus-off recovery stops only on unmasked
+// PCAN_ERROR_OK; outside bus-off, PCAN_ERROR_OK is accepted as error-active
+// only after clean received traffic and degradedQuietWindow without errors.
+// Callers must hold bus.ioMu.
 func (bus *Bus) pollRecoveryLocked() error {
 	bus.nextRecoveryPoll = time.Time{}
 
@@ -702,11 +686,16 @@ func (bus *Bus) pollRecoveryLocked() error {
 	}
 	var decodeStatus pcanStatus
 	if status == pcanStatusOK {
+		quiet := bus.cleanTrafficSinceError && time.Since(bus.lastErrorAt) >= degradedQuietWindow
+		if !bus.fd && !bus.recoveringBusOff && !quiet {
+			bus.nextRecoveryPoll = time.Now().Add(busOffPollInterval)
+			return nil
+		}
 		decodeStatus = pcanStatusOK
 	} else {
 		decodeStatus = status & pcanStatusBusStateMask
 		if decodeStatus == pcanStatusOK {
-			bus.armRecoveryPollLocked(bus.recoveryPollIntervalLocked(), false)
+			bus.nextRecoveryPoll = time.Now().Add(busOffPollInterval)
 			return nil
 		}
 	}
@@ -719,8 +708,12 @@ func (bus *Bus) pollRecoveryLocked() error {
 
 func (bus *Bus) applyObservationLocked(observation pcanReceiveObservation, fromPoll bool) error {
 	for _, event := range observation.events[:observation.eventCount] {
-		if event.Kind == gocan.EventControllerState {
-			if err := bus.applyControllerStateLocked(event, fromPoll, false); err != nil {
+		switch event.Kind {
+		case gocan.EventErrorFrame:
+			bus.lastErrorAt = time.Now()
+			bus.cleanTrafficSinceError = false
+		case gocan.EventControllerState:
+			if err := bus.applyControllerStateLocked(event, fromPoll, observation.busHeavy); err != nil {
 				return err
 			}
 			continue
@@ -730,6 +723,7 @@ func (bus *Bus) applyObservationLocked(observation pcanReceiveObservation, fromP
 		}
 	}
 	if observation.hasFrame {
+		bus.cleanTrafficSinceError = true
 		return bus.capture.RecordFrame(gocan.FrameEvent{
 			Bus:       bus.id,
 			Direction: gocan.DirectionReceive,
@@ -739,36 +733,70 @@ func (bus *Bus) applyObservationLocked(observation pcanReceiveObservation, fromP
 	return nil
 }
 
-func (bus *Bus) applyControllerStateLocked(event gocan.Event, fromPoll, wake bool) error {
-	if acceptPCANControllerState(bus.lastState, event, fromPoll) {
+func (bus *Bus) applyControllerStateLocked(event gocan.Event, fromPoll, busHeavy bool) error {
+	if event.ControllerState != gocan.ControllerActive {
+		if !fromPoll {
+			bus.lastErrorAt = time.Now()
+			bus.cleanTrafficSinceError = false
+		}
+		if event.ControllerState == gocan.ControllerBusOff {
+			bus.recoveringBusOff = true
+		}
+	}
+
+	accept := true
+	switch {
+	case bus.recoveringBusOff && !fromPoll && event.ControllerState != gocan.ControllerBusOff:
+		// During bus-off recovery, only live CAN_GetStatus polls may step out
+		// of bus-off or report ControllerActive; queued error frames carry
+		// 8-bit counters that cannot represent bus-off and may predate it.
+		accept = false
+	case !bus.fd && busHeavy &&
+		bus.lastState.ControllerState == gocan.ControllerPassive &&
+		event.ControllerState == gocan.ControllerWarning &&
+		!event.ErrorCountsKnown:
+		// Classic PCAN-USB reports BUSHEAVY (0x08) while error-passive; do not
+		// downgrade a known passive state on that ambiguous status bit.
+		accept = false
+	case samePCANControllerState(bus.lastState, event):
+		accept = false
+	}
+
+	if accept {
 		if err := bus.capture.RecordEvent(event); err != nil {
 			return err
 		}
 		bus.lastState = event
 	}
-	if bus.lastState.Kind == gocan.EventControllerState && bus.lastState.ControllerState != gocan.ControllerActive {
-		bus.armRecoveryPollLocked(bus.recoveryPollIntervalLocked(), wake)
+
+	if fromPoll && event.ControllerState == gocan.ControllerActive {
+		bus.recoveringBusOff = false
+	}
+	degraded := bus.lastState.Kind == gocan.EventControllerState && bus.lastState.ControllerState != gocan.ControllerActive
+	if bus.recoveringBusOff || degraded {
+		if bus.nextRecoveryPoll.IsZero() {
+			bus.nextRecoveryPoll = time.Now().Add(busOffPollInterval)
+		}
 	} else {
 		bus.nextRecoveryPoll = time.Time{}
 	}
 	return nil
 }
 
-func (bus *Bus) recoveryPollIntervalLocked() time.Duration {
-	if bus.lastState.Kind == gocan.EventControllerState && bus.lastState.ControllerState == gocan.ControllerBusOff {
-		return busOffPollInterval
+// samePCANControllerState reports whether next duplicates previous. A count-less
+// status read (such as QRCVEMPTY|BUSHEAVY or CAN_GetStatus) is deduplicated
+// against any prior event for the same state; events carrying error counts are
+// deduplicated only when the counters also match.
+func samePCANControllerState(previous, next gocan.Event) bool {
+	if previous.Kind != gocan.EventControllerState || previous.ControllerState != next.ControllerState {
+		return false
 	}
-	return degradedPollInterval
-}
-
-func (bus *Bus) armRecoveryPollLocked(interval time.Duration, wake bool) {
-	due := time.Now().Add(interval)
-	if bus.nextRecoveryPoll.IsZero() || due.Before(bus.nextRecoveryPoll) {
-		bus.nextRecoveryPoll = due
-		if wake {
-			_ = windows.SetEvent(bus.wakeEvent)
-		}
+	if !next.ErrorCountsKnown {
+		return true
 	}
+	return previous.ErrorCountsKnown &&
+		previous.TXErrorCount == next.TXErrorCount &&
+		previous.RXErrorCount == next.RXErrorCount
 }
 
 func (bus *Bus) stopWithError(err error) {
@@ -808,9 +836,6 @@ func (bus *Bus) cleanup() error {
 	}
 	if err := windows.CloseHandle(bus.stopEvent); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("close PCAN stop event: %w", err))
-	}
-	if err := windows.CloseHandle(bus.wakeEvent); err != nil {
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("close PCAN wake event: %w", err))
 	}
 	return errors.Join(cleanupErrors...)
 }

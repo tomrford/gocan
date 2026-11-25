@@ -22,7 +22,13 @@ adapter queue.
 Receive overruns (`PCAN_ERROR_OVERRUN` and `PCAN_ERROR_QOVERRUN`) produce
 receive-overrun events; the bus keeps receiving. gocan enables PCAN-Basic's
 bus-off auto-reset and reports bus-off and the state the controller returns to
-as controller-state events. While bus-off, `Send` returns `gocan.ErrBusOff`.
+as controller-state events. While recovering from bus-off, `Send` returns
+`gocan.ErrBusOff` without writing to the channel so auto-reset can finish. On
+classical channels, PCAN-USB reports error-passive as `BUSHEAVY` (`0x08`) and
+clears channel status bits on `CAN_Read`, so count-less `BUSHEAVY` warnings do
+not downgrade error-passive and returning from warning or passive to
+error-active without a status frame relies on clean traffic followed by a
+500 ms error-free window.
 
 PCAN-USB (firmware 2.8.1) has reported bus-off 0.8–2.4 s after a short burst of
 acknowledgement errors, with its own error frames showing a transmit error
