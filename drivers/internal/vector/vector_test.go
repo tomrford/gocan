@@ -21,13 +21,24 @@ func TestClassicNativeLayoutAndTranslation(t *testing.T) {
 		t.Fatalf("XLevent tagData offset = %d, want 16", got)
 	}
 
-	// An overrun flag reports earlier loss; the event carrying it is valid.
-	event := xlEvent{tag: xlEventReceiveMessage, flags: xlEventFlagOverrun}
-	*event.message() = xlCanMessage{id: 0x123, flags: xlMessageFlagOverrun, dlc: 1, data: [8]byte{7}}
-	overrun, err := decodeClassicReceiveEvent(&event, 1)
-	if err != nil || overrun.eventCount != 1 || overrun.events[0].Kind != gocan.EventReceiveOverrun ||
-		!overrun.hasFrame || overrun.frame != (gocan.Frame{ID: 0x123, DLC: 1, Data: [64]byte{7}}) {
-		t.Fatalf("decode overrun = %+v, %v", overrun, err)
+	// Either classic overrun flag independently reports earlier loss while
+	// keeping the valid frame that carries it.
+	wantFrame := gocan.Frame{ID: 0x123, DLC: 1, Data: [64]byte{7}}
+	for _, tc := range []struct {
+		name       string
+		eventFlags uint8
+		msgFlags   uint16
+	}{
+		{"event flag", xlEventFlagOverrun, 0},
+		{"message flag", 0, xlMessageFlagOverrun},
+	} {
+		event := xlEvent{tag: xlEventReceiveMessage, flags: tc.eventFlags}
+		*event.message() = xlCanMessage{id: 0x123, flags: tc.msgFlags, dlc: 1, data: [8]byte{7}}
+		overrun, err := decodeClassicReceiveEvent(&event, 1)
+		if err != nil || overrun.eventCount != 1 || overrun.events[0].Kind != gocan.EventReceiveOverrun ||
+			!overrun.hasFrame || overrun.frame != wantFrame {
+			t.Fatalf("%s: decode overrun = %+v, %v", tc.name, overrun, err)
+		}
 	}
 }
 

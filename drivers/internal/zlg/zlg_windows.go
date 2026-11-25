@@ -716,12 +716,13 @@ func (bus *Bus) checkState() error {
 		}
 		status = nil
 	}
+	degraded := bus.lastState.Kind == gocan.EventControllerState && bus.lastState.ControllerState != gocan.ControllerActive
 	event, lost := controllerEvent(
 		bus.ID(),
 		status,
 		errorInfo.code,
 		!bus.fdDevice,
-		bus.lastState.ControllerState == gocan.ControllerBusOff,
+		degraded,
 	)
 	if lost {
 		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.ID(), Kind: gocan.EventReceiveOverrun}); err != nil {

@@ -476,8 +476,10 @@ func testBusOff(t *testing.T, open Pair, caps Capabilities) {
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
+	rejectedDuringBusOff := false
 	transmitted := frameKey(b, rejected, gocan.DirectionTransmit)
 	if err := b.Send(context.Background(), rejected); errors.Is(err, gocan.ErrBusOff) {
+		rejectedDuringBusOff = true
 		seq, _, _ := capture.Series(transmitted, gocan.Range{})
 		if series := slices.Collect(seq); len(series) != 0 {
 			t.Fatalf("Send = %v but %d transmissions were recorded", err, len(series))
@@ -486,34 +488,41 @@ func testBusOff(t *testing.T, open Pair, caps Capabilities) {
 		t.Fatalf("Send during bus-off = %v, want nil or ErrBusOff", err)
 	}
 
-	// A bounded send spanning recovery is accepted once the controller is.
-	frame, err := gocan.NewFrame(0x7f3, []byte{2}, 0)
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	cursor := capture.End()
-	attempted := make(chan struct{})
-	var once sync.Once
-	tracked := &attemptNotifyBus{Bus: b, onSend: func() { once.Do(func() { close(attempted) }) }}
-	sent := make(chan error, 1)
-	go func() { sent <- gocan.Send(context.Background(), tracked, frame, waitTimeout) }()
-	select {
-	case <-attempted:
-	case <-time.After(waitTimeout):
-		t.Fatal("Send did not attempt transmission before recovery")
-	}
-	recoverBus()
-	if err := <-sent; err != nil {
-		t.Fatalf("Send across bus-off recovery: %v", err)
-	}
-	waitControllerState(t, capture, b, gocan.ControllerActive)
-	requireOpen(t, b)
-	nextEvent(t, capture, frameKey(a, frame, gocan.DirectionReceive), cursor)
-	txSeq, _, _ := capture.Series(frameKey(b, frame, gocan.DirectionTransmit), gocan.Range{})
-	if series := slices.Collect(txSeq); len(series) != 1 {
-		t.Fatalf("recovered Send recorded %d transmissions, want 1", len(series))
+	if rejectedDuringBusOff {
+		// A bounded send spanning recovery is accepted once the controller is.
+		frame, err := gocan.NewFrame(0x7f3, []byte{2}, 0)
+		if err != nil {
+			t.Fatalf("NewFrame: %v", err)
+		}
+		cursor := capture.End()
+		attempted := make(chan struct{})
+		var once sync.Once
+		tracked := &attemptNotifyBus{Bus: b, onSend: func() { once.Do(func() { close(attempted) }) }}
+		sent := make(chan error, 1)
+		go func() { sent <- gocan.Send(context.Background(), tracked, frame, waitTimeout) }()
+		select {
+		case <-attempted:
+		case <-time.After(waitTimeout):
+			t.Fatal("Send did not attempt transmission before recovery")
+		}
+		recoverBus()
+		if err := <-sent; err != nil {
+			t.Fatalf("Send across bus-off recovery: %v", err)
+		}
+		waitControllerState(t, capture, b, gocan.ControllerActive)
+		requireOpen(t, b)
+		nextEvent(t, capture, frameKey(a, frame, gocan.DirectionReceive), cursor)
+		txSeq, _, _ := capture.Series(frameKey(b, frame, gocan.DirectionTransmit), gocan.Range{})
+		if series := slices.Collect(txSeq); len(series) != 1 {
+			t.Fatalf("recovered Send recorded %d transmissions, want 1", len(series))
+		}
+	} else {
+		recoverBus()
+		waitControllerState(t, capture, b, gocan.ControllerActive)
+		requireOpen(t, b)
 	}
 	requireRoundTrip(t, capture, a, b, 0x7f4)
+	requireRoundTrip(t, capture, b, a, 0x7f5)
 }
 
 type attemptNotifyBus struct {

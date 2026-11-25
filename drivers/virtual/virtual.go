@@ -188,8 +188,7 @@ func (bus *Bus) SetControllerState(state gocan.ControllerState) error {
 		// serialises recording with run's TX and RX handling.
 		bus.busOff.Store(false)
 	}
-	err := bus.capture.RecordEvent(event)
-	if err != nil {
+	if err := bus.capture.RecordEvent(event); err != nil {
 		bus.busOff.Store(prevBusOff)
 		return err
 	}
@@ -221,6 +220,13 @@ func (bus *Bus) run() {
 	var runErr error
 	defer func() {
 		bus.network.remove(bus)
+		// Preserve any receive loss detected before the endpoint left the
+		// network even when Close races with delivery.
+		select {
+		case <-bus.overrun:
+			_ = bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun})
+		default:
+		}
 		bus.cancel(transport.StopError(runErr))
 	}()
 

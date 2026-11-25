@@ -42,14 +42,11 @@ under-report frames that reached the wire. `Close` drains accepted frames unless
 transmission fails or the bus stops with an error. Native transmit failures
 and adapter closing can each take about one second.
 
-Controller and buffer overflows produce receive-overrun events; the bus keeps
-receiving. When the 100 ms state poll reads bus-off, gocan waits for any
-in-flight native transmit call, resets and restarts the channel as ZLG
-documents, and reports the state observed on the next poll (on USBCANFD,
-because `USBCANFD.dll` lacks `ReadChannelStatus`, a subsequent clean poll
-reports `ControllerActive` with unknown error counts). `Send` only queues
-frames, so it never waits for recovery; frames the adapter does not confirm
-meanwhile produce error-frame events.
+On bus-off, gocan resets and restarts the channel; recovery can take about one
+second longer if a native transmit is in flight. Because `USBCANFD.dll` lacks
+`ReadChannelStatus`, USBCANFD infers `ControllerActive` (with unknown error
+counts) on the first clean error poll after restart. Bus-off recovery has not
+been exercised on ZLG hardware.
 
 ## Hardware checks
 

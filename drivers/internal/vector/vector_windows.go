@@ -31,6 +31,7 @@ const (
 	chipStateRequestInterval              = 50 * time.Millisecond
 	chipStateHealthInterval               = time.Second
 	busOffRestartInterval                 = 100 * time.Millisecond
+	maxDrainBatch                         = 64
 
 	xlChannelConfigSize       = 227
 	xlDriverConfigSize        = 14576
@@ -682,6 +683,7 @@ func (bus *Bus) receiveLoop() {
 	defer bus.finish()
 
 	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
+	pendingDrain := false
 	for {
 		select {
 		case <-bus.lifecycle.StopSignal():
@@ -693,6 +695,15 @@ func (bus *Bus) receiveLoop() {
 			bus.stopWithError(err)
 			return
 		} else if acted {
+			continue
+		}
+		if pendingDrain {
+			var err error
+			pendingDrain, err = bus.drainReceiveQueue()
+			if err != nil {
+				bus.stopWithError(err)
+				return
+			}
 			continue
 		}
 		deadline := bus.nextChipStateRequest
@@ -710,11 +721,14 @@ func (bus *Bus) receiveLoop() {
 		switch event {
 		case windows.WAIT_OBJECT_0:
 			return
-		case windows.WAIT_OBJECT_0 + 1, uint32(windows.WAIT_TIMEOUT):
-			if err := bus.drainReceiveQueue(); err != nil {
+		case windows.WAIT_OBJECT_0 + 1:
+			pendingDrain, err = bus.drainReceiveQueue()
+			if err != nil {
 				bus.stopWithError(err)
 				return
 			}
+		case uint32(windows.WAIT_TIMEOUT):
+			continue
 		default:
 			bus.stopWithError(fmt.Errorf("wait for Vector receive event: unexpected result %#x", event))
 			return
@@ -722,21 +736,17 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-func (bus *Bus) drainReceiveQueue() error {
-	for {
+func (bus *Bus) drainReceiveQueue() (bool, error) {
+	for range maxDrainBatch {
 		more, err := bus.receiveOne()
 		if err != nil {
-			return err
-		}
-		if now := time.Now(); !now.Before(bus.nextChipStateRequest) {
-			if err := bus.requestChipState(now); err != nil {
-				return err
-			}
+			return false, err
 		}
 		if !more {
-			return nil
+			return false, nil
 		}
 	}
+	return true, nil
 }
 
 func (bus *Bus) serviceTimers(now time.Time) (bool, error) {
@@ -917,7 +927,8 @@ func (bus *Bus) restartBusOff(now time.Time) error {
 		return bus.runtimeStatusError("request Vector chip state after bus-off", status)
 	}
 	bus.nextChipStateRequest = now.Add(chipStateRequestInterval)
-	bus.nextBusOffRestart = now.Add(busOffRestartInterval)
+	// Wait for a fresh chip-state event before scheduling another restart.
+	bus.nextBusOffRestart = time.Time{}
 	return nil
 }
 

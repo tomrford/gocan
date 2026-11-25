@@ -115,6 +115,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 	bus := &Bus{
 		id:      config.ID,
 		name:    config.Name,
+		iface:   config.Interface,
 		capture: capture,
 		file:    file,
 		raw:     raw,
@@ -138,6 +139,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 type Bus struct {
 	id      gocan.BusID
 	name    string
+	iface   string
 	capture *gocan.Capture
 	file    *os.File
 	raw     syscall.RawConn
@@ -158,6 +160,8 @@ type Bus struct {
 	rxControlSize int
 	rxFlags       int
 	rxDropped     uint32
+	busOff        bool
+	carrierLost   bool
 
 	lifecycle *driverstate.Lifecycle
 }
@@ -197,6 +201,16 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	case <-bus.lifecycle.StopSignal():
 		return bus.operationError()
 	default:
+	}
+	if bus.busOff {
+		// Reconcile against live carrier state in case the kernel restarted
+		// the controller after dropping CAN_ERR_RESTARTED under memory pressure.
+		if bus.carrierLost && ifaceRunning(bus.iface) {
+			bus.busOff = false
+			bus.carrierLost = false
+		} else {
+			return gocan.ErrBusOff
+		}
 	}
 
 	packet := encodeFrame(frame, &bus.txPacket)
@@ -284,6 +298,10 @@ func (bus *Bus) recordReceive() error {
 		return err
 	}
 	if lost {
+		// A socket receive drop may have discarded CAN_ERR_RESTARTED; release
+		// any cached bus-off gate so Send cannot stay wedged.
+		bus.busOff = false
+		bus.carrierLost = false
 		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
 			return err
 		}
@@ -295,7 +313,12 @@ func (bus *Bus) recordReceive() error {
 			return err
 		}
 		for index := range errorPacket.eventCount {
-			if err := bus.capture.RecordEvent(errorPacket.events[index]); err != nil {
+			event := errorPacket.events[index]
+			if event.Kind == gocan.EventControllerState {
+				bus.busOff = event.ControllerState == gocan.ControllerBusOff
+				bus.carrierLost = bus.busOff && !ifaceRunning(bus.iface)
+			}
+			if err := bus.capture.RecordEvent(event); err != nil {
 				return err
 			}
 		}
@@ -306,6 +329,8 @@ func (bus *Bus) recordReceive() error {
 	if err != nil {
 		return err
 	}
+	bus.busOff = false
+	bus.carrierLost = false
 	return bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
 		Direction: gocan.DirectionReceive,
@@ -313,11 +338,16 @@ func (bus *Bus) recordReceive() error {
 	})
 }
 
+func ifaceRunning(name string) bool {
+	iface, err := net.InterfaceByName(name)
+	return err == nil && iface.Flags&net.FlagRunning != 0
+}
+
 // receiveLost reports whether the socket dropped frames before this packet.
 // SO_RXQ_OVFL carries the socket's cumulative drop count.
 func (bus *Bus) receiveLost() (bool, error) {
 	if bus.rxFlags&unix.MSG_CTRUNC != 0 {
-		return true, nil
+		return false, errors.New("SocketCAN control message truncated")
 	}
 	if bus.rxControlSize == 0 {
 		return false, nil
