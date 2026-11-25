@@ -113,11 +113,13 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 	}
 
 	bus := &Bus{
-		id:      config.ID,
-		name:    config.Name,
-		capture: capture,
-		file:    file,
-		raw:     raw,
+		id:                 config.ID,
+		name:               config.Name,
+		ifIndex:            iface.Index,
+		hasControllerState: true,
+		capture:            capture,
+		file:               file,
+		raw:                raw,
 		lifecycle: driverstate.New(func() {
 			// Wake RawConn.Read without closing the descriptor from inside its
 			// callback. receiveLoop closes it after the callback has returned.
@@ -138,6 +140,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 type Bus struct {
 	id      gocan.BusID
 	name    string
+	ifIndex int
 	capture *gocan.Capture
 	file    *os.File
 	raw     syscall.RawConn
@@ -149,14 +152,21 @@ type Bus struct {
 	txSent    int
 	txErr     error
 
-	receiveReady  func(uintptr) bool
-	rxPacket      [fdMTU]byte
-	rxControl     [32]byte
-	rxIovec       unix.Iovec
-	rxMessage     unix.Msghdr
-	rxSize        int
-	rxControlSize int
-	rxFlags       int
+	receiveReady       func(uintptr) bool
+	rxPacket           [fdMTU]byte
+	rxControl          [32]byte
+	rxIovec            unix.Iovec
+	rxMessage          unix.Msghdr
+	rxSize             int
+	rxControlSize      int
+	rxFlags            int
+	rxDropped          uint32
+	busOff             bool
+	busOffSeq          uint64
+	busOffFallbackSeq  uint64
+	hasControllerState bool
+	stateProbeRunning  bool
+	nextStateProbe     time.Time
 
 	lifecycle *driverstate.Lifecycle
 }
@@ -197,6 +207,10 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		return bus.operationError()
 	default:
 	}
+	if bus.busOff {
+		bus.triggerBusOffProbe(false)
+		return gocan.ErrBusOff
+	}
 
 	packet := encodeFrame(frame, &bus.txPacket)
 	bus.txSize = len(packet)
@@ -215,7 +229,9 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		case <-bus.lifecycle.StopSignal():
 			return bus.operationError()
 		default:
-			if errors.Is(bus.txErr, unix.ENOBUFS) {
+			if errors.Is(bus.txErr, unix.ENOBUFS) ||
+				errors.Is(bus.txErr, unix.EAGAIN) ||
+				errors.Is(bus.txErr, unix.EWOULDBLOCK) {
 				return fmt.Errorf("%w: SocketCAN send returned %v", gocan.ErrTransmitQueueFull, bus.txErr)
 			}
 			return fmt.Errorf("send SocketCAN frame: %w", bus.txErr)
@@ -278,26 +294,45 @@ func (bus *Bus) receiveLoop() {
 
 // recordReceive is called with ioMu held immediately after a native read.
 func (bus *Bus) recordReceive() error {
-	packet, err := bus.receivedPacket()
+	lost, err := bus.receiveLost()
 	if err != nil {
-		terminal := fmt.Errorf("receive SocketCAN frame: %w", err)
-		if errors.Is(err, gocan.ErrReceiveOverrun) {
-			event := gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}
-			bus.stopWithEvents(terminal, []gocan.Event{event})
-		}
-		return terminal
+		return err
 	}
+	if lost {
+		// On virtual interfaces without IFLA_CAN_STATE, clear cached bus-off
+		// in case the socket drop discarded CAN_ERR_RESTARTED. Hardware
+		// interfaces probe live kernel controller state asynchronously.
+		if bus.busOff {
+			if !bus.hasControllerState {
+				bus.busOff = false
+			} else {
+				bus.busOffFallbackSeq = bus.busOffSeq
+				bus.triggerBusOffProbe(false)
+			}
+		}
+		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
+			return err
+		}
+	}
+	packet := bus.rxPacket[:bus.rxSize]
 	if len(packet) >= 4 && binary.NativeEndian.Uint32(packet[:4])&unix.CAN_ERR_FLAG != 0 {
 		errorPacket, err := decodeErrorPacket(packet, bus.id)
 		if err != nil {
 			return err
 		}
-		if errorPacket.terminal != nil {
-			bus.stopWithEvents(errorPacket.terminal, errorPacket.events[:errorPacket.eventCount])
-			return nil
-		}
 		for index := range errorPacket.eventCount {
-			if err := bus.capture.RecordEvent(errorPacket.events[index]); err != nil {
+			event := errorPacket.events[index]
+			if event.Kind == gocan.EventControllerState {
+				if event.ControllerState == gocan.ControllerBusOff {
+					bus.busOff = true
+					bus.busOffSeq++
+					bus.nextStateProbe = time.Time{}
+					bus.triggerBusOffProbe(true)
+				} else {
+					bus.busOff = false
+				}
+			}
+			if err := bus.capture.RecordEvent(event); err != nil {
 				return err
 			}
 		}
@@ -308,6 +343,14 @@ func (bus *Bus) recordReceive() error {
 	if err != nil {
 		return err
 	}
+	if bus.busOff {
+		if !bus.hasControllerState {
+			bus.busOff = false
+		} else {
+			bus.busOffFallbackSeq = bus.busOffSeq
+			bus.triggerBusOffProbe(false)
+		}
+	}
 	return bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
 		Direction: gocan.DirectionReceive,
@@ -315,20 +358,216 @@ func (bus *Bus) recordReceive() error {
 	})
 }
 
-func (bus *Bus) receivedPacket() ([]byte, error) {
-	if bus.rxFlags&unix.MSG_CTRUNC != 0 {
-		return nil, fmt.Errorf("%w: SocketCAN receive metadata was truncated", gocan.ErrReceiveOverrun)
+const (
+	nlaTypeMask         = 0x3fff
+	busOffProbeInterval = 50 * time.Millisecond
+	netlinkQueryTimeout = 50 * time.Millisecond
+)
+
+// triggerBusOffProbe starts at most one background RTM_GETLINK lookup per bus
+// so Send never blocks on RTNL or USB status reads while still reconciling a
+// dropped CAN_ERR_RESTARTED. Caller holds bus.ioMu.
+func (bus *Bus) triggerBusOffProbe(immediate bool) {
+	if !bus.busOff || !bus.hasControllerState || bus.stateProbeRunning {
+		return
 	}
-	if bus.rxControlSize != 0 {
-		dropped, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return
+	default:
+	}
+	if !immediate && !bus.nextStateProbe.IsZero() && time.Now().Before(bus.nextStateProbe) {
+		return
+	}
+	bus.stateProbeRunning = true
+	seq := bus.busOffSeq
+	ifIndex := bus.ifIndex
+	go bus.probeBusOffState(seq, ifIndex)
+}
+
+func (bus *Bus) probeBusOffState(seq uint64, ifIndex int) {
+	state, hasState, err := queryCANControllerState(ifIndex)
+	bus.ioMu.Lock()
+	if err == nil {
+		if !hasState {
+			bus.hasControllerState = false
+			if bus.busOff && bus.busOffFallbackSeq == bus.busOffSeq {
+				bus.busOff = false
+			}
+		} else if bus.busOffSeq == seq && state != unix.CAN_STATE_BUS_OFF {
+			bus.busOff = false
+		}
+	}
+	if bus.busOffSeq == seq {
+		bus.nextStateProbe = time.Now().Add(busOffProbeInterval)
+	}
+	bus.stateProbeRunning = false
+	bus.ioMu.Unlock()
+}
+
+// queryCANControllerState queries a single interface via RTM_GETLINK and
+// returns its kernel IFLA_CAN_STATE when the interface is a "can" device.
+// hasState is false with err == nil for interfaces confirmed to lack
+// IFLA_CAN_STATE (such as vcan).
+func queryCANControllerState(ifIndex int) (uint32, bool, error) {
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	tv := unix.NsecToTimeval(netlinkQueryTimeout.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv); err != nil {
+		return 0, false, err
+	}
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
+		return 0, false, err
+	}
+
+	var req [unix.SizeofNlMsghdr + unix.SizeofIfInfomsg]byte
+	binary.NativeEndian.PutUint32(req[0:4], uint32(len(req)))
+	binary.NativeEndian.PutUint16(req[4:6], unix.RTM_GETLINK)
+	binary.NativeEndian.PutUint16(req[6:8], unix.NLM_F_REQUEST)
+	binary.NativeEndian.PutUint32(req[8:12], 1)
+	req[unix.SizeofNlMsghdr] = unix.AF_UNSPEC
+	binary.NativeEndian.PutUint32(req[unix.SizeofNlMsghdr+4:unix.SizeofNlMsghdr+8], uint32(ifIndex))
+
+	deadline := time.Now().Add(netlinkQueryTimeout)
+	dest := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
+	for {
+		err = unix.Sendto(fd, req[:], 0, dest)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return 0, false, context.DeadlineExceeded
+		}
+	}
+	if err != nil {
+		return 0, false, err
+	}
+
+	var resp [16384]byte
+	var (
+		n     int
+		flags int
+		from  unix.Sockaddr
+	)
+	for {
+		n, _, flags, from, err = unix.Recvmsg(fd, resp[:], nil, 0)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return 0, false, context.DeadlineExceeded
+		}
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if flags&unix.MSG_TRUNC != 0 {
+		return 0, false, errors.New("SocketCAN netlink reply truncated")
+	}
+	if nlFrom, ok := from.(*unix.SockaddrNetlink); !ok || nlFrom.Pid != 0 {
+		return 0, false, errors.New("unexpected SocketCAN netlink sender")
+	}
+
+	messages, err := syscall.ParseNetlinkMessage(resp[:n])
+	if err != nil {
+		return 0, false, err
+	}
+	for index := range messages {
+		message := &messages[index]
+		if message.Header.Type == unix.NLMSG_ERROR {
+			return 0, false, errors.New("SocketCAN netlink error")
+		}
+		if message.Header.Type != syscall.RTM_NEWLINK || len(message.Data) < syscall.SizeofIfInfomsg {
+			continue
+		}
+		info := (*syscall.IfInfomsg)(unsafe.Pointer(&message.Data[0]))
+		if int(info.Index) != ifIndex {
+			continue
+		}
+		attributes, err := syscall.ParseNetlinkRouteAttr(message)
 		if err != nil {
-			return nil, err
+			return 0, false, err
 		}
-		if dropped != 0 {
-			return nil, fmt.Errorf("%w: SocketCAN socket dropped %d frames", gocan.ErrReceiveOverrun, dropped)
-		}
+		state, hasState := parseCANControllerState(attributes)
+		return state, hasState, nil
 	}
-	return bus.rxPacket[:bus.rxSize], nil
+	return 0, false, errors.New("SocketCAN interface missing from netlink reply")
+}
+
+func parseCANControllerState(attributes []syscall.NetlinkRouteAttr) (uint32, bool) {
+	for _, attribute := range attributes {
+		if attribute.Attr.Type&nlaTypeMask != unix.IFLA_LINKINFO {
+			continue
+		}
+		var kind string
+		var infoData []byte
+		for remaining := attribute.Value; len(remaining) >= 4; {
+			attrType, payload, next, ok := nextNetlinkAttr(remaining)
+			if !ok {
+				return 0, false
+			}
+			switch attrType {
+			case unix.IFLA_INFO_KIND:
+				kind = unix.ByteSliceToString(payload)
+			case unix.IFLA_INFO_DATA:
+				infoData = payload
+			}
+			remaining = next
+		}
+		if kind != "can" || len(infoData) == 0 {
+			return 0, false
+		}
+		for remaining := infoData; len(remaining) >= 4; {
+			attrType, payload, next, ok := nextNetlinkAttr(remaining)
+			if !ok {
+				return 0, false
+			}
+			if attrType == unix.IFLA_CAN_STATE && len(payload) >= 4 {
+				return binary.NativeEndian.Uint32(payload[:4]), true
+			}
+			remaining = next
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+func nextNetlinkAttr(raw []byte) (attrType uint16, payload, next []byte, ok bool) {
+	if len(raw) < 4 {
+		return 0, nil, nil, false
+	}
+	length := int(binary.NativeEndian.Uint16(raw[0:2]))
+	if length < 4 || length > len(raw) {
+		return 0, nil, nil, false
+	}
+	attrType = binary.NativeEndian.Uint16(raw[2:4]) & nlaTypeMask
+	payload = raw[4:length]
+	step := (length + 3) &^ 3
+	if step >= len(raw) {
+		return attrType, payload, nil, true
+	}
+	return attrType, payload, raw[step:], true
+}
+
+// receiveLost reports whether the socket dropped frames before this packet.
+// SO_RXQ_OVFL carries the socket's cumulative drop count.
+func (bus *Bus) receiveLost() (bool, error) {
+	if bus.rxFlags&unix.MSG_CTRUNC != 0 {
+		return false, errors.New("SocketCAN control message truncated")
+	}
+	if bus.rxControlSize == 0 {
+		return false, nil
+	}
+	dropped, ok, err := socketReceiveDropCount(bus.rxControl[:bus.rxControlSize])
+	if err != nil || !ok || dropped == bus.rxDropped {
+		return false, err
+	}
+	bus.rxDropped = dropped
+	return true, nil
 }
 
 func (bus *Bus) receiveOnce(fd uintptr) bool {
@@ -366,21 +605,21 @@ func (bus *Bus) receiveOnce(fd uintptr) bool {
 	return true
 }
 
-func socketReceiveDropCount(control []byte) (uint32, error) {
+func socketReceiveDropCount(control []byte) (uint32, bool, error) {
 	messages, err := unix.ParseSocketControlMessage(control)
 	if err != nil {
-		return 0, fmt.Errorf("parse SocketCAN receive metadata: %w", err)
+		return 0, false, fmt.Errorf("parse SocketCAN receive metadata: %w", err)
 	}
 	for _, message := range messages {
 		if message.Header.Level != unix.SOL_SOCKET || message.Header.Type != unix.SO_RXQ_OVFL {
 			continue
 		}
 		if len(message.Data) < 4 {
-			return 0, fmt.Errorf("SocketCAN receive-overrun metadata has length %d", len(message.Data))
+			return 0, false, fmt.Errorf("SocketCAN receive-overrun metadata has length %d", len(message.Data))
 		}
-		return binary.NativeEndian.Uint32(message.Data[:4]), nil
+		return binary.NativeEndian.Uint32(message.Data[:4]), true, nil
 	}
-	return 0, nil
+	return 0, false, nil
 }
 
 // sendOnce writes without blocking, so a full transmit queue surfaces
@@ -397,17 +636,6 @@ func (bus *Bus) sendOnce(fd uintptr) {
 
 func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
-}
-
-// stopWithEvents is called with ioMu held, after the native read.
-func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	for _, event := range events {
-		if err := bus.capture.RecordEvent(event); err != nil {
-			bus.stopWithError(err)
-			return
-		}
-	}
-	bus.stopWithError(terminal)
 }
 
 func (bus *Bus) operationError() error {
@@ -511,12 +739,11 @@ func decodeFrame(packet []byte) (gocan.Frame, error) {
 }
 
 // decodedErrorPacket keeps the uncommon error path allocation-free. Combined
-// Linux class bits can produce an error observation, a state observation, and
-// a terminal receive-overrun observation from one packet.
+// Linux class bits can produce an error, a state, and a receive-overrun
+// observation from one packet.
 type decodedErrorPacket struct {
 	events     [3]gocan.Event
 	eventCount uint8
-	terminal   error
 }
 
 func decodeErrorPacket(packet []byte, bus gocan.BusID) (decodedErrorPacket, error) {
@@ -567,9 +794,6 @@ func decodeErrorPacket(packet []byte, bus gocan.BusID) (decodedErrorPacket, erro
 		event := gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 		result.events[result.eventCount] = event
 		result.eventCount++
-		result.terminal = fmt.Errorf("%w: SocketCAN controller RX buffer overflow", gocan.ErrReceiveOverrun)
-	} else if classes&unix.CAN_ERR_BUSOFF != 0 {
-		result.terminal = fmt.Errorf("%w: SocketCAN controller entered bus-off", gocan.ErrBusOff)
 	}
 	return result, nil
 }

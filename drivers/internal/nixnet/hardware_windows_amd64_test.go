@@ -62,57 +62,60 @@ func TestQueueContractsHardware(t *testing.T) {
 	// Holding the I/O lock stalls reception before the read in serialized mode,
 	// or after at most one native batch in concurrent mode,
 	// without stopping the controller from acknowledging the peer's frames.
-	// This exercises the real native overflow status and terminal capture event.
-	b.ioMu.Lock()
-	defer b.ioMu.Unlock()
-	rejected := 0
-	sent := 0
-	for sent < count {
-		if err := ctx.Err(); err != nil {
-			t.Fatal(err)
-		}
-		err := a.Send(ctx, frame)
-		if errors.Is(err, gocan.ErrTransmitQueueFull) {
-			rejected++
-			seq, _, _ := capture.Series(gocan.FrameKey{Bus: 1, ID: frame.ID, Direction: gocan.DirectionTransmit}, gocan.Range{})
-			if got := len(slices.Collect(seq)); got != sent {
-				t.Fatalf("rejected TX was recorded: got %d want %d", got, sent)
-			}
-			time.Sleep(time.Millisecond)
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		sent++
-	}
-	t.Logf("accepted=%d rejected=%d", sent, rejected)
-	if rejected == 0 {
-		t.Fatal("did not exercise native TX backpressure")
-	}
-	b.ioMu.Unlock()
-	select {
-	case <-b.Context().Done():
-	case <-ctx.Done():
+	// This exercises the real native overflow status and its capture event.
+	func() {
 		b.ioMu.Lock()
-		t.Fatal("RX overflow did not stop the bus")
-	}
-	b.ioMu.Lock()
-	foundOverrun := false
-	busEvents, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
-	for event := range busEvents {
-		if event.Kind == gocan.EventReceiveOverrun {
-			foundOverrun = true
+		defer b.ioMu.Unlock()
+		rejected := 0
+		sent := 0
+		for sent < count {
+			if err := ctx.Err(); err != nil {
+				t.Fatal(err)
+			}
+			err := a.Send(ctx, frame)
+			if errors.Is(err, gocan.ErrTransmitQueueFull) {
+				rejected++
+				seq, _, _ := capture.Series(gocan.FrameKey{Bus: 1, ID: frame.ID, Direction: gocan.DirectionTransmit}, gocan.Range{})
+				if got := len(slices.Collect(seq)); got != sent {
+					t.Fatalf("rejected TX was recorded: got %d want %d", got, sent)
+				}
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent++
+		}
+		t.Logf("accepted=%d rejected=%d", sent, rejected)
+		if rejected == 0 {
+			t.Fatal("did not exercise native TX backpressure")
+		}
+	}()
+	for {
+		busEvents, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
+		if slices.ContainsFunc(slices.Collect(busEvents), func(event gocan.Event) bool {
+			return event.Kind == gocan.EventReceiveOverrun
+		}) {
 			break
 		}
+		if ctx.Err() != nil {
+			t.Fatal("native RX overrun did not produce a capture event")
+		}
+		time.Sleep(time.Millisecond)
 	}
-	if !foundOverrun {
-		t.Fatal("native RX overrun did not produce a capture event")
+	select {
+	case <-b.Context().Done():
+		t.Fatalf("RX overflow stopped the bus: %v", context.Cause(b.Context()))
+	default:
 	}
-	if cause := context.Cause(b.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
-		t.Fatalf("RX failure %v, want overrun", cause)
-	}
-	if err := a.Send(ctx, frame); err != nil {
+	// Reception continues: a frame sent after the overrun still arrives.
+	after, _ := gocan.NewFrame(0x322, []byte{1}, 0)
+	cursor := capture.End()
+	if err := gocan.Send(ctx, a, after, 5*time.Second); err != nil {
 		t.Fatalf("healthy peer after overrun: %v", err)
+	}
+	if _, _, err := capture.Next(ctx, gocan.FrameKey{Bus: b.ID(), ID: after.ID, Direction: gocan.DirectionReceive}, cursor); err != nil {
+		t.Fatalf("receive after overrun: %v", err)
 	}
 }

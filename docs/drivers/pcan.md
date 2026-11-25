@@ -18,3 +18,14 @@ including by another process. Account for this in application shutdown: stop
 producers and await required protocol replies before closing. A caller-chosen
 delay may help queued traffic drain, but cannot guarantee delivery or an empty
 adapter queue.
+
+gocan enables PCAN-Basic's bus-off auto-reset and suppresses native writes
+while bus-off so auto-reset can finish (`Send` returns `gocan.ErrBusOff`). When
+PCAN-USB emits no status frame on recovery from warning or passive, error-active
+is inferred 500 ms after clean received traffic without errors (counts unknown).
+
+A sole-acknowledging PCAN-USB (firmware 2.8.1) can report a spurious bus-off
+after a brief burst of acknowledgement errors (for example while an ECU resets)
+and reject writes for about one second; use a transmit retry timeout of at
+least 1.5 s to ride it out. Adding a second acknowledging node avoided the
+fault on the bench.

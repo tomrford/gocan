@@ -8,3 +8,8 @@ CANoe, has on the bus is discovered as externally configured with its current
 rates; open it with `Config.External` to join without changing its timing.
 gocan must join second. Keep the owner's measurement and timing stable while
 flashing; discovery and the on-bus check cannot reserve that configuration.
+
+While bus-off, `Send` returns `gocan.ErrBusOff`. When gocan owns the channel as
+its sole active port, it recovers by deactivating and reactivating the channel;
+channels shared with another active port or joined with `Config.External`
+depend on the other port or owning application to recover.

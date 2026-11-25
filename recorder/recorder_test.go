@@ -233,14 +233,14 @@ func TestRecorderFailureCheckpoints(t *testing.T) {
 
 			appendFrame(t, capture, 0x201)
 			end := capture.End()
-			cancel(gocan.ErrReceiveOverrun)
+			cancel(gocan.ErrHardwareDisconnected)
 			<-rec.Done()
 
-			if !errors.Is(rec.Err(), gocan.ErrReceiveOverrun) {
-				t.Fatalf("Err = %v, want ErrReceiveOverrun", rec.Err())
+			if !errors.Is(rec.Err(), gocan.ErrHardwareDisconnected) {
+				t.Fatalf("Err = %v, want ErrHardwareDisconnected", rec.Err())
 			}
-			if !errors.Is(rec.Close(), gocan.ErrReceiveOverrun) {
-				t.Fatalf("Close = %v, want ErrReceiveOverrun", rec.Close())
+			if !errors.Is(rec.Close(), gocan.ErrHardwareDisconnected) {
+				t.Fatalf("Close = %v, want ErrHardwareDisconnected", rec.Close())
 			}
 			if rec.Flushed() != end {
 				t.Fatal("parent context cancel did not flush final window")
@@ -261,11 +261,11 @@ func TestRecorderFailureCheckpoints(t *testing.T) {
 			writer.flushErr = flushErr
 			writer.mu.Unlock()
 			appendFrame(t, capture, 0x202)
-			cancel(gocan.ErrReceiveOverrun)
+			cancel(gocan.ErrHardwareDisconnected)
 			<-rec.Done()
 
-			if !errors.Is(rec.Err(), flushErr) || !errors.Is(rec.Err(), gocan.ErrReceiveOverrun) {
-				t.Fatalf("Err = %v, want both flushErr and ErrReceiveOverrun", rec.Err())
+			if !errors.Is(rec.Err(), flushErr) || !errors.Is(rec.Err(), gocan.ErrHardwareDisconnected) {
+				t.Fatalf("Err = %v, want both flushErr and ErrHardwareDisconnected", rec.Err())
 			}
 		})
 	})

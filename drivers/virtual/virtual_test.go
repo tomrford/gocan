@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/tomrford/gocan"
@@ -91,106 +90,6 @@ func TestNetworkOpenHonorsCanceledContext(t *testing.T) {
 	}
 }
 
-func TestTerminalFailureRejectsLaterSend(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		capture := gocan.NewCapture()
-		var network Network
-		bus, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "terminal"})
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		t.Cleanup(func() { _ = bus.Close() })
-
-		bus.fail(gocan.ErrReceiveOverrun)
-		frame, err := gocan.NewFrame(0x123, []byte{1}, 0)
-		if err != nil {
-			t.Fatalf("NewFrame: %v", err)
-		}
-		if err := bus.Send(context.Background(), frame); !errors.Is(err, gocan.ErrReceiveOverrun) {
-			t.Fatalf("Send after terminal failure = %v, want ErrReceiveOverrun", err)
-		}
-
-		synctest.Wait()
-		select {
-		case <-bus.Context().Done():
-		default:
-			t.Fatal("bus did not stop after terminal failure")
-		}
-		if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
-			t.Fatalf("Context cause after terminal failure = %v, want ErrReceiveOverrun", cause)
-		}
-		seq, _, _ := capture.Series(gocan.FrameKey{
-			Bus:       bus.ID(),
-			ID:        frame.ID,
-			Direction: gocan.DirectionTransmit,
-		}, gocan.Range{})
-		if got := slices.Collect(seq); len(got) != 0 {
-			t.Fatalf("captured %d transmissions after terminal failure, want none", len(got))
-		}
-	})
-}
-
-func TestOverrunRecordsEventWhenCloseRacesFailure(t *testing.T) {
-	for range 32 {
-		capture := gocan.NewCapture()
-		var network Network
-		bus, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "overrun"})
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		bus.fail(gocan.ErrReceiveOverrun)
-		if err := bus.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		if cause := context.Cause(bus.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
-			t.Fatalf("Context cause = %v, want ErrReceiveOverrun", cause)
-		}
-		events, _, err := capture.Events(gocan.Range{})
-		if err != nil {
-			t.Fatalf("Events: %v", err)
-		}
-		got := slices.Collect(events)
-		if len(got) != 1 || got[0].Kind != gocan.EventReceiveOverrun {
-			t.Fatalf("events = %+v, want one EventReceiveOverrun", got)
-		}
-	}
-}
-
-func TestBroadcastDetectsOverrun(t *testing.T) {
-	capture := gocan.NewCapture()
-	var network Network
-
-	source, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "source"})
-	if err != nil {
-		t.Fatalf("Open source: %v", err)
-	}
-	t.Cleanup(func() { _ = source.Close() })
-
-	victimCtx, cancelVictim := context.WithCancelCause(context.Background())
-	defer cancelVictim(nil)
-	victim := &Bus{
-		id:       2,
-		name:     "victim",
-		incoming: make(chan gocan.Frame),
-		failures: make(chan error, 1),
-		ctx:      victimCtx,
-		cancel:   cancelVictim,
-	}
-	network.mu.Lock()
-	network.buses[victim.id] = victim
-	network.mu.Unlock()
-
-	network.broadcast(source, gocan.Frame{})
-	select {
-	case err := <-victim.failures:
-		if !errors.Is(err, gocan.ErrReceiveOverrun) {
-			t.Fatalf("victim failure = %v, want ErrReceiveOverrun", err)
-		}
-	default:
-		t.Fatal("broadcast did not report an overrun for a full receive queue")
-	}
-}
-
 func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 	capture := gocan.NewCapture()
 	var network Network
@@ -253,4 +152,119 @@ func TestBusLifecycleIsIndependentFromSharedCapture(t *testing.T) {
 	if transmitted.Direction != gocan.DirectionTransmit || received.Direction != gocan.DirectionReceive {
 		t.Fatalf("self-reception directions = %v, %v, want TX then RX", transmitted.Direction, received.Direction)
 	}
+}
+
+// TestBusOffDropsPeerTrafficAndOrdersState verifies that a bus-off endpoint
+// drops peer frames instead of queuing them for recovery, and that accepted
+// transmissions never appear inside a bus-off interval in Capture.
+func TestBusOffDropsPeerTrafficAndOrdersState(t *testing.T) {
+	capture := gocan.NewCapture()
+	var network Network
+	sender, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "sender"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	receiver, err := network.Open(context.Background(), capture, Config{ID: 2, Name: "receiver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+
+	before, _ := gocan.NewFrame(0x520, []byte{1}, 0)
+	dropped, _ := gocan.NewFrame(0x521, []byte{2}, 0)
+	during, _ := gocan.NewFrame(0x522, []byte{3}, 0)
+	after, _ := gocan.NewFrame(0x523, []byte{4}, 0)
+
+	if err := sender.Send(context.Background(), before); err != nil {
+		t.Fatalf("Send before bus-off: %v", err)
+	}
+	if err := sender.SetControllerState(gocan.ControllerBusOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.Send(context.Background(), dropped); err != nil {
+		t.Fatalf("peer Send during bus-off: %v", err)
+	}
+	if err := sender.Send(context.Background(), during); !errors.Is(err, gocan.ErrBusOff) {
+		t.Fatalf("Send during bus-off = %v, want ErrBusOff", err)
+	}
+	if err := sender.SetControllerState(gocan.ControllerActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.Send(context.Background(), after); err != nil {
+		t.Fatalf("Send after recovery: %v", err)
+	}
+
+	rxSeq, _, _ := capture.Series(gocan.FrameKey{Bus: sender.ID(), ID: dropped.ID, Direction: gocan.DirectionReceive}, gocan.Range{})
+	if got := len(slices.Collect(rxSeq)); got != 0 {
+		t.Fatalf("sender received %d frames sent during bus-off, want 0", got)
+	}
+	checker := &busOffOrderChecker{t: t}
+	if _, err := capture.WriteRecords(gocan.Range{}, checker); err != nil {
+		t.Fatal(err)
+	}
+	if checker.txSeen != 2 {
+		t.Fatalf("saw %d transmissions in capture, want 2", checker.txSeen)
+	}
+}
+
+// TestClosePreservesPendingOverrun verifies that closing an endpoint right
+// after its receive queue overflows does not drop the overrun event.
+func TestClosePreservesPendingOverrun(t *testing.T) {
+	for range 50 {
+		capture := gocan.NewCapture()
+		var network Network
+		sender, err := network.Open(context.Background(), capture, Config{ID: 1, Name: "sender"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := network.Open(context.Background(), capture, Config{ID: 2, Name: "target"})
+		if err != nil {
+			_ = sender.Close()
+			t.Fatal(err)
+		}
+		frame, _ := gocan.NewFrame(0x530, []byte{1}, 0)
+		// Hold stateMu so target.run blocks on the first incoming frame while
+		// the remaining sends fill incoming and overflow into target.overrun.
+		target.stateMu.Lock()
+		for range receiveQueueCapacity + 2 {
+			if err := sender.Send(context.Background(), frame); err != nil {
+				target.stateMu.Unlock()
+				t.Fatal(err)
+			}
+		}
+		target.stateMu.Unlock()
+		_ = target.Close()
+		_ = sender.Close()
+
+		events, _, _ := capture.BusEvents(target.ID(), gocan.Range{})
+		if !slices.ContainsFunc(slices.Collect(events), func(e gocan.Event) bool {
+			return e.Kind == gocan.EventReceiveOverrun
+		}) {
+			t.Fatal("Close dropped confirmed EventReceiveOverrun")
+		}
+	}
+}
+
+type busOffOrderChecker struct {
+	t      *testing.T
+	busOff bool
+	txSeen int
+}
+
+func (c *busOffOrderChecker) WriteFrame(frame gocan.FrameEvent) error {
+	if frame.Bus == 1 && frame.Direction == gocan.DirectionTransmit {
+		if c.busOff {
+			c.t.Fatalf("transmission recorded while bus-off: %+v", frame)
+		}
+		c.txSeen++
+	}
+	return nil
+}
+
+func (c *busOffOrderChecker) WriteEvent(event gocan.Event) error {
+	if event.Bus == 1 && event.Kind == gocan.EventControllerState {
+		c.busOff = event.ControllerState == gocan.ControllerBusOff
+	}
+	return nil
 }

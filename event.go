@@ -15,7 +15,8 @@ const (
 	// EventErrorFrame reports that a driver or controller observed a CAN error
 	// condition.
 	EventErrorFrame
-	// EventReceiveOverrun reports that incoming traffic was lost.
+	// EventReceiveOverrun reports that incoming traffic was lost. The bus
+	// stays open and keeps receiving.
 	EventReceiveOverrun
 )
 
@@ -45,6 +46,7 @@ const (
 	// ControllerPassive indicates error-passive operation.
 	ControllerPassive
 	// ControllerBusOff indicates that the controller entered the bus-off state.
+	// The bus stays open; the driver reports the state it recovers to.
 	ControllerBusOff
 )
 

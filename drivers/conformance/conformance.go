@@ -44,11 +44,14 @@ type Capabilities struct {
 	// ClassicalDLCAboveEight enables classical data and remote cases whose
 	// DLC is 9-15, which must arrive with that DLC intact.
 	ClassicalDLCAboveEight bool
-	// InduceOverrun forces a receive overrun on target while leaving healthy
-	// usable. Both buses belong to this suite's medium. Nil skips the overrun
-	// contract case: a healthy receive loop always drains, so most real media
-	// cannot induce one on demand.
+	// InduceOverrun makes target lose received frames while leaving healthy
+	// usable, and returns once target has reported the loss. Both buses belong
+	// to this suite's medium. Nil skips the overrun contract case: a healthy
+	// receive loop always drains, so most real media cannot induce one on demand.
 	InduceOverrun func(t *testing.T, healthy, target gocan.Bus)
+	// InduceBusOff puts target's controller into bus-off and returns a function
+	// that lets it recover. Nil skips the bus-off contract case.
+	InduceBusOff func(t *testing.T, target gocan.Bus) (recover func())
 }
 
 // Run executes the conformance suite.
@@ -59,7 +62,8 @@ func Run(t *testing.T, open Pair, caps Capabilities) {
 	t.Run("cancellation is consistent", func(t *testing.T) { testCancellation(t, open) })
 	t.Run("frame shapes", func(t *testing.T) { testFrameShapes(t, open, caps) })
 	t.Run("concurrent traffic", func(t *testing.T) { testConcurrentTraffic(t, open) })
-	t.Run("overrun stops the bus", func(t *testing.T) { testOverrun(t, open, caps) })
+	t.Run("overrun keeps the bus open", func(t *testing.T) { testOverrun(t, open, caps) })
+	t.Run("bus-off recovers", func(t *testing.T) { testBusOff(t, open, caps) })
 }
 
 func openPair(t *testing.T, open Pair) (*gocan.Capture, gocan.Bus, gocan.Bus) {
@@ -392,6 +396,29 @@ func testConcurrentTraffic(t *testing.T, open Pair) {
 	}
 }
 
+func requireOpen(t *testing.T, bus gocan.Bus) {
+	t.Helper()
+	select {
+	case <-bus.Context().Done():
+		t.Fatalf("%s stopped: %v", bus.Name(), context.Cause(bus.Context()))
+	default:
+	}
+}
+
+func requireRoundTrip(t *testing.T, capture *gocan.Capture, from, to gocan.Bus, id uint32) {
+	t.Helper()
+	frame, err := gocan.NewFrame(id, []byte{1}, 0)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	cursor := capture.End()
+	if err := from.Send(context.Background(), frame); err != nil {
+		t.Fatalf("Send on %s: %v", from.Name(), err)
+	}
+	nextEvent(t, capture, frameKey(from, frame, gocan.DirectionTransmit), cursor)
+	nextEvent(t, capture, frameKey(to, frame, gocan.DirectionReceive), cursor)
+}
+
 func testOverrun(t *testing.T, open Pair, caps Capabilities) {
 	if caps.InduceOverrun == nil {
 		t.Skip("medium cannot induce a receive overrun")
@@ -400,26 +427,111 @@ func testOverrun(t *testing.T, open Pair, caps Capabilities) {
 	requirePeer(t, b)
 
 	caps.InduceOverrun(t, a, b)
-	requireClosed(t, b)
-	if cause := context.Cause(b.Context()); !errors.Is(cause, gocan.ErrReceiveOverrun) {
-		t.Fatalf("Context cause after overrun = %v, want ErrReceiveOverrun", cause)
-	}
+	requireOpen(t, b)
 	eventSeq, _, _ := capture.BusEvents(b.ID(), gocan.Range{})
 	events := slices.Collect(eventSeq)
-	if len(events) == 0 || events[len(events)-1].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("last bus event after overrun = %+v, want EventReceiveOverrun", events)
+	if !slices.ContainsFunc(events, func(event gocan.Event) bool { return event.Kind == gocan.EventReceiveOverrun }) {
+		t.Fatalf("bus events after overrun = %+v, want EventReceiveOverrun", events)
 	}
 
-	frame, err := gocan.NewFrame(0x100, []byte{1}, 0)
+	requireRoundTrip(t, capture, a, b, 0x7f0)
+	frame, err := gocan.NewFrame(0x7f1, []byte{1}, 0)
 	if err != nil {
 		t.Fatalf("NewFrame: %v", err)
 	}
-	if err := b.Send(context.Background(), frame); !errors.Is(err, gocan.ErrReceiveOverrun) && !errors.Is(err, gocan.ErrBusClosed) {
-		t.Fatalf("Send on overrun bus = %v, want the stop reason", err)
+	if err := b.Send(context.Background(), frame); err != nil {
+		t.Fatalf("Send after overrun: %v", err)
+	}
+	requireOpen(t, b)
+}
+
+func waitControllerState(t *testing.T, capture *gocan.Capture, bus gocan.Bus, state gocan.ControllerState) {
+	t.Helper()
+	deadline := time.Now().Add(waitTimeout)
+	for {
+		event, ok := capture.LatestControllerState(bus.ID())
+		if ok && event.ControllerState == state {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s controller state = %+v, want %v", bus.Name(), event, state)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func testBusOff(t *testing.T, open Pair, caps Capabilities) {
+	if caps.InduceBusOff == nil {
+		t.Skip("medium cannot induce bus-off")
+	}
+	capture, a, b := openPair(t, open)
+	requirePeer(t, b)
+
+	recoverBus := caps.InduceBusOff(t, b)
+	waitControllerState(t, capture, b, gocan.ControllerBusOff)
+	requireOpen(t, b)
+
+	// A frame rejected during bus-off is never recorded as transmitted.
+	rejected, err := gocan.NewFrame(0x7f2, []byte{1}, 0)
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	rejectedDuringBusOff := false
+	transmitted := frameKey(b, rejected, gocan.DirectionTransmit)
+	if err := b.Send(context.Background(), rejected); errors.Is(err, gocan.ErrBusOff) {
+		rejectedDuringBusOff = true
+		seq, _, _ := capture.Series(transmitted, gocan.Range{})
+		if series := slices.Collect(seq); len(series) != 0 {
+			t.Fatalf("Send = %v but %d transmissions were recorded", err, len(series))
+		}
+	} else if err != nil {
+		t.Fatalf("Send during bus-off = %v, want nil or ErrBusOff", err)
 	}
 
-	if err := a.Send(context.Background(), frame); err != nil {
-		t.Fatalf("peer Send after overrun: %v", err)
+	if rejectedDuringBusOff {
+		// A bounded send spanning recovery is accepted once the controller is.
+		frame, err := gocan.NewFrame(0x7f3, []byte{2}, 0)
+		if err != nil {
+			t.Fatalf("NewFrame: %v", err)
+		}
+		cursor := capture.End()
+		attempted := make(chan struct{})
+		var once sync.Once
+		tracked := &attemptNotifyBus{Bus: b, onSend: func() { once.Do(func() { close(attempted) }) }}
+		sent := make(chan error, 1)
+		go func() { sent <- gocan.Send(context.Background(), tracked, frame, waitTimeout) }()
+		select {
+		case <-attempted:
+		case <-time.After(waitTimeout):
+			t.Fatal("Send did not attempt transmission before recovery")
+		}
+		recoverBus()
+		if err := <-sent; err != nil {
+			t.Fatalf("Send across bus-off recovery: %v", err)
+		}
+		waitControllerState(t, capture, b, gocan.ControllerActive)
+		requireOpen(t, b)
+		nextEvent(t, capture, frameKey(a, frame, gocan.DirectionReceive), cursor)
+		txSeq, _, _ := capture.Series(frameKey(b, frame, gocan.DirectionTransmit), gocan.Range{})
+		if series := slices.Collect(txSeq); len(series) != 1 {
+			t.Fatalf("recovered Send recorded %d transmissions, want 1", len(series))
+		}
+	} else {
+		recoverBus()
+		waitControllerState(t, capture, b, gocan.ControllerActive)
+		requireOpen(t, b)
 	}
-	nextEvent(t, capture, frameKey(a, frame, gocan.DirectionTransmit), gocan.Cursor{})
+	requireRoundTrip(t, capture, a, b, 0x7f4)
+	requireRoundTrip(t, capture, b, a, 0x7f5)
+}
+
+type attemptNotifyBus struct {
+	gocan.Bus
+	onSend func()
+}
+
+func (bus *attemptNotifyBus) Send(ctx context.Context, frame gocan.Frame) error {
+	err := bus.Bus.Send(ctx, frame)
+	bus.onSend()
+	return err
 }

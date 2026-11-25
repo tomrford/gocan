@@ -30,6 +30,8 @@ const (
 	vectorApplication                     = "gocan\x00"
 	chipStateRequestInterval              = 50 * time.Millisecond
 	chipStateHealthInterval               = time.Second
+	busOffRestartInterval                 = 100 * time.Millisecond
+	maxDrainBatch                         = 64
 
 	xlChannelConfigSize       = 227
 	xlDriverConfigSize        = 14576
@@ -392,6 +394,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		access:       access,
 		api:          api,
 		fd:           fd,
+		join:         config.Join,
 		receiveEvent: receiveEvent,
 		stopEvent:    stopEvent,
 		lifecycle: driverstate.New(func() {
@@ -513,7 +516,59 @@ func joinableChannel(api *xlAPI, index ChannelIndex) (bool, error) {
 	return false, fmt.Errorf("join Vector channel %d: channel not found", index)
 }
 
+var xlStatusNames = map[xlStatus]string{
+	10:  "XL_ERR_QUEUE_IS_EMPTY",
+	11:  "XL_ERR_QUEUE_IS_FULL",
+	12:  "XL_ERR_TX_NOT_POSSIBLE",
+	14:  "XL_ERR_NO_LICENSE",
+	101: "XL_ERR_WRONG_PARAMETER",
+	110: "XL_ERR_TWICE_REGISTER",
+	111: "XL_ERR_INVALID_CHAN_INDEX",
+	112: "XL_ERR_INVALID_ACCESS",
+	113: "XL_ERR_PORT_IS_OFFLINE",
+	116: "XL_ERR_CHAN_IS_ONLINE",
+	117: "XL_ERR_NOT_IMPLEMENTED",
+	118: "XL_ERR_INVALID_PORT",
+	120: "XL_ERR_HW_NOT_READY",
+	121: "XL_ERR_CMD_TIMEOUT",
+	122: "XL_ERR_CMD_HANDLING",
+	129: "XL_ERR_HW_NOT_PRESENT",
+	131: "XL_ERR_NOTIFY_ALREADY_ACTIVE",
+	132: "XL_ERR_INVALID_TAG",
+	134: "XL_ERR_INVALID_SIZE",
+	135: "XL_ERR_INSUFFICIENT_BUFFER",
+	138: "XL_ERR_NO_SYSTEM_RESOURCES",
+	139: "XL_ERR_NOT_FOUND",
+	141: "XL_ERR_REQ_NOT_ACCEP",
+	144: "XL_ERR_INTERNAL_ERROR",
+	147: "XL_ERR_INVALID_PORT_ACCESS_TYPE",
+	152: "XL_ERR_NO_RESOURCES",
+	153: "XL_ERR_WRONG_CHIP_TYPE",
+	154: "XL_ERR_WRONG_COMMAND",
+	155: "XL_ERR_INVALID_HANDLE",
+	158: "XL_ERR_INIT_ACCESS_MISSING",
+	160: "XL_ERR_WRONG_VERSION",
+	201: "XL_ERR_CANNOT_OPEN_DRIVER",
+	202: "XL_ERR_WRONG_BUS_TYPE",
+	203: "XL_ERR_DLL_NOT_FOUND",
+	204: "XL_ERR_INVALID_CHANNEL_MASK",
+	205: "XL_ERR_NOT_SUPPORTED",
+	210: "XL_ERR_CONNECTION_BROKEN",
+	211: "XL_ERR_CONNECTION_CLOSED",
+	216: "XL_ERR_QUEUE_OVERRUN",
+	255: "XL_ERROR",
+	513: "XL_ERR_INVALID_DLC",
+	514: "XL_ERR_INVALID_CANID",
+	515: "XL_ERR_INVALID_FDFLAG_MODE20",
+	516: "XL_ERR_EDL_RTR",
+	517: "XL_ERR_EDL_NOT_SET",
+	518: "XL_ERR_UNKNOWN_FLAG",
+}
+
 func (api *xlAPI) statusError(operation string, status xlStatus) error {
+	if name, ok := xlStatusNames[status]; ok {
+		return fmt.Errorf("%s: Vector status %d (%s)", operation, status, name)
+	}
 	return fmt.Errorf("%s: Vector status %d", operation, status)
 }
 
@@ -545,6 +600,7 @@ type Bus struct {
 	access  xlAccess
 	api     *xlAPI
 	fd      bool
+	join    bool
 
 	receiveEvent windows.Handle
 	stopEvent    windows.Handle
@@ -554,8 +610,11 @@ type Bus struct {
 
 	cleanupErr error
 
-	// The receive goroutine is the only writer after Open publishes the bus.
+	// nextChipStateRequest, nextBusOffRestart, and chipStateRefresh are owned
+	// by the receive goroutine. lastChipState and hasChipState are written
+	// under ioMu by receiveOne and read under ioMu by Send and restartBusOff.
 	nextChipStateRequest time.Time
+	nextBusOffRestart    time.Time
 	chipStateRefresh     bool
 	lastChipState        gocan.Event
 	hasChipState         bool
@@ -597,6 +656,10 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	case <-bus.lifecycle.StopSignal():
 		return bus.operationError()
 	default:
+	}
+
+	if bus.hasChipState && bus.lastChipState.ControllerState == gocan.ControllerBusOff {
+		return gocan.ErrBusOff
 	}
 
 	if err := bus.transmitFrame(frame); err != nil {
@@ -672,6 +735,7 @@ func (bus *Bus) receiveLoop() {
 	defer bus.finish()
 
 	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
+	pendingDrain := false
 	for {
 		select {
 		case <-bus.lifecycle.StopSignal():
@@ -679,14 +743,26 @@ func (bus *Bus) receiveLoop() {
 		default:
 		}
 		now := time.Now()
-		if !now.Before(bus.nextChipStateRequest) {
-			if err := bus.requestChipState(now); err != nil {
+		if acted, err := bus.serviceTimers(now); err != nil {
+			bus.stopWithError(err)
+			return
+		} else if acted {
+			continue
+		}
+		if pendingDrain {
+			var err error
+			pendingDrain, err = bus.drainReceiveQueue()
+			if err != nil {
 				bus.stopWithError(err)
 				return
 			}
 			continue
 		}
-		remaining := time.Until(bus.nextChipStateRequest)
+		deadline := bus.nextChipStateRequest
+		if !bus.nextBusOffRestart.IsZero() && bus.nextBusOffRestart.Before(deadline) {
+			deadline = bus.nextBusOffRestart
+		}
+		remaining := time.Until(deadline)
 		timeout := uint32(max(1, (remaining+time.Millisecond-1)/time.Millisecond))
 
 		event, err := windows.WaitForMultipleObjects(events, false, timeout)
@@ -698,7 +774,8 @@ func (bus *Bus) receiveLoop() {
 		case windows.WAIT_OBJECT_0:
 			return
 		case windows.WAIT_OBJECT_0 + 1:
-			if err := bus.drainReceiveQueue(); err != nil {
+			pendingDrain, err = bus.drainReceiveQueue()
+			if err != nil {
 				bus.stopWithError(err)
 				return
 			}
@@ -711,13 +788,34 @@ func (bus *Bus) receiveLoop() {
 	}
 }
 
-func (bus *Bus) drainReceiveQueue() error {
-	for {
+func (bus *Bus) drainReceiveQueue() (bool, error) {
+	for range maxDrainBatch {
 		more, err := bus.receiveOne()
-		if err != nil || !more {
-			return err
+		if err != nil {
+			return false, err
+		}
+		if !more {
+			return false, nil
 		}
 	}
+	return true, nil
+}
+
+func (bus *Bus) serviceTimers(now time.Time) (bool, error) {
+	acted := false
+	if !bus.nextBusOffRestart.IsZero() && !now.Before(bus.nextBusOffRestart) {
+		if err := bus.restartBusOff(now); err != nil {
+			return false, err
+		}
+		acted = true
+	}
+	if !now.Before(bus.nextChipStateRequest) {
+		if err := bus.requestChipState(now); err != nil {
+			return false, err
+		}
+		acted = true
+	}
+	return acted, nil
 }
 
 // receiveOne serialises a single native read and capture append with Send.
@@ -750,12 +848,7 @@ func (bus *Bus) receiveClassic() (bool, error) {
 	case xlQueueEmpty:
 		return false, nil
 	case xlQueueOverrun:
-		observation := newOverrunObservation(
-			bus.id,
-			fmt.Sprintf("Vector receive status %d", status),
-		)
-		stopped, err := bus.applyObservation(observation)
-		return !stopped, err
+		return true, bus.applyObservation(newOverrunObservation(bus.id))
 	case xlSuccess:
 	default:
 		return false, bus.runtimeStatusError("receive Vector event", status)
@@ -768,8 +861,7 @@ func (bus *Bus) receiveClassic() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation)
-	return !stopped, err
+	return true, bus.applyObservation(observation)
 }
 
 func (bus *Bus) receiveFD() (bool, error) {
@@ -783,12 +875,7 @@ func (bus *Bus) receiveFD() (bool, error) {
 	case xlQueueEmpty:
 		return false, nil
 	case xlQueueOverrun:
-		observation := newOverrunObservation(
-			bus.id,
-			fmt.Sprintf("Vector CAN FD receive status %d", status),
-		)
-		stopped, err := bus.applyObservation(observation)
-		return !stopped, err
+		return true, bus.applyObservation(newOverrunObservation(bus.id))
 	case xlSuccess:
 	default:
 		return false, bus.runtimeStatusError("receive Vector CAN FD event", status)
@@ -798,15 +885,10 @@ func (bus *Bus) receiveFD() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	stopped, err := bus.applyObservation(observation)
-	return !stopped, err
+	return true, bus.applyObservation(observation)
 }
 
-func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
-	if observation.terminal != nil {
-		bus.stopWithEvents(observation.terminal, observation.events[:observation.eventCount])
-		return true, nil
-	}
+func (bus *Bus) applyObservation(observation receiveObservation) error {
 	var timestamp time.Time
 	if observation.eventCount != 0 || observation.requestChipState {
 		timestamp = time.Now()
@@ -818,6 +900,13 @@ func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
 			bus.setChipStateRefresh(true, timestamp)
 		case gocan.EventControllerState:
 			bus.setChipStateRefresh(event.ControllerState != gocan.ControllerActive, timestamp)
+			if event.ControllerState == gocan.ControllerBusOff {
+				if !bus.join && bus.nextBusOffRestart.IsZero() {
+					bus.nextBusOffRestart = timestamp.Add(busOffRestartInterval)
+				}
+			} else {
+				bus.nextBusOffRestart = time.Time{}
+			}
 			if bus.hasChipState && sameChipState(bus.lastChipState, event) {
 				continue
 			}
@@ -825,12 +914,12 @@ func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
 			bus.hasChipState = true
 		}
 		if err := bus.capture.RecordEvent(event); err != nil {
-			return false, err
+			return err
 		}
 	}
 	if observation.requestChipState {
 		if err := bus.requestChipState(timestamp); err != nil {
-			return false, err
+			return err
 		}
 	}
 	if observation.hasFrame {
@@ -839,10 +928,10 @@ func (bus *Bus) applyObservation(observation receiveObservation) (bool, error) {
 			Direction: gocan.DirectionReceive,
 			Frame:     observation.frame,
 		}); err != nil {
-			return false, err
+			return err
 		}
 	}
-	return false, nil
+	return nil
 }
 
 func (bus *Bus) requestChipState(now time.Time) error {
@@ -858,6 +947,40 @@ func (bus *Bus) requestChipState(now time.Time) error {
 		interval = chipStateRequestInterval
 	}
 	bus.nextChipStateRequest = now.Add(interval)
+	return nil
+}
+
+// restartBusOff cycles an owned Vector channel off and back onto the bus so
+// controllers that stay bus-off (such as VN1630A) recover. Joined channels are
+// left to the application that configured them.
+func (bus *Bus) restartBusOff(now time.Time) error {
+	bus.ioMu.Lock()
+	defer bus.ioMu.Unlock()
+
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return nil
+	default:
+	}
+	if bus.join || !bus.hasChipState || bus.lastChipState.ControllerState != gocan.ControllerBusOff {
+		bus.nextBusOffRestart = time.Time{}
+		return nil
+	}
+	result, _, _ := bus.api.deactivateChannel.Call(portArgument(bus.port), uintptr(bus.access))
+	if status := xlStatus(result); status != xlSuccess {
+		return bus.runtimeStatusError("deactivate Vector channel after bus-off", status)
+	}
+	result, _, _ = bus.api.activateChannel.Call(portArgument(bus.port), uintptr(bus.access), xlBusTypeCAN, 0)
+	if status := xlStatus(result); status != xlSuccess {
+		return bus.runtimeStatusError("activate Vector channel after bus-off", status)
+	}
+	result, _, _ = bus.api.requestChipState.Call(portArgument(bus.port), uintptr(bus.access))
+	if status := xlStatus(result); status != xlSuccess {
+		return bus.runtimeStatusError("request Vector chip state after bus-off", status)
+	}
+	bus.nextChipStateRequest = now.Add(chipStateRequestInterval)
+	// Wait for a fresh chip-state event before scheduling another restart.
+	bus.nextBusOffRestart = time.Time{}
 	return nil
 }
 
@@ -899,17 +1022,6 @@ func sameChipState(first, second gocan.Event) bool {
 
 func (bus *Bus) stopWithError(err error) {
 	bus.lifecycle.Stop(err)
-}
-
-// stopWithEvents is called with ioMu held, after the native read.
-func (bus *Bus) stopWithEvents(terminal error, events []gocan.Event) {
-	for _, event := range events {
-		if err := bus.capture.RecordEvent(event); err != nil {
-			bus.stopWithError(err)
-			return
-		}
-	}
-	bus.stopWithError(terminal)
 }
 
 func (bus *Bus) finish() {

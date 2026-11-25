@@ -1,7 +1,6 @@
 package vector
 
 import (
-	"errors"
 	"testing"
 	"unsafe"
 
@@ -22,11 +21,24 @@ func TestClassicNativeLayoutAndTranslation(t *testing.T) {
 		t.Fatalf("XLevent tagData offset = %d, want 16", got)
 	}
 
-	event := xlEvent{tag: xlEventReceiveMessage, flags: xlEventFlagOverrun}
-	overrun, err := decodeClassicReceiveEvent(&event, 1)
-	if err != nil || !errors.Is(overrun.terminal, gocan.ErrReceiveOverrun) ||
-		overrun.eventCount != 1 || overrun.events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("decode overrun = %+v, %v", overrun, err)
+	// Either classic overrun flag independently reports earlier loss while
+	// keeping the valid frame that carries it.
+	wantFrame := gocan.Frame{ID: 0x123, DLC: 1, Data: [64]byte{7}}
+	for _, tc := range []struct {
+		name       string
+		eventFlags uint8
+		msgFlags   uint16
+	}{
+		{"event flag", xlEventFlagOverrun, 0},
+		{"message flag", 0, xlMessageFlagOverrun},
+	} {
+		event := xlEvent{tag: xlEventReceiveMessage, flags: tc.eventFlags}
+		*event.message() = xlCanMessage{id: 0x123, flags: tc.msgFlags, dlc: 1, data: [8]byte{7}}
+		overrun, err := decodeClassicReceiveEvent(&event, 1)
+		if err != nil || overrun.eventCount != 1 || overrun.events[0].Kind != gocan.EventReceiveOverrun ||
+			!overrun.hasFrame || overrun.frame != wantFrame {
+			t.Fatalf("%s: decode overrun = %+v, %v", tc.name, overrun, err)
+		}
 	}
 }
 
@@ -77,6 +89,15 @@ func TestFDNativeLayoutAndTranslation(t *testing.T) {
 	if !got.hasFrame || got.frame != frame {
 		t.Fatalf("FD round trip = %+v, want frame %+v", got, frame)
 	}
+
+	// XL_CAN_QUEUE_OVERFLOW (0x100) in flagsChip reports loss before the frame.
+	rx.chipFlags = 0x100
+	overrun, err := decodeFDReceiveEvent(&rx, 1)
+	if err != nil || overrun.eventCount != 1 ||
+		overrun.events[0].Kind != gocan.EventReceiveOverrun ||
+		!overrun.hasFrame || overrun.frame != frame {
+		t.Fatalf("FD overrun = %+v, %v", overrun, err)
+	}
 }
 
 func TestVectorStatusTranslation(t *testing.T) {
@@ -85,7 +106,7 @@ func TestVectorStatusTranslation(t *testing.T) {
 	errorObservation, err := decodeClassicReceiveEvent(&event, 2)
 	if err != nil || errorObservation.eventCount != 1 ||
 		errorObservation.events[0].Kind != gocan.EventErrorFrame ||
-		!errorObservation.requestChipState || errorObservation.terminal != nil {
+		!errorObservation.requestChipState {
 		t.Fatalf("classic error observation = %+v, %v", errorObservation, err)
 	}
 
@@ -103,13 +124,13 @@ func TestVectorStatusTranslation(t *testing.T) {
 	if state.Kind != gocan.EventControllerState ||
 		state.ControllerState != gocan.ControllerPassive ||
 		state.TXErrorCount != 128 || state.RXErrorCount != 3 ||
-		!state.ErrorCountsKnown || stateObservation.terminal != nil {
+		!state.ErrorCountsKnown {
 		t.Fatalf("classic passive state = %+v", stateObservation)
 	}
 
 	*event.chipState() = xlChipState{busStatus: xlChipStateBusOff}
 	busOff, err := decodeClassicReceiveEvent(&event, 2)
-	if err != nil || !errors.Is(busOff.terminal, gocan.ErrBusOff) ||
+	if err != nil || busOff.eventCount != 1 ||
 		busOff.events[0].ControllerState != gocan.ControllerBusOff {
 		t.Fatalf("classic bus-off = %+v, %v", busOff, err)
 	}

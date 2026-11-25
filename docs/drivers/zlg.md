@@ -42,6 +42,12 @@ under-report frames that reached the wire. `Close` drains accepted frames unless
 transmission fails or the bus stops with an error. Native transmit failures
 and adapter closing can each take about one second.
 
+On bus-off, gocan resets and restarts the channel; recovery can take about one
+second longer if a native transmit is in flight. Because `USBCANFD.dll` lacks
+`ReadChannelStatus`, USBCANFD infers `ControllerActive` (with unknown error
+counts) on the first clean error poll after restart. Bus-off recovery has not
+been exercised on ZLG hardware.
+
 ## Hardware checks
 
 Pair a ZLG channel with a PCAN reference adapter on one terminated classical
