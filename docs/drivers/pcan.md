@@ -19,24 +19,13 @@ producers and await required protocol replies before closing. A caller-chosen
 delay may help queued traffic drain, but cannot guarantee delivery or an empty
 adapter queue.
 
-Receive overruns (`PCAN_ERROR_OVERRUN` and `PCAN_ERROR_QOVERRUN`) produce
-receive-overrun events; the bus keeps receiving. gocan enables PCAN-Basic's
-bus-off auto-reset and reports bus-off and the state the controller returns to
-as controller-state events. While recovering from bus-off, `Send` returns
-`gocan.ErrBusOff` without writing to the channel so auto-reset can finish. On
-classical channels, PCAN-USB reports error-passive as `BUSHEAVY` (`0x08`) and
-clears channel status bits on `CAN_Read`, so count-less `BUSHEAVY` warnings do
-not downgrade error-passive and returning from warning or passive to
-error-active without a status frame relies on clean traffic followed by a
-500 ms error-free window.
+gocan enables PCAN-Basic's bus-off auto-reset and suppresses native writes
+while bus-off so auto-reset can finish (`Send` returns `gocan.ErrBusOff`). When
+PCAN-USB emits no status frame on recovery from warning or passive, error-active
+is inferred 500 ms after clean received traffic without errors (counts unknown).
 
-PCAN-USB (firmware 2.8.1) has reported bus-off 0.8–2.4 s after a short burst of
-acknowledgement errors, with its own error frames showing a transmit error
-count of at most 135, so the report can be spurious. This happens when the
-adapter is the only node acknowledging, for example while the ECU resets.
-Without auto-reset it cleared itself (status 0x14, then 0x8, then 0x0) and
-rejected writes for about 1 s (November 2026). Give `gocan.Send` and the
-protocol packages a transmit retry timeout of at least 1.5 s (note that J1939
-directed TP uses a fixed 750 ms consecutive-packet timer, so a ~1 s bus-off
-still times out an in-flight transfer without stopping the client). A second
-acknowledging node on the bus avoided the fault in three of three flashes.
+A sole-acknowledging PCAN-USB (firmware 2.8.1) can report a spurious bus-off
+after a brief burst of acknowledgement errors (for example while an ECU resets)
+and reject writes for about one second; use a transmit retry timeout of at
+least 1.5 s to ride it out. Adding a second acknowledging node avoided the
+fault on the bench.
