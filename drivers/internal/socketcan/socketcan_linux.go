@@ -113,12 +113,13 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 	}
 
 	bus := &Bus{
-		id:      config.ID,
-		name:    config.Name,
-		iface:   config.Interface,
-		capture: capture,
-		file:    file,
-		raw:     raw,
+		id:                 config.ID,
+		name:               config.Name,
+		ifIndex:            iface.Index,
+		hasControllerState: true,
+		capture:            capture,
+		file:               file,
+		raw:                raw,
 		lifecycle: driverstate.New(func() {
 			// Wake RawConn.Read without closing the descriptor from inside its
 			// callback. receiveLoop closes it after the callback has returned.
@@ -139,7 +140,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (*Bus, err
 type Bus struct {
 	id      gocan.BusID
 	name    string
-	iface   string
+	ifIndex int
 	capture *gocan.Capture
 	file    *os.File
 	raw     syscall.RawConn
@@ -151,17 +152,21 @@ type Bus struct {
 	txSent    int
 	txErr     error
 
-	receiveReady  func(uintptr) bool
-	rxPacket      [fdMTU]byte
-	rxControl     [32]byte
-	rxIovec       unix.Iovec
-	rxMessage     unix.Msghdr
-	rxSize        int
-	rxControlSize int
-	rxFlags       int
-	rxDropped     uint32
-	busOff        bool
-	carrierLost   bool
+	receiveReady       func(uintptr) bool
+	rxPacket           [fdMTU]byte
+	rxControl          [32]byte
+	rxIovec            unix.Iovec
+	rxMessage          unix.Msghdr
+	rxSize             int
+	rxControlSize      int
+	rxFlags            int
+	rxDropped          uint32
+	busOff             bool
+	busOffSeq          uint64
+	busOffFallbackSeq  uint64
+	hasControllerState bool
+	stateProbeRunning  bool
+	nextStateProbe     time.Time
 
 	lifecycle *driverstate.Lifecycle
 }
@@ -203,14 +208,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 	default:
 	}
 	if bus.busOff {
-		// Reconcile against live carrier state in case the kernel restarted
-		// the controller after dropping CAN_ERR_RESTARTED under memory pressure.
-		if bus.carrierLost && ifaceRunning(bus.iface) {
-			bus.busOff = false
-			bus.carrierLost = false
-		} else {
-			return gocan.ErrBusOff
-		}
+		bus.triggerBusOffProbe(false)
+		return gocan.ErrBusOff
 	}
 
 	packet := encodeFrame(frame, &bus.txPacket)
@@ -230,7 +229,9 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		case <-bus.lifecycle.StopSignal():
 			return bus.operationError()
 		default:
-			if errors.Is(bus.txErr, unix.ENOBUFS) {
+			if errors.Is(bus.txErr, unix.ENOBUFS) ||
+				errors.Is(bus.txErr, unix.EAGAIN) ||
+				errors.Is(bus.txErr, unix.EWOULDBLOCK) {
 				return fmt.Errorf("%w: SocketCAN send returned %v", gocan.ErrTransmitQueueFull, bus.txErr)
 			}
 			return fmt.Errorf("send SocketCAN frame: %w", bus.txErr)
@@ -298,10 +299,17 @@ func (bus *Bus) recordReceive() error {
 		return err
 	}
 	if lost {
-		// A socket receive drop may have discarded CAN_ERR_RESTARTED; release
-		// any cached bus-off gate so Send cannot stay wedged.
-		bus.busOff = false
-		bus.carrierLost = false
+		// On virtual interfaces without IFLA_CAN_STATE, clear cached bus-off
+		// in case the socket drop discarded CAN_ERR_RESTARTED. Hardware
+		// interfaces probe live kernel controller state asynchronously.
+		if bus.busOff {
+			if !bus.hasControllerState {
+				bus.busOff = false
+			} else {
+				bus.busOffFallbackSeq = bus.busOffSeq
+				bus.triggerBusOffProbe(false)
+			}
+		}
 		if err := bus.capture.RecordEvent(gocan.Event{Bus: bus.id, Kind: gocan.EventReceiveOverrun}); err != nil {
 			return err
 		}
@@ -315,8 +323,14 @@ func (bus *Bus) recordReceive() error {
 		for index := range errorPacket.eventCount {
 			event := errorPacket.events[index]
 			if event.Kind == gocan.EventControllerState {
-				bus.busOff = event.ControllerState == gocan.ControllerBusOff
-				bus.carrierLost = bus.busOff && !ifaceRunning(bus.iface)
+				if event.ControllerState == gocan.ControllerBusOff {
+					bus.busOff = true
+					bus.busOffSeq++
+					bus.nextStateProbe = time.Time{}
+					bus.triggerBusOffProbe(true)
+				} else {
+					bus.busOff = false
+				}
 			}
 			if err := bus.capture.RecordEvent(event); err != nil {
 				return err
@@ -329,8 +343,14 @@ func (bus *Bus) recordReceive() error {
 	if err != nil {
 		return err
 	}
-	bus.busOff = false
-	bus.carrierLost = false
+	if bus.busOff {
+		if !bus.hasControllerState {
+			bus.busOff = false
+		} else {
+			bus.busOffFallbackSeq = bus.busOffSeq
+			bus.triggerBusOffProbe(false)
+		}
+	}
 	return bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
 		Direction: gocan.DirectionReceive,
@@ -338,9 +358,199 @@ func (bus *Bus) recordReceive() error {
 	})
 }
 
-func ifaceRunning(name string) bool {
-	iface, err := net.InterfaceByName(name)
-	return err == nil && iface.Flags&net.FlagRunning != 0
+const (
+	nlaTypeMask         = 0x3fff
+	busOffProbeInterval = 50 * time.Millisecond
+	netlinkQueryTimeout = 50 * time.Millisecond
+)
+
+// triggerBusOffProbe starts at most one background RTM_GETLINK lookup per bus
+// so Send never blocks on RTNL or USB status reads while still reconciling a
+// dropped CAN_ERR_RESTARTED. Caller holds bus.ioMu.
+func (bus *Bus) triggerBusOffProbe(immediate bool) {
+	if !bus.busOff || !bus.hasControllerState || bus.stateProbeRunning {
+		return
+	}
+	select {
+	case <-bus.lifecycle.StopSignal():
+		return
+	default:
+	}
+	if !immediate && !bus.nextStateProbe.IsZero() && time.Now().Before(bus.nextStateProbe) {
+		return
+	}
+	bus.stateProbeRunning = true
+	seq := bus.busOffSeq
+	ifIndex := bus.ifIndex
+	go bus.probeBusOffState(seq, ifIndex)
+}
+
+func (bus *Bus) probeBusOffState(seq uint64, ifIndex int) {
+	state, hasState, err := queryCANControllerState(ifIndex)
+	bus.ioMu.Lock()
+	if err == nil {
+		if !hasState {
+			bus.hasControllerState = false
+			if bus.busOff && bus.busOffFallbackSeq == bus.busOffSeq {
+				bus.busOff = false
+			}
+		} else if bus.busOffSeq == seq && state != unix.CAN_STATE_BUS_OFF {
+			bus.busOff = false
+		}
+	}
+	if bus.busOffSeq == seq {
+		bus.nextStateProbe = time.Now().Add(busOffProbeInterval)
+	}
+	bus.stateProbeRunning = false
+	bus.ioMu.Unlock()
+}
+
+// queryCANControllerState queries a single interface via RTM_GETLINK and
+// returns its kernel IFLA_CAN_STATE when the interface is a "can" device.
+// hasState is false with err == nil for interfaces confirmed to lack
+// IFLA_CAN_STATE (such as vcan).
+func queryCANControllerState(ifIndex int) (uint32, bool, error) {
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	tv := unix.NsecToTimeval(netlinkQueryTimeout.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv); err != nil {
+		return 0, false, err
+	}
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
+		return 0, false, err
+	}
+
+	var req [unix.SizeofNlMsghdr + unix.SizeofIfInfomsg]byte
+	binary.NativeEndian.PutUint32(req[0:4], uint32(len(req)))
+	binary.NativeEndian.PutUint16(req[4:6], unix.RTM_GETLINK)
+	binary.NativeEndian.PutUint16(req[6:8], unix.NLM_F_REQUEST)
+	binary.NativeEndian.PutUint32(req[8:12], 1)
+	req[unix.SizeofNlMsghdr] = unix.AF_UNSPEC
+	binary.NativeEndian.PutUint32(req[unix.SizeofNlMsghdr+4:unix.SizeofNlMsghdr+8], uint32(ifIndex))
+
+	deadline := time.Now().Add(netlinkQueryTimeout)
+	dest := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
+	for {
+		err = unix.Sendto(fd, req[:], 0, dest)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return 0, false, context.DeadlineExceeded
+		}
+	}
+	if err != nil {
+		return 0, false, err
+	}
+
+	var resp [16384]byte
+	var (
+		n     int
+		flags int
+		from  unix.Sockaddr
+	)
+	for {
+		n, _, flags, from, err = unix.Recvmsg(fd, resp[:], nil, 0)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return 0, false, context.DeadlineExceeded
+		}
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if flags&unix.MSG_TRUNC != 0 {
+		return 0, false, errors.New("SocketCAN netlink reply truncated")
+	}
+	if nlFrom, ok := from.(*unix.SockaddrNetlink); !ok || nlFrom.Pid != 0 {
+		return 0, false, errors.New("unexpected SocketCAN netlink sender")
+	}
+
+	messages, err := syscall.ParseNetlinkMessage(resp[:n])
+	if err != nil {
+		return 0, false, err
+	}
+	for index := range messages {
+		message := &messages[index]
+		if message.Header.Type == unix.NLMSG_ERROR {
+			return 0, false, errors.New("SocketCAN netlink error")
+		}
+		if message.Header.Type != syscall.RTM_NEWLINK || len(message.Data) < syscall.SizeofIfInfomsg {
+			continue
+		}
+		info := (*syscall.IfInfomsg)(unsafe.Pointer(&message.Data[0]))
+		if int(info.Index) != ifIndex {
+			continue
+		}
+		attributes, err := syscall.ParseNetlinkRouteAttr(message)
+		if err != nil {
+			return 0, false, err
+		}
+		state, hasState := parseCANControllerState(attributes)
+		return state, hasState, nil
+	}
+	return 0, false, errors.New("SocketCAN interface missing from netlink reply")
+}
+
+func parseCANControllerState(attributes []syscall.NetlinkRouteAttr) (uint32, bool) {
+	for _, attribute := range attributes {
+		if attribute.Attr.Type&nlaTypeMask != unix.IFLA_LINKINFO {
+			continue
+		}
+		var kind string
+		var infoData []byte
+		for remaining := attribute.Value; len(remaining) >= 4; {
+			attrType, payload, next, ok := nextNetlinkAttr(remaining)
+			if !ok {
+				return 0, false
+			}
+			switch attrType {
+			case unix.IFLA_INFO_KIND:
+				kind = unix.ByteSliceToString(payload)
+			case unix.IFLA_INFO_DATA:
+				infoData = payload
+			}
+			remaining = next
+		}
+		if kind != "can" || len(infoData) == 0 {
+			return 0, false
+		}
+		for remaining := infoData; len(remaining) >= 4; {
+			attrType, payload, next, ok := nextNetlinkAttr(remaining)
+			if !ok {
+				return 0, false
+			}
+			if attrType == unix.IFLA_CAN_STATE && len(payload) >= 4 {
+				return binary.NativeEndian.Uint32(payload[:4]), true
+			}
+			remaining = next
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+func nextNetlinkAttr(raw []byte) (attrType uint16, payload, next []byte, ok bool) {
+	if len(raw) < 4 {
+		return 0, nil, nil, false
+	}
+	length := int(binary.NativeEndian.Uint16(raw[0:2]))
+	if length < 4 || length > len(raw) {
+		return 0, nil, nil, false
+	}
+	attrType = binary.NativeEndian.Uint16(raw[2:4]) & nlaTypeMask
+	payload = raw[4:length]
+	step := (length + 3) &^ 3
+	if step >= len(raw) {
+		return attrType, payload, nil, true
+	}
+	return attrType, payload, raw[step:], true
 }
 
 // receiveLost reports whether the socket dropped frames before this packet.

@@ -516,7 +516,59 @@ func joinableChannel(api *xlAPI, index ChannelIndex) (bool, error) {
 	return false, fmt.Errorf("join Vector channel %d: channel not found", index)
 }
 
+var xlStatusNames = map[xlStatus]string{
+	10:  "XL_ERR_QUEUE_IS_EMPTY",
+	11:  "XL_ERR_QUEUE_IS_FULL",
+	12:  "XL_ERR_TX_NOT_POSSIBLE",
+	14:  "XL_ERR_NO_LICENSE",
+	101: "XL_ERR_WRONG_PARAMETER",
+	110: "XL_ERR_TWICE_REGISTER",
+	111: "XL_ERR_INVALID_CHAN_INDEX",
+	112: "XL_ERR_INVALID_ACCESS",
+	113: "XL_ERR_PORT_IS_OFFLINE",
+	116: "XL_ERR_CHAN_IS_ONLINE",
+	117: "XL_ERR_NOT_IMPLEMENTED",
+	118: "XL_ERR_INVALID_PORT",
+	120: "XL_ERR_HW_NOT_READY",
+	121: "XL_ERR_CMD_TIMEOUT",
+	122: "XL_ERR_CMD_HANDLING",
+	129: "XL_ERR_HW_NOT_PRESENT",
+	131: "XL_ERR_NOTIFY_ALREADY_ACTIVE",
+	132: "XL_ERR_INVALID_TAG",
+	134: "XL_ERR_INVALID_SIZE",
+	135: "XL_ERR_INSUFFICIENT_BUFFER",
+	138: "XL_ERR_NO_SYSTEM_RESOURCES",
+	139: "XL_ERR_NOT_FOUND",
+	141: "XL_ERR_REQ_NOT_ACCEP",
+	144: "XL_ERR_INTERNAL_ERROR",
+	147: "XL_ERR_INVALID_PORT_ACCESS_TYPE",
+	152: "XL_ERR_NO_RESOURCES",
+	153: "XL_ERR_WRONG_CHIP_TYPE",
+	154: "XL_ERR_WRONG_COMMAND",
+	155: "XL_ERR_INVALID_HANDLE",
+	158: "XL_ERR_INIT_ACCESS_MISSING",
+	160: "XL_ERR_WRONG_VERSION",
+	201: "XL_ERR_CANNOT_OPEN_DRIVER",
+	202: "XL_ERR_WRONG_BUS_TYPE",
+	203: "XL_ERR_DLL_NOT_FOUND",
+	204: "XL_ERR_INVALID_CHANNEL_MASK",
+	205: "XL_ERR_NOT_SUPPORTED",
+	210: "XL_ERR_CONNECTION_BROKEN",
+	211: "XL_ERR_CONNECTION_CLOSED",
+	216: "XL_ERR_QUEUE_OVERRUN",
+	255: "XL_ERROR",
+	513: "XL_ERR_INVALID_DLC",
+	514: "XL_ERR_INVALID_CANID",
+	515: "XL_ERR_INVALID_FDFLAG_MODE20",
+	516: "XL_ERR_EDL_RTR",
+	517: "XL_ERR_EDL_NOT_SET",
+	518: "XL_ERR_UNKNOWN_FLAG",
+}
+
 func (api *xlAPI) statusError(operation string, status xlStatus) error {
+	if name, ok := xlStatusNames[status]; ok {
+		return fmt.Errorf("%s: Vector status %d (%s)", operation, status, name)
+	}
 	return fmt.Errorf("%s: Vector status %d", operation, status)
 }
 

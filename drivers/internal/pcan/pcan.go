@@ -411,6 +411,7 @@ func (state *pcanState) observeSendBusOff(now time.Time, bus gocan.BusID) (gocan
 	state.inBusOff = true
 	state.activeAt = time.Time{}
 	if state.nextPoll.IsZero() {
+		state.pollOverrun = false
 		state.nextPoll = now.Add(busOffPollInterval)
 	}
 	if samePCANControllerState(state.lastState, event) {
@@ -427,9 +428,6 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 		switch event.Kind {
 		case gocan.EventErrorFrame:
 			state.activeAt = time.Time{}
-			if !state.inBusOff {
-				state.nextPoll = time.Time{}
-			}
 			out[count] = event
 			count++
 		case gocan.EventControllerState:
@@ -445,6 +443,12 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 				// live CAN_GetStatus polling releases the bus-off gate.
 				continue
 			}
+			if !state.nextPoll.IsZero() && event.ControllerState == gocan.ControllerActive {
+				// Queued active status or low-counter error frames from before
+				// bus-off cannot end recovery polling; wait for a live
+				// CAN_GetStatus read to confirm error-active.
+				continue
+			}
 			if state.lastState.ControllerState == gocan.ControllerPassive &&
 				observation.busHeavy && !event.ErrorCountsKnown {
 				// Classic PCAN-USB reports BUSHEAVY (0x08) while error-passive.
@@ -453,9 +457,6 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 				continue
 			}
 			state.activeAt = time.Time{}
-			if event.ControllerState == gocan.ControllerActive {
-				state.nextPoll = time.Time{}
-			}
 			if samePCANControllerState(state.lastState, event) {
 				continue
 			}
@@ -467,7 +468,7 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 			count++
 		}
 	}
-	if observation.hasFrame && !state.inBusOff && state.degraded() && state.activeAt.IsZero() {
+	if observation.hasFrame && !state.inBusOff && state.nextPoll.IsZero() && state.degraded() && state.activeAt.IsZero() {
 		state.activeAt = now.Add(degradedQuietWindow)
 	}
 	return out, count
@@ -516,9 +517,11 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 	}
 	if busState != 0 {
 		state.nextPoll = now.Add(busOffPollInterval)
+		state.activeAt = time.Time{}
 	} else {
 		state.nextPoll = time.Time{}
 		state.activeAt = time.Time{}
+		state.pollOverrun = false
 	}
 	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: nextState}
 	if !samePCANControllerState(state.lastState, event) {
@@ -530,11 +533,12 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 }
 
 func (state *pcanState) tick(now time.Time, bus gocan.BusID) (gocan.Event, bool) {
-	if state.inBusOff || state.activeAt.IsZero() || now.Before(state.activeAt) {
+	if state.inBusOff || !state.nextPoll.IsZero() || state.activeAt.IsZero() || now.Before(state.activeAt) {
 		return gocan.Event{}, false
 	}
 	state.activeAt = time.Time{}
 	state.nextPoll = time.Time{}
+	state.pollOverrun = false
 	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive}
 	if samePCANControllerState(state.lastState, event) {
 		return gocan.Event{}, false

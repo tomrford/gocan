@@ -149,23 +149,55 @@ func TestPCANStateBenchSequences(t *testing.T) {
 	if err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerWarning || state.busOff() {
 		t.Fatalf("poll 0x08 = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
 	}
-	// A duplicate 0x08 status frame must not cancel the post-bus-off poll.
+	// Duplicate 0x08 status, queued degraded/low-counter error frames, queued OK
+	// status, and clean RX must neither cancel post-bus-off polling nor report
+	// Active before a live pollStatus(0x00) confirms recovery.
 	heavyObs, _ := decodePCANStatus(pcanStatusBusWarning, 1)
 	state.observe(now.Add(2*busOffPollInterval+time.Millisecond), heavyObs)
+	warnErrObs, err := decodePCANErrorFrame([]byte{0, 0, 0, 100}, pcanStatusOK, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.observe(now.Add(2*busOffPollInterval+2*time.Millisecond), warnErrObs)
+	lowErrObs, err := decodePCANErrorFrame([]byte{0, 0, 0, 8}, pcanStatusOK, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events, count = state.observe(now.Add(2*busOffPollInterval+3*time.Millisecond), lowErrObs); count != 1 || events[0].Kind != gocan.EventErrorFrame {
+		t.Fatalf("low-counter error during recovery poll = %+v", events[:count])
+	}
+	okObs, _ := decodePCANStatus(pcanStatusOK, 1)
+	if events, count = state.observe(now.Add(2*busOffPollInterval+4*time.Millisecond), okObs); count != 0 {
+		t.Fatalf("queued OK status during recovery poll = %+v", events[:count])
+	}
+	rxObs := pcanReceiveObservation{hasFrame: true, frame: gocan.Frame{ID: 0x100}}
+	state.observe(now.Add(2*busOffPollInterval+5*time.Millisecond), rxObs)
 	if state.nextDeadline().IsZero() {
-		t.Fatal("duplicate 0x08 status frame cancelled post-bus-off poll")
+		t.Fatal("queued status/error or duplicate 0x08 cancelled post-bus-off poll")
+	}
+	if _, ok := state.tick(now.Add(time.Second), 1); ok {
+		t.Fatal("quiet timer inferred Active while post-bus-off polling remained active")
 	}
 	polled, pcount, err = state.pollStatus(now.Add(3*busOffPollInterval), pcanStatusOK, 1)
 	if err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || !state.nextDeadline().IsZero() {
 		t.Fatalf("poll 0x00 = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
 	}
 
-	// 2. Non-bus-off overrun on pollStatus releases the write gate and reports overrun.
+	// 2. Non-bus-off overrun on pollStatus releases the write gate, reports
+	// overrun, and resets pollOverrun when polling stops so a later recovery
+	// reports its own overrun.
 	_, _ = state.observeSendBusOff(now.Add(time.Second), 1)
 	polled, pcount, err = state.pollStatus(now.Add(time.Second+busOffPollInterval), pcanStatusQueueOverrun, 1)
 	if err != nil || state.busOff() || pcount != 2 ||
 		polled[0].Kind != gocan.EventReceiveOverrun || polled[1].ControllerState != gocan.ControllerActive {
 		t.Fatalf("poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
+	}
+	state.observe(now.Add(time.Second+2*busOffPollInterval), rxObs)
+	_, _ = state.observeSendBusOff(now.Add(time.Second+3*busOffPollInterval), 1)
+	polled, pcount, err = state.pollStatus(now.Add(time.Second+4*busOffPollInterval), pcanStatusQueueOverrun, 1)
+	if err != nil || state.busOff() || pcount != 2 ||
+		polled[0].Kind != gocan.EventReceiveOverrun || polled[1].ControllerState != gocan.ControllerActive {
+		t.Fatalf("second recovery poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
 	}
 
 	// 3. Passive ignores ambiguous BUSHEAVY (0x08) while resetting the quiet
@@ -176,7 +208,6 @@ func TestPCANStateBenchSequences(t *testing.T) {
 	if count != 2 || events[1].ControllerState != gocan.ControllerPassive {
 		t.Fatalf("enter passive = %+v", events[:count])
 	}
-	rxObs := pcanReceiveObservation{hasFrame: true, frame: gocan.Frame{ID: 0x100}}
 	state.observe(t0.Add(time.Millisecond), rxObs)
 	if events, count = state.observe(t0.Add(2*time.Millisecond), heavyObs); count != 0 {
 		t.Fatalf("BUSHEAVY downgraded passive: %+v", events[:count])

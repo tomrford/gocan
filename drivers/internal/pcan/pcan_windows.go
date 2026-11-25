@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -299,6 +300,26 @@ func loadPCANAPI() (*pcanAPI, error) {
 }
 
 func (api *pcanAPI) statusError(operation string, status pcanStatus) error {
+	if text, ok := api.errorText(status); ok {
+		return fmt.Errorf("%s: PCAN status %#08x: %s", operation, uint32(status), text)
+	}
+	// CAN_GetErrorText can reject combined bitmasks such as BUSOFF|BUSLIGHT;
+	// resolve each set bit individually when the combined lookup fails.
+	var parts []string
+	for remaining := uint32(status); remaining != 0; {
+		bit := remaining & -remaining
+		remaining ^= bit
+		if text, ok := api.errorText(pcanStatus(bit)); ok {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) > 0 {
+		return fmt.Errorf("%s: PCAN status %#08x: %s", operation, uint32(status), strings.Join(parts, "; "))
+	}
+	return fmt.Errorf("%s: PCAN status %#08x", operation, uint32(status))
+}
+
+func (api *pcanAPI) errorText(status pcanStatus) (string, bool) {
 	var textBuffer [256]byte
 	result, _, _ := api.getErrorText.Call(
 		uintptr(status),
@@ -306,13 +327,16 @@ func (api *pcanAPI) statusError(operation string, status pcanStatus) error {
 		uintptr(unsafe.Pointer(&textBuffer[0])),
 	)
 	if pcanStatus(result) != pcanStatusOK {
-		return fmt.Errorf("%s: PCAN status %#08x", operation, uint32(status))
+		return "", false
 	}
 	length := 0
 	for length < len(textBuffer) && textBuffer[length] != 0 {
 		length++
 	}
-	return fmt.Errorf("%s: PCAN status %#08x: %s", operation, uint32(status), textBuffer[:length])
+	if length == 0 {
+		return "", false
+	}
+	return string(textBuffer[:length]), true
 }
 
 func queryAttachedPCANChannels(api *pcanAPI) ([]ChannelInfo, error) {
