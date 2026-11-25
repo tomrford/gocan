@@ -199,8 +199,8 @@ func TestVectorFDCollisionBusOffEvents(t *testing.T) {
 		}
 	}
 
-	// Vector hardware rejoins the bus by itself after bus-off; the bus stays
-	// open and reports both transitions.
+	// gocan restarts the channel after bus-off; the bus stays open and reports
+	// both transitions.
 	busOff := waitVectorState(t, capture, loser.ID(), 0, gocan.ControllerBusOff)
 	active := waitVectorState(t, capture, loser.ID(), busOff, gocan.ControllerActive)
 	for _, bus := range []gocan.Bus{loser, winner} {
