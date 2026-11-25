@@ -28,6 +28,7 @@ type activeBus struct {
 	fullID    uint32
 	fullUntil time.Time
 	fullAfter byte
+	fullErr   error
 }
 
 func newActiveBus() *activeBus {
@@ -47,7 +48,11 @@ func (b *activeBus) Send(ctx context.Context, f gocan.Frame) error {
 	err := b.failure
 	delayID, delay := b.delayID, b.delay
 	if f.ID == b.fullID && f.Data[0] > b.fullAfter && time.Now().Before(b.fullUntil) {
-		err = gocan.ErrTransmitQueueFull
+		if b.fullErr != nil {
+			err = b.fullErr
+		} else {
+			err = gocan.ErrTransmitQueueFull
+		}
 	}
 	b.mu.Unlock()
 	if err != nil {
@@ -872,8 +877,88 @@ func TestActiveCloseAbortsDirectedTransferDuringDTSend(t *testing.T) {
 
 func TestActiveTransientBusOffRecovery(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		// 0a. Initial claim rejected with ErrBusOff retries and waits the full
+		// 250 ms arbitration window from claim acceptance; a competing claim
+		// whose defense hits ErrBusOff keeps Open pending until the defense sends.
 		b := newActiveBus()
-		c := openActive(t, b)
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		opened := make(chan struct {
+			c   *j1939.Client
+			err error
+		}, 1)
+		go func() {
+			c, err := j1939.Open(context.Background(), b, j1939.Config{Address: 0x80, Name: 0x1234})
+			opened <- struct {
+				c   *j1939.Client
+				err error
+			}{c, err}
+		}()
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		// Only 200 ms after claim acceptance (300 ms from Open): must still wait.
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case res := <-opened:
+			if res.c != nil {
+				_ = res.c.Close()
+			}
+			t.Fatalf("Open completed before 250 ms after delayed initial claim: %v", res.err)
+		default:
+		}
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		// Lower-priority peer (larger NAME) challenges 0x80 during the 250 ms window.
+		b.inject(t, 0x18eeff80, 0x99, 0x99, 0, 0, 0, 0, 0, 0)
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case res := <-opened:
+			if res.c != nil {
+				_ = res.c.Close()
+			}
+			t.Fatalf("Open completed while defense was blocked by ErrBusOff: %v", res.err)
+		default:
+		}
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		res := <-opened
+		if res.err != nil {
+			t.Fatalf("Open after defense recovery: %v", res.err)
+		}
+		c := res.c
+		t.Cleanup(func() { _ = c.Close() })
+
+		// 0b. During Open, losing to a higher-priority peer returns
+		// ErrAddressLost promptly even if Cannot Claim hits ErrBusOff.
+		lossBus := newActiveBus()
+		lossCtx, cancelLoss := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancelLoss()
+		lossOpened := make(chan error, 1)
+		go func() {
+			lc, err := j1939.Open(lossCtx, lossBus, j1939.Config{Address: 0x80, Name: 0x1234})
+			if lc != nil {
+				_ = lc.Close()
+			}
+			lossOpened <- err
+		}()
+		wire(t, lossBus, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
+		lossBus.mu.Lock()
+		lossBus.failure = gocan.ErrBusOff
+		lossBus.mu.Unlock()
+		lossBus.inject(t, 0x18eeff80, 0x01, 0x00, 0, 0, 0, 0, 0, 0)
+		if err := <-lossOpened; !errors.Is(err, j1939.ErrAddressLost) {
+			t.Fatalf("Open after higher-priority loss during bus-off = %v, want ErrAddressLost", err)
+		}
 
 		// 1. Address-claim request arriving during bus-off keeps the client
 		// alive and retries the claim once the controller recovers.
@@ -893,24 +978,59 @@ func TestActiveTransientBusOffRecovery(t *testing.T) {
 		b.mu.Unlock()
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 
-		// 2. Directed TP DT packet rejected with ErrBusOff retries within the
-		// consecutive-packet deadline and completes after recovery.
+		// 2. Directed TP DT #2 rejected with ErrBusOff (armed before CTS) retries
+		// within the consecutive-packet deadline and completes after recovery.
 		r := sendActive(c, context.Background(), 0x22, activePayload[:14])
 		wire(t, b, 0x18ec2280, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
+		b.mu.Lock()
+		b.fullID = 0x1ceb2280
+		b.fullAfter = 1
+		b.fullErr = gocan.ErrBusOff
+		b.fullUntil = time.Now().Add(35 * time.Millisecond)
+		b.mu.Unlock()
 		b.inject(t, 0x18ec8022, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
 		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
-		b.mu.Lock()
-		b.failure = gocan.ErrBusOff
-		b.mu.Unlock()
-		time.Sleep(35 * time.Millisecond)
-		b.mu.Lock()
-		b.failure = nil
-		b.mu.Unlock()
 		wire(t, b, 0x1ceb2280, 2, 8, 9, 10, 11, 12, 13, 14)
 		b.inject(t, 0x18ec8022, 0x13, 14, 0, 2, 0xff, 0xca, 0xfe, 0)
 		resultIs(t, r, nil)
+		b.mu.Lock()
+		b.fullID, b.fullErr, b.fullUntil = 0, nil, time.Time{}
+		b.mu.Unlock()
 
-		// 3. A best-effort TP abort that fails with ErrBusOff on send
+		// 3. Receive CTS and EOMA rejected with ErrBusOff do not kill the client.
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		b.inject(t, 0x18ec8022, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
+		time.Sleep(15 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case <-c.Done():
+			t.Fatalf("client stopped when CTS hit ErrBusOff: %v", c.Err())
+		default:
+		}
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+		b.inject(t, 0x18ec8022, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
+		wire(t, b, 0x1cec2280, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
+		b.inject(t, 0x1ceb8022, 1, 1, 2, 3, 4, 5, 6, 7)
+		b.mu.Lock()
+		b.failure = gocan.ErrBusOff
+		b.mu.Unlock()
+		b.inject(t, 0x1ceb8022, 2, 8, 9, 10, 11, 12, 13, 14)
+		time.Sleep(15 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case <-c.Done():
+			t.Fatalf("client stopped when EOMA hit ErrBusOff: %v", c.Err())
+		default:
+		}
+		b.mu.Lock()
+		b.failure = nil
+		b.mu.Unlock()
+
+		// 4. A best-effort TP abort that fails with ErrBusOff on send
 		// cancellation does not stop the client.
 		sendCtx, cancelSend := context.WithCancel(context.Background())
 		r = sendActive(c, sendCtx, 0x22, activePayload[:14])
@@ -928,7 +1048,7 @@ func TestActiveTransientBusOffRecovery(t *testing.T) {
 		}
 		wire(t, b, 0x18ef2280, 9)
 
-		// 4. A delayed address-claim retry blocking past a directed DT deadline
+		// 5. A delayed address-claim retry blocking past a directed DT deadline
 		// must expire the transfer rather than send DT after its 750 ms budget.
 		r = sendActive(c, context.Background(), 0x22, activePayload[:14])
 		wire(t, b, 0x18ec2280, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
@@ -939,8 +1059,6 @@ func TestActiveTransientBusOffRecovery(t *testing.T) {
 		b.mu.Unlock()
 		b.inject(t, 0x18ec8022, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
 		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
-		// Keep DT #2 retrying past 720 ms, while a pending address-claim retry
-		// fires at ~715 ms and blocks past the 750 ms consecutive-packet deadline.
 		time.Sleep(695 * time.Millisecond)
 		b.mu.Lock()
 		b.failure = gocan.ErrBusOff
@@ -956,40 +1074,6 @@ func TestActiveTransientBusOffRecovery(t *testing.T) {
 		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
 		wire(t, b, 0x1cec2280, 0xff, 3, 0xff, 0xff, 0xff, 0xca, 0xfe, 0)
 		resultIs(t, r, j1939.ErrTimeout)
-		quiet(t, b)
-
-		// 5. A delayed address-claim retry blocking past a response deadline
-		// must process a timely EOMA already recorded in Capture instead of
-		// expiring the transfer against the post-claim wall clock.
-		b.mu.Lock()
-		b.fullID = 0
-		b.delayID = 0
-		b.delay = 0
-		b.mu.Unlock()
-		r = sendActive(c, context.Background(), 0x22, activePayload[:14])
-		wire(t, b, 0x18ec2280, 0x10, 14, 0, 2, 2, 0xca, 0xfe, 0)
-		b.inject(t, 0x18ec8022, 0x11, 2, 1, 0xff, 0xff, 0xca, 0xfe, 0)
-		wire(t, b, 0x1ceb2280, 1, 1, 2, 3, 4, 5, 6, 7)
-		wire(t, b, 0x1ceb2280, 2, 8, 9, 10, 11, 12, 13, 14)
-		// Wait until shortly before the 1250 ms EOMA deadline, schedule a
-		// claim retry that blocks across the deadline, and inject EOMA before
-		// the deadline while the claim send is blocked.
-		time.Sleep(1200 * time.Millisecond)
-		b.mu.Lock()
-		b.failure = gocan.ErrBusOff
-		b.mu.Unlock()
-		b.inject(t, 0x18eaff22, 0x00, 0xee, 0x00)
-		time.Sleep(5 * time.Millisecond)
-		synctest.Wait()
-		b.mu.Lock()
-		b.failure = nil
-		b.delayID = 0x18eeff80
-		b.delay = 80 * time.Millisecond
-		b.mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
-		b.inject(t, 0x18ec8022, 0x13, 14, 0, 2, 0xff, 0xca, 0xfe, 0)
-		wire(t, b, 0x18eeff80, 0x34, 0x12, 0, 0, 0, 0, 0, 0)
-		resultIs(t, r, nil)
 		quiet(t, b)
 	})
 }

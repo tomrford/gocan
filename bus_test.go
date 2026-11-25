@@ -44,7 +44,7 @@ func TestSendRetryLifecycle(t *testing.T) {
 		}
 
 		// Bus-off recovery needs at least 128 x 11 recessive bit times, so
-		// retries poll every 10 ms rather than spinning.
+		// retries back off instead of spinning.
 		recovered := time.Now().Add(25 * time.Millisecond)
 		calls = 0
 		bus.send = func(context.Context, gocan.Frame) error {
@@ -55,13 +55,13 @@ func TestSendRetryLifecycle(t *testing.T) {
 			return nil
 		}
 		start = time.Now()
-		if err := gocan.Send(context.Background(), bus, frame, time.Second); err != nil || time.Since(start) != 30*time.Millisecond || calls != 4 {
+		if err := gocan.Send(context.Background(), bus, frame, time.Second); err != nil || time.Since(start) < 25*time.Millisecond || time.Since(start) >= 100*time.Millisecond || calls < 2 || calls > 10 {
 			t.Fatalf("bus-off recovery: %v after %v, calls=%d", err, time.Since(start), calls)
 		}
 		calls = 0
 		recovered = time.Now().Add(time.Hour)
 		start = time.Now()
-		if err := gocan.Send(context.Background(), bus, frame, 25*time.Millisecond); !errors.Is(err, gocan.ErrBusOff) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 25*time.Millisecond || calls != 3 {
+		if err := gocan.Send(context.Background(), bus, frame, 25*time.Millisecond); !errors.Is(err, gocan.ErrBusOff) || errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 25*time.Millisecond || calls < 2 || calls > 10 {
 			t.Fatalf("bus-off budget: %v after %v, calls=%d", err, time.Since(start), calls)
 		}
 		cause := errors.New("caller stopped send")

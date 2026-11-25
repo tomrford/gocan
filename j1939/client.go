@@ -78,6 +78,8 @@ type Client struct {
 	err      error
 	// Only the run goroutine accesses fields below.
 	claimed      bool
+	claimSent    bool
+	openDone     bool
 	claimAt      time.Time
 	claimRetryAt time.Time
 	cannotAt     time.Time
@@ -253,11 +255,11 @@ func (c *Client) run() {
 		c.mu.Unlock()
 		close(c.done)
 	}()
-	if err := c.claim(c.config.Address); err != nil {
+	c.claimAt = time.Now().Add(250 * time.Millisecond)
+	if err := c.claimOrRetry(); err != nil {
 		runErr = err
 		return
 	}
-	c.claimAt = time.Now().Add(250 * time.Millisecond)
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	immediate := make(chan struct{})
@@ -376,9 +378,10 @@ func (c *Client) handle(event gocan.FrameEvent, h Header) error {
 }
 
 func (c *Client) completeClaim(at time.Time) {
-	if !c.claimAt.IsZero() && !at.Before(c.claimAt) {
+	if c.claimSent && c.claimRetryAt.IsZero() && !c.claimAt.IsZero() && !at.Before(c.claimAt) {
 		c.claimAt = time.Time{}
 		c.claimed = true
+		c.openDone = true
 		c.mu.Lock()
 		c.address = c.config.Address
 		c.mu.Unlock()
@@ -398,6 +401,12 @@ func (c *Client) claimOrRetry() error {
 	}
 	err := c.claim(c.config.Address)
 	if err == nil {
+		if !c.claimSent {
+			c.claimSent = true
+			if !c.claimed {
+				c.claimAt = time.Now().Add(250 * time.Millisecond)
+			}
+		}
 		return nil
 	}
 	if transientSendError(err) {
@@ -425,11 +434,9 @@ func (c *Client) scheduleCannotClaim() {
 }
 
 func (c *Client) tick(now time.Time) error {
-	sent := false
 	if !c.claimRetryAt.IsZero() && !now.Before(c.claimRetryAt) {
 		c.claimRetryAt = time.Time{}
 		if c.claimed || !c.claimAt.IsZero() {
-			sent = true
 			if err := c.claimOrRetry(); err != nil {
 				return err
 			}
@@ -437,26 +444,34 @@ func (c *Client) tick(now time.Time) error {
 	}
 	if !c.cannotAt.IsZero() && !now.Before(c.cannotAt) {
 		c.cannotAt = time.Time{}
-		sent = true
 		if err := c.claim(NullAddress); err != nil {
 			if !transientSendError(err) {
 				return err
 			}
-			c.cannotAt = time.Now().Add(transientRetryDelay(err))
-		} else {
-			select {
-			case c.ready <- ErrAddressLost:
-			default:
+			if c.openDone {
+				c.cannotAt = time.Now().Add(transientRetryDelay(err))
+			} else {
+				// Ownership is already lost during Open, which closes the
+				// client on ErrAddressLost; surface the loss instead of
+				// hanging Open behind a bus-off Cannot Claim retry.
+				c.notifyAddressLost()
 			}
+		} else {
+			c.notifyAddressLost()
 		}
 	}
-	if sent {
-		// Refresh now so tickTransport does not launch an overdue DT after a
-		// blocking claim send; receive/control waits expire only after the next
-		// poll processes any responses that already landed in Capture.
-		now = time.Now()
+	return c.tickTransport(time.Now())
+}
+
+func (c *Client) notifyAddressLost() {
+	if c.openDone {
+		return
 	}
-	return c.tickTransport(now)
+	c.openDone = true
+	select {
+	case c.ready <- ErrAddressLost:
+	default:
+	}
 }
 
 func transientSendError(err error) bool {

@@ -12,7 +12,8 @@ var (
 	// ErrBusOff indicates that a controller stopped participating on the bus
 	// after its transmit error counter exceeded the bus-off threshold. Send
 	// returns it for a frame the controller rejected while bus-off; the bus
-	// remains open, reports the state as an EventControllerState, and recovers.
+	// remains open, reports the state as an EventControllerState, and recovers
+	// when configured or restarted.
 	ErrBusOff = errors.New("gocan: CAN controller is bus-off")
 	// ErrTransmitQueueFull indicates that a non-blocking native transmit queue
 	// cannot currently accept another frame. The bus remains usable and callers
