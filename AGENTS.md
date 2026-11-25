@@ -11,6 +11,7 @@ across multiple hardware vendors.
 - A test that breaks under a behavior-preserving refactor is asserting implementation, not behavior. Do not add it.
 - Never delete or weaken a failing test to make the suite pass. Fix the code, or ask.
 - Go-native scheduling and receive-loop performance appears satisfactory; do not consider provider-native cyclic transmission or receive batching without measured evidence. Exception: NI-XNET polls bounded batches because its native API has no receive-ready event.
+- To cut a release once `main` CI is green, push an annotated `vX.Y.Z` tag (`git tag -a vX.Y.Z && git push origin vX.Y.Z`), which triggers `.github/workflows/release.yml` to publish the GitHub release; optionally curate the notes afterward with `gh release edit vX.Y.Z` (or run `gh release create vX.Y.Z --verify-tag --generate-notes` if GitHub drops the tag event).
 
 ## Reference sources
 
