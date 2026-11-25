@@ -361,3 +361,45 @@ func decodeMessage(id uint32, messageType, dlc uint8, data []byte, fdAPI bool) (
 	}
 	return frame, nil
 }
+
+// acceptPCANControllerState reports whether next should supersede previous and
+// be recorded as a controller-state event.
+//
+// While bus-off, only live CAN_GetStatus polls (fromPoll) may leave bus-off,
+// because queued error frames carry 8-bit counters that cannot represent
+// bus-off and may predate a bus-off detected on Send. A count-less status read
+// (such as PCAN_ERROR_BUSHEAVY on classic PCAN-USB) does not downgrade a known
+// error-passive state to warning, and duplicates of the current state are
+// suppressed unless error counters changed.
+func acceptPCANControllerState(previous, next gocan.Event, fromPoll bool) bool {
+	if previous.Kind != gocan.EventControllerState {
+		return true
+	}
+	if previous.ControllerState == gocan.ControllerBusOff &&
+		next.ControllerState != gocan.ControllerBusOff &&
+		!fromPoll {
+		return false
+	}
+	if previous.ControllerState == gocan.ControllerPassive &&
+		next.ControllerState == gocan.ControllerWarning &&
+		!next.ErrorCountsKnown {
+		return false
+	}
+	return !samePCANControllerState(previous, next)
+}
+
+// samePCANControllerState reports whether next duplicates previous. A count-less
+// status read (such as QRCVEMPTY|BUSHEAVY or CAN_GetStatus) is deduplicated
+// against any prior event for the same state; events carrying error counts are
+// deduplicated only when the counters also match.
+func samePCANControllerState(previous, next gocan.Event) bool {
+	if previous.Kind != gocan.EventControllerState || previous.ControllerState != next.ControllerState {
+		return false
+	}
+	if !next.ErrorCountsKnown {
+		return true
+	}
+	return previous.ErrorCountsKnown &&
+		previous.TXErrorCount == next.TXErrorCount &&
+		previous.RXErrorCount == next.RXErrorCount
+}
