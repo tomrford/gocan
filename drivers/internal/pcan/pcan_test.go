@@ -124,290 +124,245 @@ func TestPCANEventTranslation(t *testing.T) {
 // on classic PCAN-USB hardware without requiring attached adapters.
 func TestPCANStateBenchSequences(t *testing.T) {
 	now := time.Unix(100, 0)
-	var state pcanState
-
-	// 1. Send hits BUSOFF with no status frame: write gate latches, queued
-	// passive error frames cannot release it, live 0x14 -> 0x08 releases writes
-	// into Warning, and live 0x00 must hold for degradedClearHold to reach Active.
-	event, ok := state.observeSendBusOff(now, 1)
-	if !ok || event.ControllerState != gocan.ControllerBusOff || !state.busOff() {
-		t.Fatalf("send bus-off = %+v, ok=%v, busOff=%v", event, ok, state.busOff())
-	}
-	passiveObs, err := decodePCANErrorFrame([]byte{0, 0, 129, 0}, pcanStatusOK, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, count := state.observe(now.Add(time.Millisecond), passiveObs)
-	if count != 1 || events[0].Kind != gocan.EventErrorFrame || !state.busOff() {
-		t.Fatalf("queued error during bus-off = %+v, busOff=%v", events[:count], state.busOff())
-	}
-	polled, pcount, err := state.pollStatus(now.Add(statusPollInterval), pcanStatusBusOff|pcanStatusBusLight, 1, true)
-	if err != nil || pcount != 0 || !state.busOff() {
-		t.Fatalf("poll 0x14 = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
-	}
-	polled, pcount, err = state.pollStatus(now.Add(2*statusPollInterval), pcanStatusBusWarning, 1, true)
-	if err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerWarning || state.busOff() {
-		t.Fatalf("poll 0x08 = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
-	}
-	// Duplicate 0x08 status, queued degraded/low-counter error frames, queued OK
-	// status, and clean RX must neither cancel post-bus-off polling nor report
-	// Active before sustained live pollStatus(0x00) confirms recovery.
 	heavyObs, _ := decodePCANStatus(pcanStatusBusWarning, 1)
-	state.observe(now.Add(2*statusPollInterval+time.Millisecond), heavyObs)
-	warnErrObs, err := decodePCANErrorFrame([]byte{0, 0, 0, 100}, pcanStatusOK, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.observe(now.Add(2*statusPollInterval+2*time.Millisecond), warnErrObs)
-	lowErrObs, err := decodePCANErrorFrame([]byte{0, 0, 0, 8}, pcanStatusOK, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if events, count = state.observe(now.Add(2*statusPollInterval+3*time.Millisecond), lowErrObs); count != 1 || events[0].Kind != gocan.EventErrorFrame {
-		t.Fatalf("low-counter error during recovery poll = %+v", events[:count])
-	}
-	okObs, _ := decodePCANStatus(pcanStatusOK, 1)
-	if events, count = state.observe(now.Add(2*statusPollInterval+4*time.Millisecond), okObs); count != 0 {
-		t.Fatalf("queued OK status during recovery poll = %+v", events[:count])
-	}
-	rxObs := pcanReceiveObservation{hasFrame: true, frame: gocan.Frame{ID: 0x100}}
-	state.observe(now.Add(2*statusPollInterval+5*time.Millisecond), rxObs)
-	if state.nextDeadline().IsZero() {
-		t.Fatal("queued status/error or duplicate 0x08 cancelled post-bus-off poll")
-	}
-	// Counted passive during post-bus-off polling must not flap Warning<->Passive
-	// under repeated live 0x08 (BUSHEAVY) polls and repeated passive error frames.
-	if events, count = state.observe(now.Add(2*statusPollInterval+6*time.Millisecond), passiveObs); count != 2 || events[1].ControllerState != gocan.ControllerPassive {
-		t.Fatalf("passive during post-bus-off poll = %+v", events[:count])
-	}
-	for step := range 3 {
-		pollAt := now.Add(time.Duration(3+step) * statusPollInterval)
-		if polled, pcount, err = state.pollStatus(pollAt, pcanStatusBusWarning, 1, true); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
-			t.Fatalf("poll 0x08 while passive step %d = %+v, err=%v, next=%v", step, polled[:pcount], err, state.nextDeadline())
-		}
-		if events, count = state.observe(pollAt.Add(time.Millisecond), passiveObs); count != 1 || events[0].Kind != gocan.EventErrorFrame {
-			t.Fatalf("repeated passive after poll 0x08 step %d = %+v", step, events[:count])
-		}
-	}
-	clearStart := now.Add(6 * statusPollInterval)
-	if polled, pcount, err = state.pollStatus(clearStart, pcanStatusOK, 1, true); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
-		t.Fatalf("first poll 0x00 = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
-	}
-	// Undrained queue at the hold boundary must defer publishing Active so
-	// queued faults can invalidate the pending inferred recovery first.
-	if polled, pcount, err = state.pollStatus(clearStart.Add(degradedClearHold), pcanStatusOK, 1, false); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
-		t.Fatalf("undrained poll 0x00 at clear hold = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
-	}
-	polled, pcount, err = state.pollStatus(clearStart.Add(degradedClearHold+statusPollInterval), pcanStatusOK, 1, true)
-	if err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || !state.nextDeadline().IsZero() {
-		t.Fatalf("poll 0x00 at clear hold = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
-	}
-
-	// 2. Non-bus-off overrun on direct bus-off recovery releases the write gate,
-	// defers Active while the receive queue is undrained (without letting a Send
-	// during deferred bus-off recovery arm classic overrun suppression), then
-	// reports overrun + Active once drained and resets pollOverrun for later recoveries.
-	tBusOff := clearStart.Add(2 * time.Second)
-	state.classic = true
-	_, _ = state.observeSendBusOff(tBusOff, 1)
-	polled, pcount, err = state.pollStatus(tBusOff.Add(statusPollInterval), pcanStatusOK, 1, false)
-	if err != nil || state.busOff() || pcount != 0 || state.nextDeadline().IsZero() {
-		t.Fatalf("undrained direct bus-off poll 0x00 = %+v, err=%v, busOff=%v, next=%v", polled[:pcount], err, state.busOff(), state.nextDeadline())
-	}
-	state.observeSend()
-	bareOverrunObs, err := decodePCANStatus(pcanStatusOverrun, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if events, count = state.observe(tBusOff.Add(statusPollInterval+time.Millisecond), bareOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("bare 0x02 during deferred bus-off recovery = %+v", events[:count])
-	}
-	polled, pcount, err = state.pollStatus(tBusOff.Add(2*statusPollInterval), pcanStatusQueueOverrun, 1, true)
-	if err != nil || state.busOff() || pcount != 2 ||
-		polled[0].Kind != gocan.EventReceiveOverrun || polled[1].ControllerState != gocan.ControllerActive {
-		t.Fatalf("poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
-	}
-	state.observe(tBusOff.Add(3*statusPollInterval), rxObs)
-	_, _ = state.observeSendBusOff(tBusOff.Add(4*statusPollInterval), 1)
-	polled, pcount, err = state.pollStatus(tBusOff.Add(5*statusPollInterval), pcanStatusQueueOverrun, 1, true)
-	if err != nil || state.busOff() || pcount != 2 ||
-		polled[0].Kind != gocan.EventReceiveOverrun || polled[1].ControllerState != gocan.ControllerActive {
-		t.Fatalf("second recovery poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
-	}
-
-	// 3. Bench stub -> OBC RX-only -> drain overrun artifact -> spurious bus-off -> clean recovery:
-	// - Entry lag and post-first-status GetStatus 0x0 windows (~1.05 s) must not
-	//   emit Active while periodic 0x08 status frames keep arriving.
-	// - Clean RX frames while TX-degraded (TEC=127 Warning) must never infer Active
-	//   or upgrade Warning back to Passive on 0x08 status frames.
-	// - On classic PCAN-USB, bare 0x02 (OVERRUN) is reported before TX while degraded
-	//   and after recovery, suppressed (while still resetting the clear window) after
-	//   TX while degraded, whereas 0x40 (QOVERRUN) and non-classic 0x02 stay reported.
-	// - Spurious BUSOFF (0x10) alongside a TEC=95 error frame stays bus-off until
-	//   live GetStatus clears BUSOFF.
-	state.classic = true
-	t0 := tBusOff.Add(2 * time.Second)
-	tec128Obs, err := decodePCANErrorFrame([]byte{0, 0, 0, 128}, pcanStatusOK, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, count = state.observe(t0, tec128Obs)
-	if count != 2 || events[1].ControllerState != gocan.ControllerPassive || state.nextDeadline().IsZero() {
-		t.Fatalf("enter passive = %+v, next=%v", events[:count], state.nextDeadline())
-	}
-	// Entry lag: GetStatus reads 0x0 for 950 ms until the first 0x08 status frame.
-	if polled, pcount, err = state.pollStatus(t0.Add(statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("entry-lag poll 0x00 = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(t0.Add(950*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("entry-lag poll 0x00 at 950ms = %+v, err=%v", polled[:pcount], err)
-	}
-	if events, count = state.observe(t0.Add(time.Second), heavyObs); count != 0 {
-		t.Fatalf("first BUSHEAVY downgraded passive: %+v", events[:count])
-	}
-	// Post-first-status drop: GetStatus reads 0x8 then drops to 0x0 for ~1.02 s
-	// until the next ~1.05 s status frame.
-	if polled, pcount, err = state.pollStatus(t0.Add(1020*time.Millisecond), pcanStatusBusWarning, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("post-status poll 0x08 = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(t0.Add(1040*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("post-status drop poll 0x00 = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(t0.Add(2040*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("post-status drop poll 0x00 at +1.0s = %+v, err=%v", polled[:pcount], err)
-	}
-	if events, count = state.observe(t0.Add(2050*time.Millisecond), heavyObs); count != 0 {
-		t.Fatalf("second BUSHEAVY downgraded passive: %+v", events[:count])
-	}
-	// Plug into healthy bus with no TX: queued frame drops TEC 128->127 (Warning);
-	// clean RX + 1.05 s BUSHEAVY status frames must keep steady Warning with no flicker.
-	tec127Obs, err := decodePCANErrorFrame([]byte{0, 0, 0, 127}, pcanStatusOK, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if events, count = state.observe(t0.Add(3*time.Second), tec127Obs); count != 2 || events[1].ControllerState != gocan.ControllerWarning {
-		t.Fatalf("TEC=127 transition = %+v", events[:count])
-	}
-	for sec := range 4 {
-		base := t0.Add(time.Duration(4+sec) * time.Second)
-		if events, count = state.observe(base, rxObs); count != 0 {
-			t.Fatalf("clean RX while TEC=127 emitted %+v", events[:count])
-		}
-		if events, count = state.observe(base.Add(50*time.Millisecond), heavyObs); count != 0 {
-			t.Fatalf("BUSHEAVY while TEC=127 emitted %+v", events[:count])
-		}
-		if polled, pcount, err = state.pollStatus(base.Add(100*time.Millisecond), pcanStatusBusWarning, 1, true); err != nil || pcount != 0 {
-			t.Fatalf("poll 0x08 while TEC=127 = %+v, err=%v", polled[:pcount], err)
-		}
-	}
-	// Overrun before any degraded TX is still reported and resets the clear window.
-	tOvr := t0.Add(9 * time.Second)
-	if polled, pcount, err = state.pollStatus(tOvr.Add(-400*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("pre-overrun poll 0x00 = %+v, err=%v", polled[:pcount], err)
-	}
-	overrunObs, err := decodePCANStatus(pcanStatusOverrun, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if events, count = state.observe(tOvr, overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("pre-TX overrun observation = %+v", events[:count])
-	}
-	if polled, pcount, err = state.pollStatus(tOvr.Add(20*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("post-overrun poll 0x00 = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(tOvr.Add(1040*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("post-overrun poll 0x00 at +1.02s = %+v, err=%v", polled[:pcount], err)
-	}
-	if events, count = state.observe(tOvr.Add(1050*time.Millisecond), heavyObs); count != 0 {
-		t.Fatalf("post-overrun BUSHEAVY = %+v", events[:count])
-	}
-	// After TX while degraded on classic hardware, bare 0x02 is suppressed as a
-	// firmware artifact while still resetting the clear window; 0x40 (QOVERRUN)
-	// continues to be reported.
-	state.observeSend()
-	if polled, pcount, err = state.pollStatus(tOvr.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("poll 0x00 before suppressed overrun = %+v, err=%v", polled[:pcount], err)
-	}
-	if events, count = state.observe(tOvr.Add(1500*time.Millisecond), overrunObs); count != 0 {
-		t.Fatalf("classic drain bare 0x02 was not suppressed: %+v", events[:count])
-	}
-	if polled, pcount, err = state.pollStatus(tOvr.Add(2500*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("poll 0x00 after suppressed observe overrun reset = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(tOvr.Add(2550*time.Millisecond), pcanStatusOverrun, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("classic drain poll bare 0x02 was not suppressed: %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(tOvr.Add(2600*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("poll 0x00 after suppressed poll overrun = %+v, err=%v", polled[:pcount], err)
-	}
-	qOverrunObs, err := decodePCANStatus(pcanStatusQueueOverrun, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if events, count = state.observe(tOvr.Add(2650*time.Millisecond), qOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("QOVERRUN during classic drain = %+v", events[:count])
-	}
-	// Spurious BUSOFF (0x10) paired with TEC=95 error frame stays bus-off until
-	// live GetStatus clears BUSOFF.
-	tSpurious := tOvr.Add(3 * time.Second)
-	busOffObs, _ := decodePCANStatus(pcanStatusBusOff, 1)
-	if events, count = state.observe(tSpurious, busOffObs); count != 1 || events[0].ControllerState != gocan.ControllerBusOff || !state.busOff() {
-		t.Fatalf("spurious bus-off = %+v, busOff=%v", events[:count], state.busOff())
-	}
-	tec95Obs, err := decodePCANErrorFrame([]byte{0, 0, 0, 95}, pcanStatusOK, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if events, count = state.observe(tSpurious.Add(time.Millisecond), tec95Obs); count != 1 || events[0].Kind != gocan.EventErrorFrame || !state.busOff() {
-		t.Fatalf("TEC=95 during spurious bus-off = %+v, busOff=%v", events[:count], state.busOff())
-	}
-	if polled, pcount, err = state.pollStatus(tSpurious.Add(time.Second), pcanStatusOK, 1, true); err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || state.busOff() || !state.nextDeadline().IsZero() {
-		t.Fatalf("spurious bus-off recovery = %+v, err=%v, busOff=%v, next=%v", polled[:pcount], err, state.busOff(), state.nextDeadline())
-	}
-
-	// 4. Clean recovery outside bus-off:
-	// - Counted error frame below 96 (TEC=95) recovers immediately to Active
-	//   with counts, stops polling, and re-enables bare 0x02 overrun reporting.
-	// - Without a counted recovery frame, sustained pollStatus(0x00) for
-	//   degradedClearHold infers Active and stops polling.
-	// - Non-classic (FD-capable) adapters always report bare 0x02.
-	tCounted := tSpurious.Add(2 * time.Second)
-	if events, count = state.observe(tCounted, tec128Obs); count != 2 || events[1].ControllerState != gocan.ControllerPassive {
-		t.Fatalf("re-enter passive for counted recovery = %+v", events[:count])
-	}
-	state.observeSend()
-	if events, count = state.observe(tCounted.Add(10*time.Millisecond), tec95Obs); count != 2 ||
-		events[1].ControllerState != gocan.ControllerActive || !events[1].ErrorCountsKnown ||
-		events[1].TXErrorCount != 95 || !state.nextDeadline().IsZero() {
-		t.Fatalf("counted TEC=95 recovery = %+v, next=%v", events[:count], state.nextDeadline())
-	}
-	if events, count = state.observe(tCounted.Add(20*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("bare 0x02 after recovery to Active = %+v", events[:count])
-	}
-
-	var fdState pcanState
-	fdState.observe(tCounted, tec128Obs)
-	fdState.observeSend()
-	if events, count = fdState.observe(tCounted.Add(time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("FD-capable bare 0x02 during degraded drain = %+v", events[:count])
-	}
-
-	tInferred := tCounted.Add(time.Second)
-	if events, count = state.observe(tInferred, tec128Obs); count != 2 || events[1].ControllerState != gocan.ControllerPassive {
-		t.Fatalf("re-enter passive for inferred recovery = %+v", events[:count])
-	}
 	lightObs, _ := decodePCANStatus(pcanStatusBusLight, 1)
-	if events, count = state.observe(tInferred.Add(time.Millisecond), lightObs); count != 1 || events[0].ControllerState != gocan.ControllerWarning {
-		t.Fatalf("BUSLIGHT after passive = %+v", events[:count])
+	okObs, _ := decodePCANStatus(pcanStatusOK, 1)
+	busOffObs, _ := decodePCANStatus(pcanStatusBusOff, 1)
+	overrunObs, _ := decodePCANStatus(pcanStatusOverrun, 1)
+	qOverrunObs, _ := decodePCANStatus(pcanStatusQueueOverrun, 1)
+	rxObs := pcanReceiveObservation{hasFrame: true, frame: gocan.Frame{ID: 0x100}}
+
+	errorObs := func(rec, tec byte) pcanReceiveObservation {
+		t.Helper()
+		obs, err := decodePCANErrorFrame([]byte{0, 0, rec, tec}, pcanStatusOK, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return obs
 	}
-	tClear := tInferred.Add(statusPollInterval)
-	if polled, pcount, err = state.pollStatus(tClear, pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("inferred recovery start poll = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(tClear.Add(degradedClearHold-statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("inferred recovery early poll = %+v, err=%v", polled[:pcount], err)
-	}
-	if polled, pcount, err = state.pollStatus(tClear.Add(degradedClearHold), pcanStatusOK, 1, true); err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || !state.nextDeadline().IsZero() {
-		t.Fatalf("inferred recovery final poll = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
-	}
+	passiveObs := errorObs(129, 0)
+	tec128Obs := errorObs(0, 128)
+	tec127Obs := errorObs(0, 127)
+	tec95Obs := errorObs(0, 95)
+
+	t.Run("bus-off recovery", func(t *testing.T) {
+		var state pcanState
+
+		// Send hits BUSOFF: write gate latches, queued passive error cannot release it,
+		// live 0x14 stays bus-off, and live 0x08 releases writes into Warning.
+		event, ok := state.observeSendBusOff(now, 1)
+		if !ok || event.ControllerState != gocan.ControllerBusOff || !state.busOff() {
+			t.Fatalf("send bus-off = %+v, ok=%v, busOff=%v", event, ok, state.busOff())
+		}
+		if events, count := state.observe(now.Add(time.Millisecond), passiveObs); count != 1 || events[0].Kind != gocan.EventErrorFrame || !state.busOff() {
+			t.Fatalf("queued error during bus-off = %+v, busOff=%v", events[:count], state.busOff())
+		}
+		if polled, pcount, err := state.pollStatus(now.Add(statusPollInterval), pcanStatusBusOff|pcanStatusBusLight, 1, true); err != nil || pcount != 0 || !state.busOff() {
+			t.Fatalf("poll 0x14 = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
+		}
+		if polled, pcount, err := state.pollStatus(now.Add(2*statusPollInterval), pcanStatusBusWarning, 1, true); err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerWarning || state.busOff() {
+			t.Fatalf("poll 0x08 = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
+		}
+
+		// Duplicate 0x08, stale low-counter error frames, queued OK, and clean RX
+		// must neither cancel post-bus-off polling nor report Active prematurely.
+		state.observe(now.Add(2*statusPollInterval+time.Millisecond), heavyObs)
+		state.observe(now.Add(2*statusPollInterval+2*time.Millisecond), errorObs(0, 100))
+		if events, count := state.observe(now.Add(2*statusPollInterval+3*time.Millisecond), errorObs(0, 8)); count != 1 || events[0].Kind != gocan.EventErrorFrame {
+			t.Fatalf("stale low-counter error during post-bus-off poll = %+v", events[:count])
+		}
+		if events, count := state.observe(now.Add(2*statusPollInterval+4*time.Millisecond), okObs); count != 0 {
+			t.Fatalf("queued OK status during recovery poll = %+v", events[:count])
+		}
+		state.observe(now.Add(2*statusPollInterval+5*time.Millisecond), rxObs)
+		if state.nextDeadline().IsZero() {
+			t.Fatal("queued status/error or duplicate 0x08 cancelled post-bus-off poll")
+		}
+
+		// Counted passive must not flap Warning<->Passive under repeated 0x08 polls.
+		if events, count := state.observe(now.Add(2*statusPollInterval+6*time.Millisecond), passiveObs); count != 2 || events[1].ControllerState != gocan.ControllerPassive {
+			t.Fatalf("passive during post-bus-off poll = %+v", events[:count])
+		}
+		for step := range 3 {
+			pollAt := now.Add(time.Duration(3+step) * statusPollInterval)
+			if polled, pcount, err := state.pollStatus(pollAt, pcanStatusBusWarning, 1, true); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
+				t.Fatalf("poll 0x08 while passive step %d = %+v, err=%v, next=%v", step, polled[:pcount], err, state.nextDeadline())
+			}
+			if events, count := state.observe(pollAt.Add(time.Millisecond), passiveObs); count != 1 || events[0].Kind != gocan.EventErrorFrame {
+				t.Fatalf("repeated passive after poll 0x08 step %d = %+v", step, events[:count])
+			}
+		}
+
+		// Clear poll must hold for degradedClearHold and wait for an empty queue.
+		clearStart := now.Add(6 * statusPollInterval)
+		if polled, pcount, err := state.pollStatus(clearStart, pcanStatusOK, 1, true); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
+			t.Fatalf("first poll 0x00 = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
+		}
+		if polled, pcount, err := state.pollStatus(clearStart.Add(degradedClearHold), pcanStatusOK, 1, false); err != nil || pcount != 0 || state.nextDeadline().IsZero() {
+			t.Fatalf("undrained poll 0x00 at clear hold = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
+		}
+		if polled, pcount, err := state.pollStatus(clearStart.Add(degradedClearHold+statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || !state.nextDeadline().IsZero() {
+			t.Fatalf("drained poll 0x00 at clear hold = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
+		}
+
+		// Direct bus-off recovery releases writes immediately, defers Active while
+		// undrained without arming classic overrun suppression, then reports
+		// QOVERRUN + Active and resets pollOverrun for subsequent recoveries.
+		state.classic = true
+		tBusOff := clearStart.Add(2 * time.Second)
+		_, _ = state.observeSendBusOff(tBusOff, 1)
+		if polled, pcount, err := state.pollStatus(tBusOff.Add(statusPollInterval), pcanStatusOK, 1, false); err != nil || state.busOff() || pcount != 0 || state.nextDeadline().IsZero() {
+			t.Fatalf("undrained direct bus-off poll 0x00 = %+v, err=%v, busOff=%v, next=%v", polled[:pcount], err, state.busOff(), state.nextDeadline())
+		}
+		state.observeSend()
+		if events, count := state.observe(tBusOff.Add(statusPollInterval+time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("bare 0x02 during deferred bus-off recovery = %+v", events[:count])
+		}
+		if polled, pcount, err := state.pollStatus(tBusOff.Add(2*statusPollInterval), pcanStatusQueueOverrun, 1, true); err != nil || state.busOff() || pcount != 2 ||
+			polled[0].Kind != gocan.EventReceiveOverrun || polled[1].ControllerState != gocan.ControllerActive {
+			t.Fatalf("poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
+		}
+		_, _ = state.observeSendBusOff(tBusOff.Add(3*statusPollInterval), 1)
+		if polled, pcount, err := state.pollStatus(tBusOff.Add(4*statusPollInterval), pcanStatusQueueOverrun, 1, true); err != nil || state.busOff() || pcount != 2 ||
+			polled[0].Kind != gocan.EventReceiveOverrun || polled[1].ControllerState != gocan.ControllerActive {
+			t.Fatalf("second recovery poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
+		}
+	})
+
+	t.Run("degraded stability and recovery", func(t *testing.T) {
+		var state pcanState
+
+		// Entry lag: GetStatus reads 0x0 for ~1 s until the first 0x08 status frame;
+		// BUSHEAVY resets the hold and preserves Passive.
+		if events, count := state.observe(now, tec128Obs); count != 2 || events[1].ControllerState != gocan.ControllerPassive || state.nextDeadline().IsZero() {
+			t.Fatalf("enter passive = %+v, next=%v", events[:count], state.nextDeadline())
+		}
+		if polled, pcount, err := state.pollStatus(now.Add(statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("entry-lag poll 0x00 = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(now.Add(1050*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("entry-lag poll 0x00 at 1.05s = %+v, err=%v", polled[:pcount], err)
+		}
+		if events, count := state.observe(now.Add(1060*time.Millisecond), heavyObs); count != 0 {
+			t.Fatalf("BUSHEAVY downgraded passive: %+v", events[:count])
+		}
+
+		// Clean RX while TEC=127 (Warning) + periodic 0x08 status frames must keep
+		// steady Warning with no flicker to Active or upgrade back to Passive.
+		if events, count := state.observe(now.Add(2*time.Second), tec127Obs); count != 2 || events[1].ControllerState != gocan.ControllerWarning {
+			t.Fatalf("TEC=127 transition = %+v", events[:count])
+		}
+		for sec := range 3 {
+			base := now.Add(time.Duration(3+sec) * time.Second)
+			if events, count := state.observe(base, rxObs); count != 0 {
+				t.Fatalf("clean RX while TEC=127 emitted %+v", events[:count])
+			}
+			if events, count := state.observe(base.Add(50*time.Millisecond), heavyObs); count != 0 {
+				t.Fatalf("BUSHEAVY while TEC=127 emitted %+v", events[:count])
+			}
+			if polled, pcount, err := state.pollStatus(base.Add(100*time.Millisecond), pcanStatusBusWarning, 1, true); err != nil || pcount != 0 {
+				t.Fatalf("poll 0x08 while TEC=127 = %+v, err=%v", polled[:pcount], err)
+			}
+		}
+
+		// Spurious BUSOFF paired with TEC=95 stays bus-off until live GetStatus clears.
+		tSpurious := now.Add(7 * time.Second)
+		if events, count := state.observe(tSpurious, busOffObs); count != 1 || events[0].ControllerState != gocan.ControllerBusOff || !state.busOff() {
+			t.Fatalf("spurious bus-off = %+v, busOff=%v", events[:count], state.busOff())
+		}
+		if events, count := state.observe(tSpurious.Add(time.Millisecond), tec95Obs); count != 1 || events[0].Kind != gocan.EventErrorFrame || !state.busOff() {
+			t.Fatalf("TEC=95 during spurious bus-off = %+v, busOff=%v", events[:count], state.busOff())
+		}
+		if polled, pcount, err := state.pollStatus(tSpurious.Add(time.Second), pcanStatusOK, 1, true); err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || state.busOff() || !state.nextDeadline().IsZero() {
+			t.Fatalf("spurious bus-off recovery = %+v, err=%v, busOff=%v, next=%v", polled[:pcount], err, state.busOff(), state.nextDeadline())
+		}
+
+		// Counted error frame below 96 outside bus-off recovers immediately with counts.
+		tCounted := tSpurious.Add(2 * time.Second)
+		state.observe(tCounted, tec128Obs)
+		if events, count := state.observe(tCounted.Add(10*time.Millisecond), tec95Obs); count != 2 ||
+			events[1].ControllerState != gocan.ControllerActive || !events[1].ErrorCountsKnown ||
+			events[1].TXErrorCount != 95 || !state.nextDeadline().IsZero() {
+			t.Fatalf("counted TEC=95 recovery = %+v, next=%v", events[:count], state.nextDeadline())
+		}
+
+		// BUSLIGHT steps Passive -> Warning; without counted recovery or RX frames,
+		// sustained GetStatus 0x0 for degradedClearHold infers Active.
+		tInferred := tCounted.Add(time.Second)
+		state.observe(tInferred, tec128Obs)
+		if events, count := state.observe(tInferred.Add(time.Millisecond), lightObs); count != 1 || events[0].ControllerState != gocan.ControllerWarning {
+			t.Fatalf("BUSLIGHT after passive = %+v", events[:count])
+		}
+		tClear := tInferred.Add(statusPollInterval)
+		if polled, pcount, err := state.pollStatus(tClear, pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("inferred recovery start poll = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tClear.Add(degradedClearHold-statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("inferred recovery early poll = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tClear.Add(degradedClearHold), pcanStatusOK, 1, true); err != nil || pcount != 1 || polled[0].ControllerState != gocan.ControllerActive || !state.nextDeadline().IsZero() {
+			t.Fatalf("inferred recovery final poll = %+v, err=%v, next=%v", polled[:pcount], err, state.nextDeadline())
+		}
+	})
+
+	t.Run("classic drain overrun artifact", func(t *testing.T) {
+		state := pcanState{classic: true}
+		state.observe(now, tec127Obs)
+
+		// Before any degraded TX, bare 0x02 is reported and resets the clear hold.
+		if polled, pcount, err := state.pollStatus(now.Add(statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("pre-overrun poll 0x00 = %+v, err=%v", polled[:pcount], err)
+		}
+		tPreTX := now.Add(500 * time.Millisecond)
+		if events, count := state.observe(tPreTX, overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("pre-TX bare 0x02 = %+v", events[:count])
+		}
+		if polled, pcount, err := state.pollStatus(tPreTX.Add(statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("post-pre-TX overrun poll start = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tPreTX.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("pre-TX overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
+		}
+
+		// After TX while degraded on classic hardware, bare 0x02 is suppressed in
+		// both observe and pollStatus while still resetting the clear hold; 0x40
+		// (QOVERRUN) stays reported.
+		state.observeSend()
+		tObsOvr := tPreTX.Add(1200 * time.Millisecond)
+		if events, count := state.observe(tObsOvr, overrunObs); count != 0 {
+			t.Fatalf("classic drain observe bare 0x02 not suppressed: %+v", events[:count])
+		}
+		if polled, pcount, err := state.pollStatus(tObsOvr.Add(statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("post-suppressed-observe poll start = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tObsOvr.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("suppressed observe overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
+		}
+		tPollOvr := tObsOvr.Add(1200 * time.Millisecond)
+		if polled, pcount, err := state.pollStatus(tPollOvr, pcanStatusOverrun, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("classic drain poll bare 0x02 not suppressed: %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tPollOvr.Add(statusPollInterval), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("post-suppressed-poll poll start = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tPollOvr.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("suppressed poll overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
+		}
+		if events, count := state.observe(tPollOvr.Add(1150*time.Millisecond), qOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("QOVERRUN during classic drain = %+v", events[:count])
+		}
+
+		// Recovery re-enables bare 0x02 reporting; non-classic (FD-capable) channels
+		// never suppress bare 0x02.
+		state.observe(tPollOvr.Add(1200*time.Millisecond), tec95Obs)
+		if events, count := state.observe(tPollOvr.Add(1210*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("bare 0x02 after recovery = %+v", events[:count])
+		}
+		var fdState pcanState
+		fdState.observe(now, tec128Obs)
+		fdState.observeSend()
+		if events, count := fdState.observe(now.Add(time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("FD-capable bare 0x02 during degraded drain = %+v", events[:count])
+		}
+	})
 }

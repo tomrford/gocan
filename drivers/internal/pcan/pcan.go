@@ -412,13 +412,21 @@ func (state *pcanState) inWarningOrPassive() bool {
 }
 
 func (state *pcanState) observeSend() {
-	if state.inWarningOrPassive() && !state.nextPoll.IsZero() {
+	if state.inWarningOrPassive() {
 		state.txWhileDegraded = true
 	}
 }
 
 func (state *pcanState) suppressBareHWOverrun(bareHWOverrun bool) bool {
-	return bareHWOverrun && state.classic && state.txWhileDegraded && state.inWarningOrPassive() && !state.nextPoll.IsZero()
+	return bareHWOverrun && state.classic && state.txWhileDegraded && state.inWarningOrPassive()
+}
+
+func (state *pcanState) clearRecovery() {
+	state.postBusOff = false
+	state.txWhileDegraded = false
+	state.clearSince = time.Time{}
+	state.nextPoll = time.Time{}
+	state.pollOverrun = false
 }
 
 func (state *pcanState) observeSendBusOff(now time.Time, bus gocan.BusID) (gocan.Event, bool) {
@@ -483,10 +491,7 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 				if state.postBusOff || !event.ErrorCountsKnown {
 					continue
 				}
-				state.txWhileDegraded = false
-				state.clearSince = time.Time{}
-				state.nextPoll = time.Time{}
-				state.pollOverrun = false
+				state.clearRecovery()
 			}
 			if event.ControllerState != gocan.ControllerActive {
 				state.clearSince = time.Time{}
@@ -593,11 +598,7 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 		}
 	}
 
-	state.postBusOff = false
-	state.txWhileDegraded = false
-	state.clearSince = time.Time{}
-	state.nextPoll = time.Time{}
-	state.pollOverrun = false
+	state.clearRecovery()
 	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive}
 	if !samePCANControllerState(state.lastState, event) {
 		state.lastState = event
