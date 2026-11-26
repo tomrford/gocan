@@ -28,7 +28,7 @@ import (
 const channelSettleDelay = 25 * time.Millisecond
 
 // maxDrainBatch bounds how many queued native reads run before receiveLoop
-// services due bus-off status polls or quiet-window ticks.
+// services due controller-status polls.
 const maxDrainBatch = 64
 
 // A PEAK USB removal is one shared PCAN process failure domain: every open
@@ -527,7 +527,7 @@ func (bus *Bus) receiveLoop() {
 	events := []windows.Handle{bus.stopEvent, bus.receiveEvent}
 	pendingDrain := false
 	for {
-		nextDeadline, err := bus.serviceState()
+		nextDeadline, err := bus.serviceState(!pendingDrain)
 		if err != nil {
 			bus.stopWithError(err)
 			return
@@ -553,14 +553,12 @@ func (bus *Bus) receiveLoop() {
 		switch event {
 		case windows.WAIT_OBJECT_0:
 			return
-		case windows.WAIT_OBJECT_0 + 1:
+		case windows.WAIT_OBJECT_0 + 1, uint32(windows.WAIT_TIMEOUT):
 			pendingDrain, err = bus.drainReceiveQueue()
 			if err != nil {
 				bus.stopWithError(err)
 				return
 			}
-		case uint32(windows.WAIT_TIMEOUT):
-			continue
 		default:
 			bus.stopWithError(fmt.Errorf("wait for PCAN receive event: unexpected result %#x", event))
 			return
@@ -593,7 +591,7 @@ func (bus *Bus) drainReceiveQueue() (bool, error) {
 	return true, nil
 }
 
-func (bus *Bus) serviceState() (time.Time, error) {
+func (bus *Bus) serviceState(queueDrained bool) (time.Time, error) {
 	bus.ioMu.Lock()
 	defer bus.ioMu.Unlock()
 
@@ -609,7 +607,7 @@ func (bus *Bus) serviceState() (time.Time, error) {
 		if status&^pcanStatusKnownMask != 0 {
 			return time.Time{}, bus.runtimeStatusError("read PCAN status", status)
 		}
-		events, count, err := bus.state.pollStatus(now, status, bus.id)
+		events, count, err := bus.state.pollStatus(now, status, bus.id, queueDrained)
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -617,10 +615,6 @@ func (bus *Bus) serviceState() (time.Time, error) {
 			if err := bus.capture.RecordEvent(event); err != nil {
 				return time.Time{}, err
 			}
-		}
-	} else if event, ok := bus.state.tick(now, bus.id); ok {
-		if err := bus.capture.RecordEvent(event); err != nil {
-			return time.Time{}, err
 		}
 	}
 	return bus.state.nextDeadline(), nil

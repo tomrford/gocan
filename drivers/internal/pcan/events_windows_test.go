@@ -138,38 +138,76 @@ func TestPCANClassicEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = peer.Close() })
 
+	// Clean received traffic alone lowers REC only; while TEC remains >= 96
+	// (TEC=127 after the stuck frame is acknowledged), target must stay degraded
+	// across more than one ~1.05 s status-frame period without flickering to Active.
+	rxOnlyFrame, err := gocan.NewFrame(0x5b3, []byte{9}, 0)
+	if err != nil {
+		t.Fatalf("NewFrame peer RX-only: %v", err)
+	}
+	rxOnlyCursor := capture.End()
+	for i := range 15 {
+		if err := peer.Send(context.Background(), rxOnlyFrame); err != nil {
+			t.Fatalf("send peer RX-only frame %d: %v", i, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, _, err := capture.Next(ctx, gocan.FrameKey{
+		Bus:       target.ID(),
+		ID:        rxOnlyFrame.ID,
+		Direction: gocan.DirectionReceive,
+	}, rxOnlyCursor); err != nil {
+		t.Fatalf("wait for PCAN RX-only traffic: %v", err)
+	}
+	rxOnlyEvents, nextCursor, err := capture.BusEvents(target.ID(), gocan.Since(cursor))
+	if err != nil {
+		t.Fatalf("BusEvents during RX-only: %v", err)
+	}
+	for event := range rxOnlyEvents {
+		if event.Kind == gocan.EventControllerState && event.ControllerState == gocan.ControllerActive {
+			t.Fatalf("PCAN reported Active during RX-only interval with TEC high: %+v", event)
+		}
+	}
+	cursor = nextCursor
+
 	for sequence := range 140 {
 		frame, err := gocan.NewFrame(0x5b2, []byte{byte(sequence)}, 0)
 		if err != nil {
 			t.Fatalf("NewFrame recovery sequence %d: %v", sequence, err)
 		}
-		if err := target.Send(context.Background(), frame); err != nil {
+		if err := gocan.Send(context.Background(), target, frame, 2*time.Second); err != nil {
 			t.Fatalf("send recovery sequence %d: %v", sequence, err)
 		}
 		time.Sleep(time.Millisecond)
 	}
-
-	recoveryCursor := capture.End()
-	recoveryFrame, err := gocan.NewFrame(0x5b3, []byte{9}, 0)
+	wireCursor := capture.End()
+	tailFrame, err := gocan.NewFrame(0x5b4, []byte{0xee}, 0)
 	if err != nil {
-		t.Fatalf("NewFrame peer recovery: %v", err)
+		t.Fatalf("NewFrame recovery tail: %v", err)
 	}
-	if err := peer.Send(context.Background(), recoveryFrame); err != nil {
-		t.Fatalf("send peer recovery traffic: %v", err)
+	if err := gocan.Send(context.Background(), target, tailFrame, 2*time.Second); err != nil {
+		t.Fatalf("send recovery tail: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, _, err := capture.Next(ctx, gocan.FrameKey{
-		Bus:       target.ID(),
-		ID:        recoveryFrame.ID,
+	wireCtx, cancelWire := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelWire()
+	if _, _, err := capture.Next(wireCtx, gocan.FrameKey{
+		Bus:       peer.ID(),
+		ID:        tailFrame.ID,
 		Direction: gocan.DirectionReceive,
-	}, recoveryCursor); err != nil {
-		t.Fatalf("wait for PCAN recovery traffic: %v", err)
+	}, wireCursor); err != nil {
+		t.Fatalf("peer did not receive recovery tail frame: %v", err)
 	}
+
 	waitForPCANEvents(t, capture, target.ID(), cursor, func(event gocan.Event) bool {
 		return event.Kind == gocan.EventControllerState &&
 			event.ControllerState == gocan.ControllerActive
 	})
+	latest, ok := capture.LatestControllerState(target.ID())
+	if !ok || latest.ControllerState != gocan.ControllerActive {
+		t.Fatalf("final controller state after recovery = %+v, ok=%v; want error active", latest, ok)
+	}
 }
 
 // TestPCANBusOffRecoveryHardware forces a real bus-off on channel A by having
