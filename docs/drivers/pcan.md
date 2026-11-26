@@ -22,13 +22,18 @@ adapter queue.
 gocan enables PCAN-Basic's bus-off auto-reset and suppresses native writes
 while bus-off so auto-reset can finish (`Send` returns `gocan.ErrBusOff`);
 direct bus-off recovery reports error-active on the first clear `CAN_GetStatus`
-poll. On classic PCAN-USB (firmware 2.8.1), no status frame is emitted on
-recovery from warning or passive and `CAN_GetStatus` can briefly read `0x0`
-between its ~1.05 s degraded status frames (on entry, after open, or after
-receive overrun). Outside bus-off recovery, an error frame with both counters
-below 96 reports error-active immediately; otherwise gocan polls
-`CAN_GetStatus` while degraded and infers error-active (counts unknown) once
-bus-state bits stay clear for 1.3 s without degraded status or overrun.
+poll once the receive queue drains. On classic PCAN-USB (firmware 2.8.1), no
+status frame is emitted on recovery from warning or passive and `CAN_GetStatus`
+can briefly read `0x0` between its ~1.05 s degraded status frames (on entry,
+after open, or after receive overrun). Outside bus-off recovery, an error frame
+with both counters below 96 reports error-active immediately; otherwise gocan
+polls `CAN_GetStatus` while degraded and infers error-active (counts unknown)
+once bus-state bits stay clear for 1.3 s without degraded status or overrun. On
+classic non-FD adapters transmitting while warning or passive, a bare
+`PCAN_ERROR_OVERRUN` (`0x02`) is treated as a firmware status artifact (it
+resets the clear hold without emitting `EventReceiveOverrun`, while
+`PCAN_ERROR_QOVERRUN` (`0x40`) and overruns outside that window remain
+reported).
 
 PCAN-USB (firmware 2.8.1) can report a spurious bus-off and reject writes for
 about one second either as a sole-acknowledging node after a brief burst of

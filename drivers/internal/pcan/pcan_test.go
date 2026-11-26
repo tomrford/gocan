@@ -204,13 +204,23 @@ func TestPCANStateBenchSequences(t *testing.T) {
 	}
 
 	// 2. Non-bus-off overrun on direct bus-off recovery releases the write gate,
-	// defers Active while the receive queue is undrained, then reports overrun +
-	// Active once drained and resets pollOverrun for later recoveries.
+	// defers Active while the receive queue is undrained (without letting a Send
+	// during deferred bus-off recovery arm classic overrun suppression), then
+	// reports overrun + Active once drained and resets pollOverrun for later recoveries.
 	tBusOff := clearStart.Add(2 * time.Second)
+	state.classic = true
 	_, _ = state.observeSendBusOff(tBusOff, 1)
 	polled, pcount, err = state.pollStatus(tBusOff.Add(statusPollInterval), pcanStatusOK, 1, false)
 	if err != nil || state.busOff() || pcount != 0 || state.nextDeadline().IsZero() {
 		t.Fatalf("undrained direct bus-off poll 0x00 = %+v, err=%v, busOff=%v, next=%v", polled[:pcount], err, state.busOff(), state.nextDeadline())
+	}
+	state.observeSend()
+	bareOverrunObs, err := decodePCANStatus(pcanStatusOverrun, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events, count = state.observe(tBusOff.Add(statusPollInterval+time.Millisecond), bareOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		t.Fatalf("bare 0x02 during deferred bus-off recovery = %+v", events[:count])
 	}
 	polled, pcount, err = state.pollStatus(tBusOff.Add(2*statusPollInterval), pcanStatusQueueOverrun, 1, true)
 	if err != nil || state.busOff() || pcount != 2 ||
@@ -225,14 +235,17 @@ func TestPCANStateBenchSequences(t *testing.T) {
 		t.Fatalf("second recovery poll QOVERRUN = %+v, err=%v, busOff=%v", polled[:pcount], err, state.busOff())
 	}
 
-	// 3. Bench stub -> OBC RX-only -> overrun -> spurious bus-off -> clean recovery:
+	// 3. Bench stub -> OBC RX-only -> drain overrun artifact -> spurious bus-off -> clean recovery:
 	// - Entry lag and post-first-status GetStatus 0x0 windows (~1.05 s) must not
 	//   emit Active while periodic 0x08 status frames keep arriving.
 	// - Clean RX frames while TX-degraded (TEC=127 Warning) must never infer Active
 	//   or upgrade Warning back to Passive on 0x08 status frames.
-	// - Receive overrun (0x02) clearing GetStatus to 0x0 for ~1.05 s must not emit Active.
+	// - On classic PCAN-USB, bare 0x02 (OVERRUN) is reported before TX while degraded
+	//   and after recovery, suppressed (while still resetting the clear window) after
+	//   TX while degraded, whereas 0x40 (QOVERRUN) and non-classic 0x02 stay reported.
 	// - Spurious BUSOFF (0x10) alongside a TEC=95 error frame stays bus-off until
 	//   live GetStatus clears BUSOFF.
+	state.classic = true
 	t0 := tBusOff.Add(2 * time.Second)
 	tec128Obs, err := decodePCANErrorFrame([]byte{0, 0, 0, 128}, pcanStatusOK, 1)
 	if err != nil {
@@ -287,9 +300,7 @@ func TestPCANStateBenchSequences(t *testing.T) {
 			t.Fatalf("poll 0x08 while TEC=127 = %+v, err=%v", polled[:pcount], err)
 		}
 	}
-	// Overrun from CAN_Read (0x02) resets any in-progress clear window and
-	// clears GetStatus to 0x0 until the next ~1.05 s status frame; pollStatus(0x02)
-	// also resets the clear window.
+	// Overrun before any degraded TX is still reported and resets the clear window.
 	tOvr := t0.Add(9 * time.Second)
 	if polled, pcount, err = state.pollStatus(tOvr.Add(-400*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
 		t.Fatalf("pre-overrun poll 0x00 = %+v, err=%v", polled[:pcount], err)
@@ -299,7 +310,7 @@ func TestPCANStateBenchSequences(t *testing.T) {
 		t.Fatal(err)
 	}
 	if events, count = state.observe(tOvr, overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("overrun observation = %+v", events[:count])
+		t.Fatalf("pre-TX overrun observation = %+v", events[:count])
 	}
 	if polled, pcount, err = state.pollStatus(tOvr.Add(20*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
 		t.Fatalf("post-overrun poll 0x00 = %+v, err=%v", polled[:pcount], err)
@@ -310,14 +321,31 @@ func TestPCANStateBenchSequences(t *testing.T) {
 	if events, count = state.observe(tOvr.Add(1050*time.Millisecond), heavyObs); count != 0 {
 		t.Fatalf("post-overrun BUSHEAVY = %+v", events[:count])
 	}
+	// After TX while degraded on classic hardware, bare 0x02 is suppressed as a
+	// firmware artifact while still resetting the clear window; 0x40 (QOVERRUN)
+	// continues to be reported.
+	state.observeSend()
 	if polled, pcount, err = state.pollStatus(tOvr.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("poll 0x00 before poll overrun = %+v, err=%v", polled[:pcount], err)
+		t.Fatalf("poll 0x00 before suppressed overrun = %+v, err=%v", polled[:pcount], err)
 	}
-	if polled, pcount, err = state.pollStatus(tOvr.Add(1500*time.Millisecond), pcanStatusOverrun, 1, true); err != nil || pcount != 1 || polled[0].Kind != gocan.EventReceiveOverrun {
-		t.Fatalf("poll overrun while degraded = %+v, err=%v", polled[:pcount], err)
+	if events, count = state.observe(tOvr.Add(1500*time.Millisecond), overrunObs); count != 0 {
+		t.Fatalf("classic drain bare 0x02 was not suppressed: %+v", events[:count])
 	}
 	if polled, pcount, err = state.pollStatus(tOvr.Add(2500*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
-		t.Fatalf("poll 0x00 after poll overrun reset = %+v, err=%v", polled[:pcount], err)
+		t.Fatalf("poll 0x00 after suppressed observe overrun reset = %+v, err=%v", polled[:pcount], err)
+	}
+	if polled, pcount, err = state.pollStatus(tOvr.Add(2550*time.Millisecond), pcanStatusOverrun, 1, true); err != nil || pcount != 0 {
+		t.Fatalf("classic drain poll bare 0x02 was not suppressed: %+v, err=%v", polled[:pcount], err)
+	}
+	if polled, pcount, err = state.pollStatus(tOvr.Add(2600*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
+		t.Fatalf("poll 0x00 after suppressed poll overrun = %+v, err=%v", polled[:pcount], err)
+	}
+	qOverrunObs, err := decodePCANStatus(pcanStatusQueueOverrun, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events, count = state.observe(tOvr.Add(2650*time.Millisecond), qOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		t.Fatalf("QOVERRUN during classic drain = %+v", events[:count])
 	}
 	// Spurious BUSOFF (0x10) paired with TEC=95 error frame stays bus-off until
 	// live GetStatus clears BUSOFF.
@@ -339,18 +367,29 @@ func TestPCANStateBenchSequences(t *testing.T) {
 
 	// 4. Clean recovery outside bus-off:
 	// - Counted error frame below 96 (TEC=95) recovers immediately to Active
-	//   with counts and stops polling (preventing occasional low-counter errors
-	//   from holding the channel degraded forever).
+	//   with counts, stops polling, and re-enables bare 0x02 overrun reporting.
 	// - Without a counted recovery frame, sustained pollStatus(0x00) for
 	//   degradedClearHold infers Active and stops polling.
+	// - Non-classic (FD-capable) adapters always report bare 0x02.
 	tCounted := tSpurious.Add(2 * time.Second)
 	if events, count = state.observe(tCounted, tec128Obs); count != 2 || events[1].ControllerState != gocan.ControllerPassive {
 		t.Fatalf("re-enter passive for counted recovery = %+v", events[:count])
 	}
+	state.observeSend()
 	if events, count = state.observe(tCounted.Add(10*time.Millisecond), tec95Obs); count != 2 ||
 		events[1].ControllerState != gocan.ControllerActive || !events[1].ErrorCountsKnown ||
 		events[1].TXErrorCount != 95 || !state.nextDeadline().IsZero() {
 		t.Fatalf("counted TEC=95 recovery = %+v, next=%v", events[:count], state.nextDeadline())
+	}
+	if events, count = state.observe(tCounted.Add(20*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		t.Fatalf("bare 0x02 after recovery to Active = %+v", events[:count])
+	}
+
+	var fdState pcanState
+	fdState.observe(tCounted, tec128Obs)
+	fdState.observeSend()
+	if events, count = fdState.observe(tCounted.Add(time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		t.Fatalf("FD-capable bare 0x02 during degraded drain = %+v", events[:count])
 	}
 
 	tInferred := tCounted.Add(time.Second)

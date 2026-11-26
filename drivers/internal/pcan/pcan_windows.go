@@ -167,10 +167,12 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		uninitialize()
 		return nil, err
 	}
-	if !slices.ContainsFunc(attached, func(info ChannelInfo) bool { return info.Channel == config.Channel }) {
+	channelIndex := slices.IndexFunc(attached, func(info ChannelInfo) bool { return info.Channel == config.Channel })
+	if channelIndex < 0 {
 		uninitialize()
 		return nil, missingPCANChannelError(config.Channel)
 	}
+	classicHardware := !attached[channelIndex].SupportsFD
 
 	receiveEvent, err := windows.CreateEvent(nil, 0, 0, nil)
 	if err != nil {
@@ -216,6 +218,7 @@ func Open(ctx context.Context, capture *gocan.Capture, config Config) (openedBus
 		lifecycle: driverstate.New(func() {
 			_ = windows.SetEvent(stopEvent)
 		}),
+		state: pcanState{classic: classicHardware},
 	}
 	subscription, err := deviceHold.Bind(bus.stopWithError)
 	if err != nil {
@@ -500,6 +503,8 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		return err
 	}
 
+	bus.state.observeSend()
+
 	if err := bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,
 		Direction: gocan.DirectionTransmit,
@@ -698,6 +703,8 @@ func (bus *Bus) applyQueueEmptyStatusLocked(status pcanStatus) error {
 	if err != nil {
 		return err
 	}
+	// Combined with PCAN_ERROR_QRCVEMPTY, so this is not a bare 0x02 return.
+	observation.bareHWOverrun = false
 	return bus.applyObservationLocked(observation)
 }
 
