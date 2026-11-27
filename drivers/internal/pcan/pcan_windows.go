@@ -503,7 +503,7 @@ func (bus *Bus) Send(ctx context.Context, frame gocan.Frame) error {
 		return err
 	}
 
-	bus.state.observeSend()
+	bus.state.observeSend(time.Now())
 
 	if err := bus.capture.RecordFrame(gocan.FrameEvent{
 		Bus:       bus.id,

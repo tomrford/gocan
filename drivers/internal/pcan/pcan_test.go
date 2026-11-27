@@ -214,7 +214,7 @@ func TestPCANStateBenchSequences(t *testing.T) {
 		if polled, pcount, err := state.pollStatus(tBusOff.Add(statusPollInterval), pcanStatusOK, 1, false); err != nil || state.busOff() || pcount != 0 || state.nextDeadline().IsZero() {
 			t.Fatalf("undrained direct bus-off poll 0x00 = %+v, err=%v, busOff=%v, next=%v", polled[:pcount], err, state.busOff(), state.nextDeadline())
 		}
-		state.observeSend()
+		state.observeSend(tBusOff.Add(statusPollInterval))
 		if events, count := state.observe(tBusOff.Add(statusPollInterval+time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
 			t.Fatalf("bare 0x02 during deferred bus-off recovery = %+v", events[:count])
 		}
@@ -265,10 +265,15 @@ func TestPCANStateBenchSequences(t *testing.T) {
 			}
 		}
 
-		// Spurious BUSOFF paired with TEC=95 stays bus-off until live GetStatus clears.
+		// Spurious BUSOFF entered from Warning resets the bus-off poll spacing
+		// to a full statusPollInterval and stays bus-off across a paired TEC=95
+		// error frame until live GetStatus clears.
 		tSpurious := now.Add(7 * time.Second)
 		if events, count := state.observe(tSpurious, busOffObs); count != 1 || events[0].ControllerState != gocan.ControllerBusOff || !state.busOff() {
 			t.Fatalf("spurious bus-off = %+v, busOff=%v", events[:count], state.busOff())
+		}
+		if got, want := state.nextDeadline(), tSpurious.Add(statusPollInterval); !got.Equal(want) {
+			t.Fatalf("bus-off entry deadline = %v, want %v", got, want)
 		}
 		if events, count := state.observe(tSpurious.Add(time.Millisecond), tec95Obs); count != 1 || events[0].Kind != gocan.EventErrorFrame || !state.busOff() {
 			t.Fatalf("TEC=95 during spurious bus-off = %+v, busOff=%v", events[:count], state.busOff())
@@ -324,11 +329,11 @@ func TestPCANStateBenchSequences(t *testing.T) {
 			t.Fatalf("pre-TX overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
 		}
 
-		// After TX while degraded on classic hardware, bare 0x02 is suppressed in
-		// both observe and pollStatus while still resetting the clear hold; 0x40
-		// (QOVERRUN) stays reported.
-		state.observeSend()
+		// Within degradedSendOverrunWindow of a degraded TX on classic hardware,
+		// bare 0x02 is suppressed in both observe and pollStatus while still
+		// resetting the clear hold; 0x40 (QOVERRUN) stays reported.
 		tObsOvr := tPreTX.Add(1200 * time.Millisecond)
+		state.observeSend(tObsOvr.Add(-16 * time.Millisecond))
 		if events, count := state.observe(tObsOvr, overrunObs); count != 0 {
 			t.Fatalf("classic drain observe bare 0x02 not suppressed: %+v", events[:count])
 		}
@@ -339,6 +344,7 @@ func TestPCANStateBenchSequences(t *testing.T) {
 			t.Fatalf("suppressed observe overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
 		}
 		tPollOvr := tObsOvr.Add(1200 * time.Millisecond)
+		state.observeSend(tPollOvr.Add(-16 * time.Millisecond))
 		if polled, pcount, err := state.pollStatus(tPollOvr, pcanStatusOverrun, 1, true); err != nil || pcount != 0 {
 			t.Fatalf("classic drain poll bare 0x02 not suppressed: %+v, err=%v", polled[:pcount], err)
 		}
@@ -348,20 +354,26 @@ func TestPCANStateBenchSequences(t *testing.T) {
 		if polled, pcount, err := state.pollStatus(tPollOvr.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
 			t.Fatalf("suppressed poll overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
 		}
+		// After degradedSendOverrunWindow elapses without another TX, bare 0x02
+		// during a receive-only degraded period is reported again.
+		if events, count := state.observe(tPollOvr.Add(1120*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("receive-only bare 0x02 after TX window expired = %+v", events[:count])
+		}
+		state.observeSend(tPollOvr.Add(1140 * time.Millisecond))
 		if events, count := state.observe(tPollOvr.Add(1150*time.Millisecond), qOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
 			t.Fatalf("QOVERRUN during classic drain = %+v", events[:count])
 		}
 
-		// Recovery re-enables bare 0x02 reporting; non-classic (FD-capable) channels
-		// never suppress bare 0x02.
-		state.observe(tPollOvr.Add(1200*time.Millisecond), tec95Obs)
-		if events, count := state.observe(tPollOvr.Add(1210*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		// Recovery re-enables bare 0x02 reporting even within the TX window;
+		// non-classic (FD-capable) channels never suppress bare 0x02.
+		state.observe(tPollOvr.Add(1160*time.Millisecond), tec95Obs)
+		if events, count := state.observe(tPollOvr.Add(1170*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
 			t.Fatalf("bare 0x02 after recovery = %+v", events[:count])
 		}
 		var fdState pcanState
 		fdState.observe(now, tec128Obs)
-		fdState.observeSend()
-		if events, count := fdState.observe(now.Add(time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		fdState.observeSend(now.Add(time.Millisecond))
+		if events, count := fdState.observe(now.Add(10*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
 			t.Fatalf("FD-capable bare 0x02 during degraded drain = %+v", events[:count])
 		}
 	})

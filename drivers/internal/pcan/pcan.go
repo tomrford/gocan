@@ -382,19 +382,25 @@ const (
 	// while still degraded (before the first status frame, after the first
 	// status frame post-open, or after CAN_Read returns PCAN_ERROR_OVERRUN).
 	degradedClearHold = 1300 * time.Millisecond
+
+	// degradedSendOverrunWindow bounds how long after a degraded Send a bare
+	// PCAN_ERROR_OVERRUN (0x02) on classic PCAN-USB is treated as the lossless
+	// firmware status artifact (observed 6-16 ms after the first write following
+	// a degraded status frame).
+	degradedSendOverrunWindow = 100 * time.Millisecond
 )
 
 // pcanState tracks PCAN controller-state transitions, bus-off write gating, and
 // live-status recovery polling independent of Windows APIs.
 type pcanState struct {
-	classic         bool
-	lastState       gocan.Event
-	inBusOff        bool
-	postBusOff      bool
-	txWhileDegraded bool
-	pollOverrun     bool
-	nextPoll        time.Time
-	clearSince      time.Time
+	classic          bool
+	lastState        gocan.Event
+	inBusOff         bool
+	postBusOff       bool
+	pollOverrun      bool
+	lastDegradedSend time.Time
+	nextPoll         time.Time
+	clearSince       time.Time
 }
 
 func (state *pcanState) busOff() bool {
@@ -411,19 +417,20 @@ func (state *pcanState) inWarningOrPassive() bool {
 			state.lastState.ControllerState == gocan.ControllerPassive)
 }
 
-func (state *pcanState) observeSend() {
+func (state *pcanState) observeSend(now time.Time) {
 	if state.inWarningOrPassive() {
-		state.txWhileDegraded = true
+		state.lastDegradedSend = now
 	}
 }
 
-func (state *pcanState) suppressBareHWOverrun(bareHWOverrun bool) bool {
-	return bareHWOverrun && state.classic && state.txWhileDegraded && state.inWarningOrPassive()
+func (state *pcanState) suppressBareHWOverrun(now time.Time, bareHWOverrun bool) bool {
+	return bareHWOverrun && state.classic && state.inWarningOrPassive() &&
+		!state.lastDegradedSend.IsZero() && now.Sub(state.lastDegradedSend) <= degradedSendOverrunWindow
 }
 
 func (state *pcanState) clearRecovery() {
 	state.postBusOff = false
-	state.txWhileDegraded = false
+	state.lastDegradedSend = time.Time{}
 	state.clearSince = time.Time{}
 	state.nextPoll = time.Time{}
 	state.pollOverrun = false
@@ -435,11 +442,12 @@ func (state *pcanState) observeSendBusOff(now time.Time, bus gocan.BusID) (gocan
 		Kind:            gocan.EventControllerState,
 		ControllerState: gocan.ControllerBusOff,
 	}
+	wasBusOff := state.inBusOff
 	state.inBusOff = true
 	state.postBusOff = true
-	state.txWhileDegraded = false
+	state.lastDegradedSend = time.Time{}
 	state.clearSince = time.Time{}
-	if state.nextPoll.IsZero() {
+	if !wasBusOff || state.nextPoll.IsZero() {
 		state.pollOverrun = false
 		state.nextPoll = now.Add(statusPollInterval)
 	}
@@ -465,7 +473,7 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 			// ~1.05 s degraded status frame triggers a bare 0x02 with no lost
 			// frames; still reset clearSince, but do not report a false loss.
 			state.clearSince = time.Time{}
-			if state.suppressBareHWOverrun(observation.bareHWOverrun) {
+			if state.suppressBareHWOverrun(now, observation.bareHWOverrun) {
 				continue
 			}
 			out[count] = event
@@ -530,7 +538,7 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 	hasOverrun := status&pcanStatusOverrunMask != 0
 	if hasOverrun {
 		state.clearSince = time.Time{}
-		if !state.suppressBareHWOverrun(status == pcanStatusOverrun) && !state.pollOverrun {
+		if !state.suppressBareHWOverrun(now, status == pcanStatusOverrun) && !state.pollOverrun {
 			state.pollOverrun = true
 			out[count] = gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 			count++
@@ -541,7 +549,7 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 	if status&pcanStatusBusOff != 0 {
 		state.inBusOff = true
 		state.postBusOff = true
-		state.txWhileDegraded = false
+		state.lastDegradedSend = time.Time{}
 		state.clearSince = time.Time{}
 		state.nextPoll = now.Add(statusPollInterval)
 		event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerBusOff}

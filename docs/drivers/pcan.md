@@ -29,10 +29,10 @@ after open, or after receive overrun). Outside bus-off recovery, an error frame
 with both counters below 96 reports error-active immediately; otherwise gocan
 polls `CAN_GetStatus` while degraded and infers error-active (counts unknown)
 once bus-state bits stay clear for 1.3 s without degraded status or overrun. On
-classic non-FD adapters transmitting while warning or passive, a bare
-`PCAN_ERROR_OVERRUN` (`0x02`) is treated as a firmware status artifact (it
-resets the clear hold without emitting `EventReceiveOverrun`, while
-`PCAN_ERROR_QOVERRUN` (`0x40`) and overruns outside that window remain
+classic non-FD adapters, a bare `PCAN_ERROR_OVERRUN` (`0x02`) arriving within
+100 ms of a transmit while warning or passive is treated as a firmware status
+artifact (it resets the clear hold without emitting `EventReceiveOverrun`,
+while `PCAN_ERROR_QOVERRUN` (`0x40`) and overruns outside that window remain
 reported).
 
 PCAN-USB (firmware 2.8.1) can report a spurious bus-off and reject writes for
