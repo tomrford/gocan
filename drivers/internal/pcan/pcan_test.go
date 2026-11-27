@@ -354,20 +354,35 @@ func TestPCANStateBenchSequences(t *testing.T) {
 		if polled, pcount, err := state.pollStatus(tPollOvr.Add(1100*time.Millisecond), pcanStatusOK, 1, true); err != nil || pcount != 0 {
 			t.Fatalf("suppressed poll overrun did not reset clear hold: %+v, err=%v", polled[:pcount], err)
 		}
-		// After degradedSendOverrunWindow elapses without another TX, bare 0x02
-		// during a receive-only degraded period is reported again.
-		if events, count := state.observe(tPollOvr.Add(1120*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-			t.Fatalf("receive-only bare 0x02 after TX window expired = %+v", events[:count])
+		// A genuine poll overrun followed by a suppressed bare 0x02 artifact must
+		// clear the pollOverrun latch so a subsequent polled 0x40 QOVERRUN is reported.
+		tPollSeq := tPollOvr.Add(1120 * time.Millisecond)
+		if polled, pcount, err := state.pollStatus(tPollSeq, pcanStatusOverrun, 1, true); err != nil || pcount != 1 || polled[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("receive-only poll bare 0x02 after TX window expired = %+v, err=%v", polled[:pcount], err)
 		}
-		state.observeSend(tPollOvr.Add(1140 * time.Millisecond))
-		if events, count := state.observe(tPollOvr.Add(1150*time.Millisecond), qOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
-			t.Fatalf("QOVERRUN during classic drain = %+v", events[:count])
+		state.observeSend(tPollSeq.Add(10 * time.Millisecond))
+		if polled, pcount, err := state.pollStatus(tPollSeq.Add(20*time.Millisecond), pcanStatusOverrun, 1, true); err != nil || pcount != 0 {
+			t.Fatalf("suppressed poll bare 0x02 after genuine poll overrun = %+v, err=%v", polled[:pcount], err)
+		}
+		if polled, pcount, err := state.pollStatus(tPollSeq.Add(30*time.Millisecond), pcanStatusQueueOverrun, 1, true); err != nil || pcount != 1 || polled[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("polled QOVERRUN after suppressed bare 0x02 = %+v, err=%v", polled[:pcount], err)
+		}
+		if events, count := state.observe(tPollSeq.Add(35*time.Millisecond), qOverrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("observed QOVERRUN during classic drain = %+v", events[:count])
+		}
+
+		// After degradedSendOverrunWindow elapses without another TX, observe bare 0x02
+		// during a receive-only degraded period is reported again.
+		tRxOnly := tPollSeq.Add(150 * time.Millisecond)
+		if events, count := state.observe(tRxOnly, overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+			t.Fatalf("receive-only bare 0x02 after TX window expired = %+v", events[:count])
 		}
 
 		// Recovery re-enables bare 0x02 reporting even within the TX window;
 		// non-classic (FD-capable) channels never suppress bare 0x02.
-		state.observe(tPollOvr.Add(1160*time.Millisecond), tec95Obs)
-		if events, count := state.observe(tPollOvr.Add(1170*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
+		state.observeSend(tRxOnly.Add(5 * time.Millisecond))
+		state.observe(tRxOnly.Add(10*time.Millisecond), tec95Obs)
+		if events, count := state.observe(tRxOnly.Add(20*time.Millisecond), overrunObs); count != 1 || events[0].Kind != gocan.EventReceiveOverrun {
 			t.Fatalf("bare 0x02 after recovery = %+v", events[:count])
 		}
 		var fdState pcanState

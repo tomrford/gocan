@@ -538,7 +538,9 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 	hasOverrun := status&pcanStatusOverrunMask != 0
 	if hasOverrun {
 		state.clearSince = time.Time{}
-		if !state.suppressBareHWOverrun(now, status == pcanStatusOverrun) && !state.pollOverrun {
+		if state.suppressBareHWOverrun(now, status == pcanStatusOverrun) {
+			state.pollOverrun = false
+		} else if !state.pollOverrun {
 			state.pollOverrun = true
 			out[count] = gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 			count++
