@@ -137,11 +137,12 @@ type pcanChannelInformation struct {
 }
 
 type pcanReceiveObservation struct {
-	frame      gocan.Frame
-	hasFrame   bool
-	busHeavy   bool
-	events     [3]gocan.Event
-	eventCount uint8
+	frame         gocan.Frame
+	hasFrame      bool
+	busHeavy      bool
+	bareHWOverrun bool
+	events        [3]gocan.Event
+	eventCount    uint8
 }
 
 func (observation *pcanReceiveObservation) addEvent(event gocan.Event) {
@@ -291,6 +292,7 @@ func decodePCANStatus(
 	}
 	var observation pcanReceiveObservation
 	if status&pcanStatusOverrunMask != 0 {
+		observation.bareHWOverrun = status == pcanStatusOverrun
 		observation.addEvent(gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun})
 	}
 
@@ -366,24 +368,39 @@ func decodeMessage(id uint32, messageType, dlc uint8, data []byte, fdAPI bool) (
 }
 
 const (
-	// busOffPollInterval paces CAN_GetStatus reads during bus-off recovery.
-	// Keeping any write re-probe at least 50 ms apart stays well above the
-	// <= 20 ms write interval observed trapping PCAN-USB in bus-off.
-	busOffPollInterval = 50 * time.Millisecond
+	// statusPollInterval paces CAN_GetStatus reads while the controller is
+	// degraded (warning, passive, or bus-off). Keeping bus-off polls at least
+	// 50 ms apart stays well above the <= 20 ms write interval observed
+	// trapping PCAN-USB in bus-off.
+	statusPollInterval = 50 * time.Millisecond
 
-	// degradedQuietWindow is how long a warning or passive channel must go
-	// without errors after clean received traffic before inferring error-active.
-	degradedQuietWindow = 500 * time.Millisecond
+	// degradedClearHold is how long live CAN_GetStatus must continuously report
+	// clear bus-state bits without an intervening degraded status, degraded
+	// error frame, or receive overrun before warning or passive recovers to
+	// error-active. Classic PCAN-USB emits degraded status frames every
+	// ~1.049 s (2^20 us) and CAN_GetStatus can read 0x0 for up to one period
+	// while still degraded (before the first status frame, after the first
+	// status frame post-open, or after CAN_Read returns PCAN_ERROR_OVERRUN).
+	degradedClearHold = 1300 * time.Millisecond
+
+	// degradedSendOverrunWindow bounds how long after a degraded Send a bare
+	// PCAN_ERROR_OVERRUN (0x02) on classic PCAN-USB is treated as the lossless
+	// firmware status artifact (observed 6-16 ms after the first write following
+	// a degraded status frame).
+	degradedSendOverrunWindow = 100 * time.Millisecond
 )
 
 // pcanState tracks PCAN controller-state transitions, bus-off write gating, and
-// quiet-window active inference independent of Windows APIs.
+// live-status recovery polling independent of Windows APIs.
 type pcanState struct {
-	lastState   gocan.Event
-	inBusOff    bool
-	pollOverrun bool
-	nextPoll    time.Time
-	activeAt    time.Time
+	classic          bool
+	lastState        gocan.Event
+	inBusOff         bool
+	postBusOff       bool
+	pollOverrun      bool
+	lastDegradedSend time.Time
+	nextPoll         time.Time
+	clearSince       time.Time
 }
 
 func (state *pcanState) busOff() bool {
@@ -391,15 +408,32 @@ func (state *pcanState) busOff() bool {
 }
 
 func (state *pcanState) nextDeadline() time.Time {
-	if !state.nextPoll.IsZero() {
-		return state.nextPoll
-	}
-	return state.activeAt
+	return state.nextPoll
 }
 
-func (state *pcanState) degraded() bool {
-	return state.lastState.Kind == gocan.EventControllerState &&
-		state.lastState.ControllerState != gocan.ControllerActive
+func (state *pcanState) inWarningOrPassive() bool {
+	return !state.inBusOff && state.lastState.Kind == gocan.EventControllerState &&
+		(state.lastState.ControllerState == gocan.ControllerWarning ||
+			state.lastState.ControllerState == gocan.ControllerPassive)
+}
+
+func (state *pcanState) observeSend(now time.Time) {
+	if state.inWarningOrPassive() {
+		state.lastDegradedSend = now
+	}
+}
+
+func (state *pcanState) suppressBareHWOverrun(now time.Time, bareHWOverrun bool) bool {
+	return bareHWOverrun && state.classic && state.inWarningOrPassive() &&
+		!state.lastDegradedSend.IsZero() && now.Sub(state.lastDegradedSend) <= degradedSendOverrunWindow
+}
+
+func (state *pcanState) clearRecovery() {
+	state.postBusOff = false
+	state.lastDegradedSend = time.Time{}
+	state.clearSince = time.Time{}
+	state.nextPoll = time.Time{}
+	state.pollOverrun = false
 }
 
 func (state *pcanState) observeSendBusOff(now time.Time, bus gocan.BusID) (gocan.Event, bool) {
@@ -408,11 +442,14 @@ func (state *pcanState) observeSendBusOff(now time.Time, bus gocan.BusID) (gocan
 		Kind:            gocan.EventControllerState,
 		ControllerState: gocan.ControllerBusOff,
 	}
+	wasBusOff := state.inBusOff
 	state.inBusOff = true
-	state.activeAt = time.Time{}
-	if state.nextPoll.IsZero() {
+	state.postBusOff = true
+	state.lastDegradedSend = time.Time{}
+	state.clearSince = time.Time{}
+	if !wasBusOff || state.nextPoll.IsZero() {
 		state.pollOverrun = false
-		state.nextPoll = now.Add(busOffPollInterval)
+		state.nextPoll = now.Add(statusPollInterval)
 	}
 	if samePCANControllerState(state.lastState, event) {
 		return gocan.Event{}, false
@@ -427,7 +464,18 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 	for _, event := range observation.events[:observation.eventCount] {
 		switch event.Kind {
 		case gocan.EventErrorFrame:
-			state.activeAt = time.Time{}
+			out[count] = event
+			count++
+		case gocan.EventReceiveOverrun:
+			// CAN_Read returning PCAN_ERROR_OVERRUN clears PCAN-Basic's latched
+			// GetStatus bus-error bits until the next periodic status frame.
+			// On classic PCAN-USB (firmware 2.8.1), the first TX after each
+			// ~1.05 s degraded status frame triggers a bare 0x02 with no lost
+			// frames; still reset clearSince, but do not report a false loss.
+			state.clearSince = time.Time{}
+			if state.suppressBareHWOverrun(now, observation.bareHWOverrun) {
+				continue
+			}
 			out[count] = event
 			count++
 		case gocan.EventControllerState:
@@ -444,19 +492,29 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 				continue
 			}
 			if !state.nextPoll.IsZero() && event.ControllerState == gocan.ControllerActive {
-				// Queued active status or low-counter error frames from before
-				// bus-off cannot end recovery polling; wait for a live
-				// CAN_GetStatus read to confirm error-active.
-				continue
+				// Outside bus-off recovery, an error frame carrying exact
+				// hardware counts below 96 confirms recovery directly; stale
+				// pre-bus-off FIFO frames and uncounted OK status wait for
+				// live CAN_GetStatus confirmation.
+				if state.postBusOff || !event.ErrorCountsKnown {
+					continue
+				}
+				state.clearRecovery()
+			}
+			if event.ControllerState != gocan.ControllerActive {
+				state.clearSince = time.Time{}
+				if state.nextPoll.IsZero() {
+					state.pollOverrun = false
+					state.nextPoll = now.Add(statusPollInterval)
+				}
 			}
 			if state.lastState.ControllerState == gocan.ControllerPassive &&
 				observation.busHeavy && !event.ErrorCountsKnown {
-				// Classic PCAN-USB reports BUSHEAVY (0x08) while error-passive.
-				// Still reset the quiet window since hardware reports an active fault.
-				state.activeAt = time.Time{}
+				// Classic PCAN-USB reports BUSHEAVY (0x08) for both warning and
+				// passive; preserve passive until exact error-frame counts or
+				// recovery say otherwise.
 				continue
 			}
-			state.activeAt = time.Time{}
 			if samePCANControllerState(state.lastState, event) {
 				continue
 			}
@@ -468,20 +526,21 @@ func (state *pcanState) observe(now time.Time, observation pcanReceiveObservatio
 			count++
 		}
 	}
-	if observation.hasFrame && !state.inBusOff && state.nextPoll.IsZero() && state.degraded() && state.activeAt.IsZero() {
-		state.activeAt = now.Add(degradedQuietWindow)
-	}
 	return out, count
 }
 
-func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.BusID) ([2]gocan.Event, uint8, error) {
+func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.BusID, queueDrained bool) ([2]gocan.Event, uint8, error) {
 	if status&^pcanStatusKnownMask != 0 {
 		return [2]gocan.Event{}, 0, fmt.Errorf("unsupported PCAN status %#08x", uint32(status))
 	}
 	var out [2]gocan.Event
 	var count uint8
-	if status&pcanStatusOverrunMask != 0 {
-		if !state.pollOverrun {
+	hasOverrun := status&pcanStatusOverrunMask != 0
+	if hasOverrun {
+		state.clearSince = time.Time{}
+		if state.suppressBareHWOverrun(now, status == pcanStatusOverrun) {
+			state.pollOverrun = false
+		} else if !state.pollOverrun {
 			state.pollOverrun = true
 			out[count] = gocan.Event{Bus: bus, Kind: gocan.EventReceiveOverrun}
 			count++
@@ -491,8 +550,10 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 	}
 	if status&pcanStatusBusOff != 0 {
 		state.inBusOff = true
-		state.activeAt = time.Time{}
-		state.nextPoll = now.Add(busOffPollInterval)
+		state.postBusOff = true
+		state.lastDegradedSend = time.Time{}
+		state.clearSince = time.Time{}
+		state.nextPoll = now.Add(statusPollInterval)
 		event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerBusOff}
 		if !samePCANControllerState(state.lastState, event) {
 			state.lastState = event
@@ -502,55 +563,59 @@ func (state *pcanState) pollStatus(now time.Time, status pcanStatus, bus gocan.B
 		return out, count, nil
 	}
 
+	directBusOffClear := state.inBusOff || state.lastState.ControllerState == gocan.ControllerBusOff
 	// Bus-off bit cleared: release the write gate so persistent warning,
-	// passive, overrun, or TX-full bits cannot trap Send indefinitely. Keep
-	// polling while a post-bus-off degraded bus-state bit remains set so an
-	// idle bus still reports the transition to error-active.
+	// passive, overrun, or TX-full bits cannot trap Send indefinitely.
 	state.inBusOff = false
 	busState := status & pcanStatusBusStateMask
-	nextState := gocan.ControllerActive
-	switch {
-	case busState&pcanStatusBusPassive != 0:
-		nextState = gocan.ControllerPassive
-	case busState&(pcanStatusBusLight|pcanStatusBusWarning) != 0:
-		nextState = gocan.ControllerWarning
-	}
 	if busState != 0 {
-		state.nextPoll = now.Add(busOffPollInterval)
-		state.activeAt = time.Time{}
-	} else {
-		state.nextPoll = time.Time{}
-		state.activeAt = time.Time{}
-		state.pollOverrun = false
-	}
-	if state.lastState.ControllerState == gocan.ControllerPassive &&
-		busState&pcanStatusBusWarning != 0 && busState&pcanStatusBusPassive == 0 {
-		// Classic PCAN-USB reports BUSHEAVY (0x08) while error-passive; keep
-		// polling for recovery without downgrading a known passive state.
+		state.clearSince = time.Time{}
+		state.nextPoll = now.Add(statusPollInterval)
+		nextState := gocan.ControllerWarning
+		if busState&pcanStatusBusPassive != 0 {
+			nextState = gocan.ControllerPassive
+		}
+		if state.lastState.ControllerState == gocan.ControllerPassive &&
+			busState&pcanStatusBusWarning != 0 && busState&pcanStatusBusPassive == 0 {
+			// Classic PCAN-USB reports BUSHEAVY (0x08) for both warning and
+			// passive; keep polling without downgrading a known passive state.
+			return out, count, nil
+		}
+		event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: nextState}
+		if !samePCANControllerState(state.lastState, event) {
+			state.lastState = event
+			out[count] = event
+			count++
+		}
 		return out, count, nil
 	}
-	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: nextState}
+
+	if !queueDrained {
+		state.nextPoll = now.Add(statusPollInterval)
+		return out, count, nil
+	}
+	if !directBusOffClear {
+		if hasOverrun {
+			state.nextPoll = now.Add(statusPollInterval)
+			return out, count, nil
+		}
+		if state.clearSince.IsZero() {
+			state.clearSince = now
+		}
+		if now.Sub(state.clearSince) < degradedClearHold {
+			state.nextPoll = now.Add(statusPollInterval)
+			return out, count, nil
+		}
+	}
+
+	state.clearRecovery()
+	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive}
 	if !samePCANControllerState(state.lastState, event) {
 		state.lastState = event
 		out[count] = event
 		count++
 	}
 	return out, count, nil
-}
-
-func (state *pcanState) tick(now time.Time, bus gocan.BusID) (gocan.Event, bool) {
-	if state.inBusOff || !state.nextPoll.IsZero() || state.activeAt.IsZero() || now.Before(state.activeAt) {
-		return gocan.Event{}, false
-	}
-	state.activeAt = time.Time{}
-	state.nextPoll = time.Time{}
-	state.pollOverrun = false
-	event := gocan.Event{Bus: bus, Kind: gocan.EventControllerState, ControllerState: gocan.ControllerActive}
-	if samePCANControllerState(state.lastState, event) {
-		return gocan.Event{}, false
-	}
-	state.lastState = event
-	return event, true
 }
 
 func samePCANControllerState(previous, next gocan.Event) bool {

@@ -20,12 +20,24 @@ delay may help queued traffic drain, but cannot guarantee delivery or an empty
 adapter queue.
 
 gocan enables PCAN-Basic's bus-off auto-reset and suppresses native writes
-while bus-off so auto-reset can finish (`Send` returns `gocan.ErrBusOff`). When
-PCAN-USB emits no status frame on recovery from warning or passive, error-active
-is inferred 500 ms after clean received traffic without errors (counts unknown).
+while bus-off so auto-reset can finish (`Send` returns `gocan.ErrBusOff`);
+direct bus-off recovery reports error-active on the first clear `CAN_GetStatus`
+poll once the receive queue drains. On classic PCAN-USB (firmware 2.8.1), no
+status frame is emitted on recovery from warning or passive and `CAN_GetStatus`
+can briefly read `0x0` between its ~1.05 s degraded status frames (on entry,
+after open, or after receive overrun). Outside bus-off recovery, an error frame
+with both counters below 96 reports error-active immediately; otherwise gocan
+polls `CAN_GetStatus` while degraded and infers error-active (counts unknown)
+once bus-state bits stay clear for 1.3 s without degraded status or overrun. On
+classic non-FD adapters, a bare `PCAN_ERROR_OVERRUN` (`0x02`) arriving within
+100 ms of a transmit while warning or passive is treated as a firmware status
+artifact (it resets the clear hold without emitting `EventReceiveOverrun`,
+while `PCAN_ERROR_QOVERRUN` (`0x40`) and overruns outside that window remain
+reported).
 
-A sole-acknowledging PCAN-USB (firmware 2.8.1) can report a spurious bus-off
-after a brief burst of acknowledgement errors (for example while an ECU resets)
-and reject writes for about one second; use a transmit retry timeout of at
-least 1.5 s to ride it out. Adding a second acknowledging node avoided the
-fault on the bench.
+PCAN-USB (firmware 2.8.1) can report a spurious bus-off and reject writes for
+about one second either as a sole-acknowledging node after a brief burst of
+acknowledgement errors (for example while an ECU resets) or as TEC drains below
+96 after an error-passive episode; use a transmit retry timeout of at least
+1.5 s to ride it out. Adding a second acknowledging node avoided the
+acknowledgement-burst fault on the bench.
